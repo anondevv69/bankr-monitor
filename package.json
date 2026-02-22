@@ -1,0 +1,17 @@
+{
+  "name": "bankr-monitor",
+  "version": "1.0.0",
+  "description": "Fetch and monitor tokens deployed via Bankr on Base (Doppler protocol)",
+  "type": "module",
+  "scripts": {
+    "fetch:indexer": "node src/fetch-from-indexer.js",
+    "fetch:chain": "node src/fetch-from-chain.js",
+    "fetch:all": "node src/fetch-all.js",
+    "start": "node src/notify-loop.js",
+    "notify": "node src/notify.js",
+    "notify:loop": "node src/notify-loop.js"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  }
+}
