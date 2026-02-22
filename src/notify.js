@@ -16,6 +16,7 @@
  */
 
 import { readFile, writeFile, mkdir } from "fs/promises";
+import { getWatchList } from "./watch-store.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchNewLaunches } from "./fetch-from-chain.js";
@@ -25,6 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10);
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
+const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
@@ -438,11 +440,19 @@ async function main() {
   }
   await saveDeployCounts(deployCounts);
 
+  const { x: watchX, fc: watchFc } = await getWatchList();
+
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
     if (seen.has(key)) return false;
 
-    if (FILTER_X_MATCH) {
+    if (watchX.size > 0 || watchFc.size > 0) {
+      const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
+      const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
+      const inWatchX = deployerX && watchX.has(deployerX);
+      const inWatchFc = deployerFc && watchFc.has(deployerFc);
+      if (!inWatchX && !inWatchFc) return false;
+    } else if (FILTER_X_MATCH) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
       const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
@@ -450,6 +460,11 @@ async function main() {
       const xMatch = deployerX && feeX && deployerX === feeX;
       const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
       if (!xMatch && !fcMatch) return false;
+    }
+
+    if (FILTER_MAX_DEPLOYS != null && FILTER_MAX_DEPLOYS > 0) {
+      const count = l.launcher ? deployCounts[l.launcher.toLowerCase()]?.size : 0;
+      if (count > FILTER_MAX_DEPLOYS) return false;
     }
 
     seen.add(key);

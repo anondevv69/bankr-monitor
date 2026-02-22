@@ -9,9 +9,11 @@
     "fetch:all": "node src/fetch-all.js",
     "start": "node src/notify-loop.js",
     "notify": "node src/notify.js",
-    "notify:loop": "node src/notify-loop.js"
+    "notify:loop": "node src/notify-loop.js",
+    "bot": "node src/discord-bot.js"
   },
   "dependencies": {
+    "discord.js": "^14.25.1",
     "viem": "^2.21.0"
   }
 }
