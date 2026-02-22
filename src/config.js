@@ -6,6 +6,7 @@
 export const BASE_CHAIN_ID = 8453;
 
 export const DOPPLER_CONTRACTS_BASE = {
+  Airlock: "0x660eAaEdEBc968f8f3694354FA8EC0b4c5Ba8D12",
   UniswapV4Initializer: "0x53b4c21a6cb61d64f636abbfa6e8e90e6558e8ad",
   UniswapV4MulticurveInitializer: "0x65de470da664a5be139a5d812be5fda0d76cc951",
   UniswapV4ScheduledMulticurveInitializer: "0xa36715da46ddf4a769f3290f49af58bf8132ed8e",

@@ -29,7 +29,7 @@ async function fetchFromIndexer() {
           image
           creatorAddress
           tokenUriData
-          pool { address, beneficiaries }
+          pool { address }
           volumeUsd
           holderCount
         }

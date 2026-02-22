@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { fetchRecentLaunches } from "./fetch-from-chain.js";
+import { fetchNewLaunches } from "./fetch-from-chain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -101,7 +101,7 @@ async function fetchLaunches() {
   }
   console.error(`Indexer empty/failed for chainId ${CHAIN_ID}. Trying chain fallback...`);
   try {
-    const chainLaunches = await fetchRecentLaunches(10000);
+    const chainLaunches = await fetchNewLaunches();
     return chainLaunches.map((l) => ({
       name: l.name,
       symbol: l.symbol,

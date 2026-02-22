@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * Fetch token launches by indexing Doppler/Uniswap V4 events on Base.
- * Listens for Pool Initialize events where hooks = Doppler hook (Bankr uses Doppler).
+ * Fetch token launches by indexing Doppler Airlock Create events on Base.
+ * Bankr deploys via Doppler; Airlock.create() emits Create(asset, ...) per token.
  */
 
 import { createPublicClient, http, parseAbiItem } from "viem";
 import { base } from "viem/chains";
+import { readFile, writeFile, mkdir } from "fs/promises";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PUBLIC_BASE_RPC = "https://mainnet.base.org";
 
@@ -14,13 +19,7 @@ function getRpcUrl() {
   return process.env.RPC_URL_BASE || process.env.RPC_URL || PUBLIC_BASE_RPC;
 }
 
-const POOL_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b";
-const DOPPLER_HOOKS = [
-  DOPPLER_CONTRACTS_BASE.RehypeDopplerHook,
-  DOPPLER_CONTRACTS_BASE.DecayMulticurveInitializerHook,
-  DOPPLER_CONTRACTS_BASE.UniswapV4MulticurveInitializerHook,
-  DOPPLER_CONTRACTS_BASE.UniswapV4ScheduledMulticurveInitializerHook,
-].map((a) => a.toLowerCase());
+const AIRLOCK = DOPPLER_CONTRACTS_BASE.Airlock;
 
 const ERC20_ABI = [
   parseAbiItem("function name() view returns (string)"),
@@ -85,32 +84,85 @@ async function fetchTokenUriData(uri) {
   }
 }
 
+const CHUNK_SIZE = parseInt(process.env.RPC_GETLOGS_CHUNK_SIZE || "10", 10);
+const LAST_BLOCK_FILE =
+  process.env.LAST_BLOCK_FILE || join(process.cwd(), ".bankr-last-block.json");
+
+async function getLogsChunked(client, fromBlock, toBlock) {
+  const chunks = [];
+  let lo = fromBlock;
+  while (lo <= toBlock) {
+    const hi = lo + BigInt(CHUNK_SIZE - 1);
+    chunks.push({
+      fromBlock: lo,
+      toBlock: hi > toBlock ? toBlock : hi,
+    });
+    lo = hi + 1n;
+  }
+  const allLogs = [];
+  for (const { fromBlock: from, toBlock: to } of chunks) {
+    const logs = await client.getLogs({
+      address: AIRLOCK,
+      event: parseAbiItem(
+        "event Create(address asset, address indexed numeraire, address initializer, address poolOrHook)"
+      ),
+      fromBlock: from,
+      toBlock: to,
+    });
+    allLogs.push(...logs);
+  }
+  return allLogs;
+}
+
 export async function fetchRecentLaunches(blocksBack = 10000) {
   const client = getClient();
   const block = await client.getBlockNumber();
   const fromBlock = block - BigInt(blocksBack);
 
-  const logs = await client.getLogs({
-    address: POOL_MANAGER,
-    event: parseAbiItem(
-      "event Initialize(bytes32 id, address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)"
-    ),
-    fromBlock,
-    toBlock: block,
-  });
+  const logs = await getLogsChunked(client, fromBlock, block);
+  return await processCreateLogs(logs);
+}
 
+/**
+ * Incremental fetch for notify loop: only scans blocks since last poll.
+ * Saves ~90% RPC calls (e.g. ~20 instead of ~500 per poll).
+ */
+export async function fetchNewLaunches() {
+  const client = getClient();
+  const block = await client.getBlockNumber();
+  const chainId = parseInt(process.env.CHAIN_ID || "8453", 10);
+  const blocksBack = parseInt(process.env.BLOCKS_BACK || "5000", 10);
+
+  let fromBlock = block - BigInt(blocksBack);
+  try {
+    const data = await readFile(LAST_BLOCK_FILE, "utf-8");
+    const { block: lastBlock, chainId: storedChain } = JSON.parse(data);
+    if (storedChain === chainId && lastBlock < block) {
+      fromBlock = BigInt(lastBlock) + 1n;
+    }
+  } catch {
+    /* first run: scan full range */
+  }
+
+  const logs = await getLogsChunked(client, fromBlock, block);
+
+  try {
+    await mkdir(dirname(LAST_BLOCK_FILE), { recursive: true });
+    await writeFile(
+      LAST_BLOCK_FILE,
+      JSON.stringify({ block: Number(block), chainId })
+    );
+  } catch {
+    /* non-fatal */
+  }
+
+  return await processCreateLogs(logs);
+}
+
+async function processCreateLogs(logs) {
   const launches = [];
-  const WETH_BASE = "0x4200000000000000000000000000000000000006";
-
   for (const log of logs) {
-    const { id, currency0, currency1, hooks } = log.args;
-    if (!DOPPLER_HOOKS.includes(hooks?.toLowerCase())) continue;
-
-    // One of currency0/currency1 is the token, the other is WETH
-    const tokenAddress =
-      currency0.toLowerCase() === WETH_BASE.toLowerCase()
-        ? currency1
-        : currency0;
+    const { asset: tokenAddress, poolOrHook } = log.args;
 
     const meta = await getTokenMetadata(tokenAddress);
     if (!meta) continue;
@@ -124,7 +176,7 @@ export async function fetchRecentLaunches(blocksBack = 10000) {
       : {};
 
     launches.push({
-      poolId: id,
+      poolId: poolOrHook,
       tokenAddress,
       name: meta.name,
       symbol: meta.symbol,

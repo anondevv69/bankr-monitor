@@ -15,15 +15,63 @@ The [Doppler Indexer](https://docs.doppler.lol/indexer/overview) indexes Doppler
 | https://testnet-indexer.doppler.lol | Base Sepolia (testnet) |
 | https://indexer.doppler.lol | Base (mainnet) — check availability |
 
+Whetstone Research hosts a free endpoint supporting Base Sepolia for development.
+
 **Pros:** Token metadata, launcher address (`creatorAddress`), volume, holder count  
 **Cons:** Production Base endpoint may be unreliable; no Bankr-specific launcher X handles (those come from Bankr’s own mapping)
 
+#### Indexer API Reference
+
+The indexer exposes data via **GraphQL** (`/graphql`) and **REST** (`/search/:query`).
+
+**GraphQL** — strongly typed; supports queries, filtering, pagination.
+
+Example: top pools by USD liquidity:
+
+```graphql
+query TopPoolsByLiquidity {
+  pools(where: { chainId: 8453 }, orderBy: "dollarLiquidity", orderDirection: "desc", limit: 5) {
+    address
+    dollarLiquidity
+    volumeUsd
+    baseToken { symbol }
+    quoteToken { symbol }
+  }
+}
+```
+
+Example: token details:
+
+```graphql
+query TokenDetails {
+  token(id: "0x...") {
+    address name symbol decimals image volumeUsd holderCount
+    pool { address price }
+  }
+}
+```
+
+**REST** — search tokens by name, symbol, or address:
+
+```bash
+# Search by name/symbol on Base
+curl "https://testnet-indexer.doppler.lol/search/doppler?chain_ids=8453"
+# Search by address
+curl "https://testnet-indexer.doppler.lol/search/0x123...abc?chain_ids=8453,57073"
+```
+
+**Direct SQL (self-hosted indexer only)** — `pnpm db shell` for psql; use the connection string from `.env.local`.
+
+**Indexer events** (what Ponder indexes): `UniswapV3Initializer.Create`, `UniswapV4Initializer.Create`, `Airlock.Migrate`, `UniswapV2Pair.Swap`, pool `Mint`/`Burn`/`Swap`, `DERC20.Transfer`. Supported chains: Base (8453), Base Sepolia (84532), Unichain (130), Ink (57073).
+
 ### 2. Direct Chain Indexing
 
-Index Uniswap V4 `Initialize` events on the PoolManager where `hooks` matches a Doppler hook (Bankr uses Doppler). Fetches token metadata (name, symbol) and tokenURI for X/website links.
+Index Doppler **Airlock** `Create` events on Base. Bankr deploys via Doppler; each token creation emits `Create(asset, ...)`. Fetches token metadata (name, symbol, tokenURI) for X/website links.
 
-**Pros:** Works whenever RPC is available; no external indexer  
-**Cons:** Requires RPC URL; slower for large ranges
+**Pros:** Direct signal from Bankr’s deployment path; works whenever RPC is available  
+**Cons:** Requires RPC URL; Alchemy free tier limits `getLogs` to 10 blocks per request
+
+The notify loop uses **incremental scanning** (persists last block in `.bankr-last-block.json`), so after the first run it only scans new blocks (~20 RPC calls per 5‑min poll instead of ~500).
 
 ### 3. Bankr API
 
@@ -60,7 +108,7 @@ Use `CHAIN_ID=84532` for Base Sepolia (testnet indexer) or `CHAIN_ID=8453` for B
 npm run fetch:chain
 ```
 
-Uses `RPC_URL_BASE` or `RPC_URL`. Optionally set `BLOCKS_BACK` (default 50000).
+Uses `RPC_URL_BASE` or `RPC_URL`. Optionally set `BLOCKS_BACK` (default 50000 for CLI; 5000 for notify loop). **Alchemy Free tier** limits `eth_getLogs` to 10 blocks per request — the chain fallback chunks automatically (`RPC_GETLOGS_CHUNK_SIZE=10`). Set `BLOCKS_BACK=500` to reduce RPC calls if needed.
 
 ### Combined (Indexer → Chain fallback)
 
@@ -152,4 +200,5 @@ Bankr stores `x`, `website`, `tweetUrl`, etc. in the token’s on-chain metadata
 - [Bankr Token Deploy API](https://docs.bankr.bot/token-launching/deploy-api)
 - [Doppler Protocol](https://docs.doppler.lol)
 - [Doppler Indexer](https://github.com/whetstoneresearch/doppler-indexer)
+- [Doppler Indexer API (GraphQL, REST)](https://docs.doppler.lol/indexer/reference)
 - [Doppler Contract Addresses](https://docs.doppler.lol/resources/contract-addresses)
