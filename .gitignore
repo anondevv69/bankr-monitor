@@ -3,3 +3,4 @@ node_modules/
 *.log
 .bankr-seen.json
 .bankr-last-block.json
+.bankr-deploy-counts.json

@@ -29,6 +29,7 @@ const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const SEEN_FILE = process.env.SEEN_FILE || join(process.cwd(), ".bankr-seen.json");
+const DEPLOY_COUNT_FILE = process.env.DEPLOY_COUNT_FILE || join(process.cwd(), ".bankr-deploy-counts.json");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
@@ -231,6 +232,34 @@ async function saveSeen(seen) {
   await writeFile(SEEN_FILE, JSON.stringify([...seen], null, 0));
 }
 
+async function loadDeployCounts() {
+  try {
+    const data = await readFile(DEPLOY_COUNT_FILE, "utf-8");
+    const raw = JSON.parse(data);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (Array.isArray(v)) out[k.toLowerCase()] = new Set(v);
+      else if (typeof v === "number") out[k.toLowerCase()] = new Set(Array(v).fill(null));
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function saveDeployCounts(counts) {
+  try {
+    await mkdir(dirname(DEPLOY_COUNT_FILE), { recursive: true }).catch(() => {});
+    const out = {};
+    for (const [k, v] of Object.entries(counts)) {
+      out[k] = [...v];
+    }
+    await writeFile(DEPLOY_COUNT_FILE, JSON.stringify(out));
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function imageUrl(img) {
   if (!img) return null;
   if (img.startsWith("ipfs://"))
@@ -255,9 +284,14 @@ function farcasterProfileUrl(handle) {
   return `https://warpcast.com/${u}`;
 }
 
+function bankrLaunchUrl(tokenAddress) {
+  return `https://bankr.bot/launches/${tokenAddress}`;
+}
+
 async function sendDiscord(launch) {
   if (!DISCORD_WEBHOOK) return;
-  const url = `${BASESCAN}/token/${launch.tokenAddress}`;
+  const launchUrl = bankrLaunchUrl(launch.tokenAddress);
+  const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
   const img = imageUrl(launch.image);
 
   let launcherValue = "—";
@@ -273,7 +307,7 @@ async function sendDiscord(launch) {
 
   const fields = [
     { name: "Token", value: `${launch.name} ($${launch.symbol})`, inline: true },
-    { name: "CA", value: `[\`${launch.tokenAddress.slice(0, 10)}...\`](${url})`, inline: true },
+    { name: "CA", value: `[\`${launch.tokenAddress.slice(0, 10)}...\`](${basescanTokenUrl})`, inline: true },
     { name: "Launcher", value: launcherValue, inline: false },
   ];
 
@@ -293,6 +327,9 @@ async function sendDiscord(launch) {
     fields.push({ name: "Fee recipient", value: bens.slice(0, 1024) || "—", inline: false });
   }
 
+  if (launch.deployCount != null && launch.deployCount > 1) {
+    fields.push({ name: "Deploys (in feed)", value: `${launch.deployCount}`, inline: true });
+  }
   if (launch.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch.website) fields.push({ name: "Website", value: launch.website, inline: true });
   if (launch.x && !launch.launcherX && !launch.beneficiaries?.some((b) => b.xUsername === launch.x)) {
@@ -301,7 +338,7 @@ async function sendDiscord(launch) {
 
   const embed = {
     title: `New launch: ${launch.name} ($${launch.symbol})`,
-    url,
+    url: launchUrl,
     color: 0x0052ff,
     fields,
     timestamp: new Date().toISOString(),
@@ -322,9 +359,10 @@ function escapeMarkdown(s) {
 
 async function sendTelegram(launch) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return;
-  const url = `${BASESCAN}/token/${launch.tokenAddress}`;
-  let text = `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
-  text += `[View on Basescan](${url})\n`;
+  const launchUrl = bankrLaunchUrl(launch.tokenAddress);
+  const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
+  let text = `[New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n\n`;
+  text += `[View on Bankr](${launchUrl}) | [Basescan](${basescanTokenUrl})\n`;
   text += `*CA:* \`${launch.tokenAddress}\`\n`;
 
   if (launch.launcher) {
@@ -344,6 +382,9 @@ async function sendTelegram(launch) {
     }
   }
 
+  if (launch.deployCount != null && launch.deployCount > 1) {
+    text += `*Deploys (in feed):* ${launch.deployCount}\n`;
+  }
   if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
   if (launch.website) text += `*Website:* ${launch.website}\n`;
 
@@ -378,6 +419,8 @@ async function main() {
   }
 
   const seen = await loadSeen();
+  const deployCounts = await loadDeployCounts();
+
   const source = BANKR_API_KEY && CHAIN_ID === 8453 ? "Bankr API" : `indexer=${DOPPLER_INDEXER_URL}`;
   console.log(`Fetching launches (chainId=${CHAIN_ID}, ${source})...`);
   const launches = await fetchLaunches();
@@ -385,6 +428,15 @@ async function main() {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
     return;
   }
+
+  for (const l of launches) {
+    const addr = l.launcher?.toLowerCase();
+    if (addr && l.tokenAddress) {
+      if (!deployCounts[addr]) deployCounts[addr] = new Set();
+      deployCounts[addr].add(l.tokenAddress.toLowerCase());
+    }
+  }
+  await saveDeployCounts(deployCounts);
 
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
@@ -405,9 +457,11 @@ async function main() {
   });
 
   for (const launch of newLaunches) {
+    const count = launch.launcher ? deployCounts[launch.launcher.toLowerCase()]?.size : null;
+    const enriched = { ...launch, deployCount: count ?? undefined };
     console.log(`Notifying: ${launch.name} ($${launch.symbol})`);
-    await sendDiscord(launch);
-    await sendTelegram(launch);
+    await sendDiscord(enriched);
+    await sendTelegram(enriched);
   }
 
   await saveSeen(seen);

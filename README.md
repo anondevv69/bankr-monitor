@@ -95,6 +95,7 @@ Edit `.env`:
 - `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed.
 - `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
 - `FILTER_X_MATCH` — When `1` or `true`, only notify when deployer and fee recipient share the same X or Farcaster account (reduces spam).
+- `POLL_INTERVAL_MS` — Ms between fetches (default 60000 = 1 min). Use 30000 for 30 sec to catch launches quickly.
 - `RPC_URL_BASE` — Base RPC URL (for chain fallback when indexer fails; only needed if not using Bankr API)
 - `DOPPLER_INDEXER_URL` — optional; defaults to testnet indexer
 
@@ -160,7 +161,7 @@ npm run notify:loop
 npm start
 ```
 
-Set `POLL_INTERVAL_MS` (default 300000 = 5 min) to change poll frequency. Seen tokens are stored in `.bankr-seen.json` to avoid duplicate notifications.
+Set `POLL_INTERVAL_MS` (default 60000 = 1 min) to change poll frequency. Use 30000 for 30 sec to catch launches as they come in. Seen tokens are stored in `.bankr-seen.json` to avoid duplicate notifications.
 
 ## Deploy on Railway
 

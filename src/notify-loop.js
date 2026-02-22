@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "300000", 10);
+const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 
 async function runNotify() {
   return new Promise((resolve, reject) => {
