@@ -93,6 +93,8 @@ cp .env.example .env
 Edit `.env`:
 
 - `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed.
+- `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
+- `FILTER_X_MATCH` — When `1` or `true`, only notify when deployer and fee recipient share the same X or Farcaster account (reduces spam).
 - `RPC_URL_BASE` — Base RPC URL (for chain fallback when indexer fails; only needed if not using Bankr API)
 - `DOPPLER_INDEXER_URL` — optional; defaults to testnet indexer
 

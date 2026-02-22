@@ -23,6 +23,8 @@ import { fetchNewLaunches } from "./fetch-from-chain.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
+const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10);
+const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
@@ -59,38 +61,85 @@ function formatLaunch(t) {
   };
 }
 
+function normX(u) {
+  if (!u || typeof u !== "string") return null;
+  return u.startsWith("@") ? u.slice(1).toLowerCase() : u.toLowerCase();
+}
+
+function normHandle(u) {
+  if (!u || typeof u !== "string") return null;
+  const s = String(u).trim().toLowerCase();
+  return s || null;
+}
+
+function getFarcaster(d) {
+  return d?.farcasterUsername || d?.farcaster || d?.fcUsername || null;
+}
+
 function formatBankrLaunch(l) {
-  const x = l.deployer?.xUsername || l.feeRecipient?.xUsername || null;
+  const rawDeployerX = l.deployer?.xUsername ? (l.deployer.xUsername.startsWith("@") ? l.deployer.xUsername.slice(1) : l.deployer.xUsername) : null;
+  const rawFeeX = l.feeRecipient?.xUsername ? (l.feeRecipient.xUsername.startsWith("@") ? l.feeRecipient.xUsername.slice(1) : l.feeRecipient.xUsername) : null;
+  const rawDeployerFc = getFarcaster(l.deployer);
+  const rawFeeFc = getFarcaster(l.feeRecipient);
+  const deployerX = normX(rawDeployerX);
+  const feeX = normX(rawFeeX);
+  const deployerFc = normHandle(rawDeployerFc);
+  const feeFc = normHandle(rawFeeFc);
+  const x = deployerX || feeX || null;
   return {
     name: l.tokenName,
     symbol: l.tokenSymbol,
     tokenAddress: l.tokenAddress,
     launcher: l.deployer?.walletAddress ?? null,
+    launcherX: rawDeployerX,
+    launcherFarcaster: rawDeployerFc,
+    launcherWallet: l.deployer?.walletAddress ?? null,
     beneficiaries: l.feeRecipient?.walletAddress
-      ? [{ beneficiary: l.feeRecipient.walletAddress }]
+      ? [{ beneficiary: l.feeRecipient.walletAddress, xUsername: rawFeeX, farcaster: rawFeeFc }]
       : null,
     image: l.imageUri || null,
     pool: l.poolId ?? null,
     volumeUsd: null,
     holderCount: null,
-    x: x ? (x.startsWith("@") ? x.slice(1) : x) : null,
+    x: rawDeployerX || rawFeeX || null,
     website: l.websiteUrl || null,
+    tweetUrl: l.tweetUrl || null,
   };
 }
 
 async function fetchFromBankrApi() {
   if (!BANKR_API_KEY) return null;
   try {
-    const res = await fetch("https://api.bankr.bot/token-launches", {
-      headers: {
-        "X-API-Key": BANKR_API_KEY,
-        Accept: "application/json",
-      },
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const launches = json.launches?.filter((l) => l.status === "deployed") ?? [];
-    if (launches.length > 0) return launches.map(formatBankrLaunch);
+    const seen = new Set();
+    const allLaunches = [];
+    const pageSize = 50;
+    let offset = 0;
+
+    while (offset < BANKR_LAUNCHES_LIMIT) {
+      const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
+      const res = await fetch(url, {
+        headers: {
+          "X-API-Key": BANKR_API_KEY,
+          Accept: "application/json",
+        },
+      });
+      if (!res.ok) break;
+      const json = await res.json();
+      const batch = json.launches?.filter((l) => l.status === "deployed") ?? [];
+      if (batch.length === 0) break;
+
+      for (const l of batch) {
+        const key = l.tokenAddress?.toLowerCase();
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          allLaunches.push(l);
+        }
+      }
+      if (batch.length < pageSize) break;
+      offset += batch.length;
+    }
+
+    if (allLaunches.length > 0) return allLaunches.map(formatBankrLaunch);
   } catch {
     /* non-fatal */
   }
@@ -189,23 +238,66 @@ function imageUrl(img) {
   return img;
 }
 
+function walletLink(addr) {
+  if (!addr || typeof addr !== "string") return null;
+  return `${BASESCAN}/address/${addr}`;
+}
+
+function xProfileUrl(handle) {
+  if (!handle || typeof handle !== "string") return null;
+  const u = handle.startsWith("@") ? handle.slice(1) : handle;
+  return `https://x.com/${u}`;
+}
+
+function farcasterProfileUrl(handle) {
+  if (!handle || typeof handle !== "string") return null;
+  const u = String(handle).replace(/^@/, "").replace(/\.eth$/i, "");
+  return `https://warpcast.com/${u}`;
+}
+
 async function sendDiscord(launch) {
   if (!DISCORD_WEBHOOK) return;
   const url = `${BASESCAN}/token/${launch.tokenAddress}`;
   const img = imageUrl(launch.image);
+
+  let launcherValue = "—";
+  if (launch.launcher) {
+    const launcherAddrUrl = walletLink(launch.launcher);
+    const launcherAddrLink = launcherAddrUrl ? `[${launch.launcher}](${launcherAddrUrl})` : `\`${launch.launcher}\``;
+    const parts = [];
+    if (launch.launcherX) parts.push(`**X:** [@${launch.launcherX}](${xProfileUrl(launch.launcherX)})`);
+    if (launch.launcherFarcaster) parts.push(`**Farcaster:** [${launch.launcherFarcaster}](${farcasterProfileUrl(launch.launcherFarcaster)})`);
+    parts.push(`**Wallet:** ${launcherAddrLink}`);
+    launcherValue = parts.join("\n");
+  }
+
   const fields = [
     { name: "Token", value: `${launch.name} ($${launch.symbol})`, inline: true },
     { name: "CA", value: `[\`${launch.tokenAddress.slice(0, 10)}...\`](${url})`, inline: true },
-    { name: "Launcher", value: launch.launcher ? `\`${launch.launcher}\`` : "—", inline: false },
+    { name: "Launcher", value: launcherValue, inline: false },
   ];
+
   if (launch.beneficiaries && launch.beneficiaries.length) {
     const bens = launch.beneficiaries
-      .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b))
-      .join(", ");
-    fields.push({ name: "Fee recipients", value: bens.slice(0, 1024) || "—", inline: false });
+      .map((b) => {
+        const addr = typeof b === "object" ? b.beneficiary || b.address : b;
+        const addrUrl = walletLink(addr);
+        const addrLink = addrUrl ? `[${addr}](${addrUrl})` : `\`${addr}\``;
+        const parts = [];
+        if (b.xUsername) parts.push(`**X:** [@${b.xUsername}](${xProfileUrl(b.xUsername)})`);
+        if (b.farcaster) parts.push(`**Farcaster:** [${b.farcaster}](${farcasterProfileUrl(b.farcaster)})`);
+        parts.push(`**Wallet:** ${addrLink}`);
+        return parts.join("\n");
+      })
+      .join("\n\n");
+    fields.push({ name: "Fee recipient", value: bens.slice(0, 1024) || "—", inline: false });
   }
-  if (launch.x) fields.push({ name: "X", value: launch.x, inline: true });
+
+  if (launch.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch.website) fields.push({ name: "Website", value: launch.website, inline: true });
+  if (launch.x && !launch.launcherX && !launch.beneficiaries?.some((b) => b.xUsername === launch.x)) {
+    fields.push({ name: "X", value: `[@${launch.x}](${xProfileUrl(launch.x)})`, inline: true });
+  }
 
   const embed = {
     title: `New launch: ${launch.name} ($${launch.symbol})`,
@@ -234,15 +326,26 @@ async function sendTelegram(launch) {
   let text = `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
   text += `[View on Basescan](${url})\n`;
   text += `*CA:* \`${launch.tokenAddress}\`\n`;
-  if (launch.launcher) text += `*Launcher:* \`${launch.launcher}\`\n`;
-  if (launch.beneficiaries?.length) {
-    const bens = launch.beneficiaries
-      .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b))
-      .join(", ");
-    text += `*Fee recipients:* ${escapeMarkdown(bens)}\n`;
+
+  if (launch.launcher) {
+    text += `*Launcher:*\n`;
+    if (launch.launcherX) text += `  X: [@${escapeMarkdown(launch.launcherX)}](${xProfileUrl(launch.launcherX)})\n`;
+    if (launch.launcherFarcaster) text += `  Farcaster: [${escapeMarkdown(launch.launcherFarcaster)}](${farcasterProfileUrl(launch.launcherFarcaster)})\n`;
+    text += `  Wallet: [${launch.launcher}](${walletLink(launch.launcher)})\n`;
   }
-  if (launch.x) text += `*X:* ${escapeMarkdown(launch.x)}\n`;
-  if (launch.website) text += `*Website:* ${escapeMarkdown(launch.website)}\n`;
+
+  if (launch.beneficiaries?.length) {
+    text += `*Fee recipient:*\n`;
+    for (const b of launch.beneficiaries) {
+      const addr = typeof b === "object" ? b.beneficiary || b.address : b;
+      if (b.xUsername) text += `  X: [@${escapeMarkdown(b.xUsername)}](${xProfileUrl(b.xUsername)})\n`;
+      if (b.farcaster) text += `  Farcaster: [${escapeMarkdown(b.farcaster)}](${farcasterProfileUrl(b.farcaster)})\n`;
+      text += `  Wallet: [${addr}](${walletLink(addr)})\n`;
+    }
+  }
+
+  if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
+  if (launch.website) text += `*Website:* ${launch.website}\n`;
 
   const img = launch.image ? imageUrl(launch.image) : null;
   const basePayload = { chat_id: TELEGRAM_CHAT, disable_web_page_preview: true };
@@ -286,6 +389,17 @@ async function main() {
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
     if (seen.has(key)) return false;
+
+    if (FILTER_X_MATCH) {
+      const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
+      const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
+      const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
+      const feeFc = l.beneficiaries?.[0]?.farcaster ? normHandle(String(l.beneficiaries[0].farcaster)) : null;
+      const xMatch = deployerX && feeX && deployerX === feeX;
+      const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
+      if (!xMatch && !fcMatch) return false;
+    }
+
     seen.add(key);
     return true;
   });
