@@ -8,10 +8,10 @@ import { createPublicClient, http, parseAbiItem } from "viem";
 import { base } from "viem/chains";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
 
+const PUBLIC_BASE_RPC = "https://mainnet.base.org";
+
 function getRpcUrl() {
-  const url = process.env.RPC_URL_BASE || process.env.RPC_URL;
-  if (!url) throw new Error("Set RPC_URL_BASE or RPC_URL in .env");
-  return url;
+  return process.env.RPC_URL_BASE || process.env.RPC_URL || PUBLIC_BASE_RPC;
 }
 
 const POOL_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b";
