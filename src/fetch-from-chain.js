@@ -29,6 +29,8 @@ const ERC20_ABI = [
 ];
 
 let publicClient;
+let fallbackClient;
+
 function getClient() {
   if (!publicClient) {
     publicClient = createPublicClient({
@@ -37,6 +39,27 @@ function getClient() {
     });
   }
   return publicClient;
+}
+
+function getFallbackClient() {
+  if (!fallbackClient) {
+    fallbackClient = createPublicClient({
+      chain: base,
+      transport: http(PUBLIC_BASE_RPC),
+    });
+  }
+  return fallbackClient;
+}
+
+function isRateLimited(err) {
+  const msg = err?.message || String(err);
+  return msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("rate limit");
+}
+
+const CHUNK_DELAY_MS = parseInt(process.env.RPC_GETLOGS_DELAY_MS || "150", 10);
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function getTokenMetadata(address) {
@@ -100,15 +123,38 @@ async function getLogsChunked(client, fromBlock, toBlock) {
     lo = hi + 1n;
   }
   const allLogs = [];
-  for (const { fromBlock: from, toBlock: to } of chunks) {
-    const logs = await client.getLogs({
-      address: AIRLOCK,
-      event: parseAbiItem(
-        "event Create(address asset, address indexed numeraire, address initializer, address poolOrHook)"
-      ),
-      fromBlock: from,
-      toBlock: to,
-    });
+  const event = parseAbiItem(
+    "event Create(address asset, address indexed numeraire, address initializer, address poolOrHook)"
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0) await sleep(CHUNK_DELAY_MS);
+
+    const { fromBlock: from, toBlock: to } = chunks[i];
+    let logs;
+    try {
+      logs = await client.getLogs({
+        address: AIRLOCK,
+        event,
+        fromBlock: from,
+        toBlock: to,
+      });
+    } catch (err) {
+      if (isRateLimited(err)) {
+        try {
+          logs = await getFallbackClient().getLogs({
+            address: AIRLOCK,
+            event,
+            fromBlock: from,
+            toBlock: to,
+          });
+        } catch {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
     allLogs.push(...logs);
   }
   return allLogs;

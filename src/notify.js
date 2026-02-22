@@ -3,12 +3,15 @@
  * Poll for new Bankr launches and send to Discord webhook + Telegram.
  * Tracks seen tokens to avoid duplicate notifications.
  *
+ * Data sources (in order): Bankr API → Doppler Indexer → Chain (Airlock events)
+ *
  * Env:
- *   DISCORD_WEBHOOK_URL   - Discord webhook URL (optional)
+ *   BANKR_API_KEY        - Bankr API key (recommended: Bankr-only launches, no RPC)
+ *   DISCORD_WEBHOOK_URL  - Discord webhook URL (optional)
  *   TELEGRAM_BOT_TOKEN   - Telegram bot token (optional)
  *   TELEGRAM_CHAT_ID     - Telegram chat/channel ID (optional)
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
- *   DOPPLER_INDEXER_URL  - Indexer URL
+ *   DOPPLER_INDEXER_URL  - Indexer URL (fallback when no Bankr API key)
  *   SEEN_FILE            - Path to store seen tokens (default: .bankr-seen.json)
  */
 
@@ -19,6 +22,7 @@ import { fetchNewLaunches } from "./fetch-from-chain.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
@@ -55,7 +59,50 @@ function formatLaunch(t) {
   };
 }
 
+function formatBankrLaunch(l) {
+  const x = l.deployer?.xUsername || l.feeRecipient?.xUsername || null;
+  return {
+    name: l.tokenName,
+    symbol: l.tokenSymbol,
+    tokenAddress: l.tokenAddress,
+    launcher: l.deployer?.walletAddress ?? null,
+    beneficiaries: l.feeRecipient?.walletAddress
+      ? [{ beneficiary: l.feeRecipient.walletAddress }]
+      : null,
+    image: l.imageUri || null,
+    pool: l.poolId ?? null,
+    volumeUsd: null,
+    holderCount: null,
+    x: x ? (x.startsWith("@") ? x.slice(1) : x) : null,
+    website: l.websiteUrl || null,
+  };
+}
+
+async function fetchFromBankrApi() {
+  if (!BANKR_API_KEY) return null;
+  try {
+    const res = await fetch("https://api.bankr.bot/token-launches", {
+      headers: {
+        "X-API-Key": BANKR_API_KEY,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const launches = json.launches?.filter((l) => l.status === "deployed") ?? [];
+    if (launches.length > 0) return launches.map(formatBankrLaunch);
+  } catch {
+    /* non-fatal */
+  }
+  return null;
+}
+
 async function fetchLaunches() {
+  if (BANKR_API_KEY && CHAIN_ID === 8453) {
+    const bankrLaunches = await fetchFromBankrApi();
+    if (bankrLaunches?.length > 0) return bankrLaunches;
+  }
+
   const query = `
     query Tokens($chainId: Int!) {
       tokens(
@@ -228,7 +275,8 @@ async function main() {
   }
 
   const seen = await loadSeen();
-  console.log(`Fetching launches (chainId=${CHAIN_ID}, indexer=${DOPPLER_INDEXER_URL})...`);
+  const source = BANKR_API_KEY && CHAIN_ID === 8453 ? "Bankr API" : `indexer=${DOPPLER_INDEXER_URL}`;
+  console.log(`Fetching launches (chainId=${CHAIN_ID}, ${source})...`);
   const launches = await fetchLaunches();
   if (!launches?.length) {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
