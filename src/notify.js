@@ -88,12 +88,19 @@ async function fetchLaunches() {
       body: JSON.stringify({ query, variables: { chainId: CHAIN_ID } }),
     }
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.error(`Indexer HTTP ${res.status} from ${DOPPLER_INDEXER_URL}`);
+    return null;
+  }
   const json = await res.json();
-  if (json.errors) return null;
+  if (json.errors) {
+    console.error("Indexer GraphQL errors:", JSON.stringify(json.errors));
+    return null;
+  }
   const items = json.data?.tokens?.items ?? [];
   if (items.length > 0) return items.map(formatLaunch);
 
+  console.error(`Indexer returned 0 tokens for chainId ${CHAIN_ID}. Trying chain fallback...`);
   try {
     const chainLaunches = await fetchRecentLaunches(10000);
     return chainLaunches.map((l) => ({
@@ -109,7 +116,8 @@ async function fetchLaunches() {
       x: l.x || null,
       website: l.website || null,
     }));
-  } catch {
+  } catch (e) {
+    console.error("Chain fallback failed (set RPC_URL_BASE):", e.message);
     return [];
   }
 }
@@ -221,9 +229,10 @@ async function main() {
   }
 
   const seen = await loadSeen();
+  console.log(`Fetching launches (chainId=${CHAIN_ID}, indexer=${DOPPLER_INDEXER_URL})...`);
   const launches = await fetchLaunches();
   if (!launches?.length) {
-    console.log("No launches found");
+    console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
     return;
   }
 
