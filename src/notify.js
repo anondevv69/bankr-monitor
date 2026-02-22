@@ -73,7 +73,7 @@ async function fetchLaunches() {
           image
           creatorAddress
           tokenUriData
-          pool { address, beneficiaries }
+          pool { address }
           volumeUsd
           holderCount
         }
@@ -90,17 +90,16 @@ async function fetchLaunches() {
   );
   if (!res.ok) {
     console.error(`Indexer HTTP ${res.status} from ${DOPPLER_INDEXER_URL}`);
-    return null;
+  } else {
+    const json = await res.json();
+    if (json.errors) {
+      console.error("Indexer GraphQL errors:", JSON.stringify(json.errors));
+    } else {
+      const items = json.data?.tokens?.items ?? [];
+      if (items.length > 0) return items.map(formatLaunch);
+    }
   }
-  const json = await res.json();
-  if (json.errors) {
-    console.error("Indexer GraphQL errors:", JSON.stringify(json.errors));
-    return null;
-  }
-  const items = json.data?.tokens?.items ?? [];
-  if (items.length > 0) return items.map(formatLaunch);
-
-  console.error(`Indexer returned 0 tokens for chainId ${CHAIN_ID}. Trying chain fallback...`);
+  console.error(`Indexer empty/failed for chainId ${CHAIN_ID}. Trying chain fallback...`);
   try {
     const chainLaunches = await fetchRecentLaunches(10000);
     return chainLaunches.map((l) => ({
