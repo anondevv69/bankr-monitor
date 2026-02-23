@@ -90,8 +90,20 @@ async function runNotify() {
 
       for (const launch of newLaunches) {
         const embed = buildLaunchEmbed(launch);
-        if (alertChannel) await alertChannel.send({ embeds: [embed] });
-        if (launch.isWatchMatch && watchChannel && watchChannel.id !== alertChannel?.id) await watchChannel.send({ embeds: [embed] });
+        if (alertChannel) {
+          try {
+            await alertChannel.send({ embeds: [embed] });
+          } catch (e) {
+            console.error(`Alert channel ${ALERT_CHANNEL_ID} failed:`, e.message);
+          }
+        }
+        if (launch.isWatchMatch && watchChannel && watchChannel.id !== alertChannel?.id) {
+          try {
+            await watchChannel.send({ embeds: [embed] });
+          } catch (e) {
+            console.error(`Watch channel ${WATCH_ALERT_CHANNEL_ID} failed:`, e.message, "- Check bot has Send Messages + Embed Links in that channel.");
+          }
+        }
         await sendTelegram(launch);
       }
     } catch (e) {

@@ -162,12 +162,18 @@ Notify on new launches via Discord bot channel (recommended) or webhook, and/or 
 
 ### Discord bot channel (recommended for /watch)
 
-When using the Discord bot (`npm start`) with `/watch add`, set **DISCORD_ALERT_CHANNEL_ID** (and optionally **DISCORD_WATCH_ALERT_CHANNEL_ID**) so alerts post to a channel instead of the webhook. Right-click the channel → Copy channel ID (enable Developer Mode in Discord settings).
+When using the Discord bot (`npm start`) with `/watch add`, set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
 
-- **DISCORD_ALERT_CHANNEL_ID** — All new launch alerts (regular feed) go here
-- **DISCORD_WATCH_ALERT_CHANNEL_ID** — Watch-list matches only (wallet/X/Farcaster/keyword); use this for a filtered feed alongside the regular feed
+**Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 
-If neither is set, the bot spawns `notify.js`, which uses the webhook.
+**Two feeds:**
+
+| Variable | Purpose |
+|----------|---------|
+| **DISCORD_ALERT_CHANNEL_ID** | **Real-time deployments** — all new Bankr tokens, always on |
+| **DISCORD_WATCH_ALERT_CHANNEL_ID** | **Watch list only** — only tokens matching your wallet/X/Farcaster/keyword list, elsewhere |
+
+Use two different channels so you get every deployment in one place and your watch-list pings in another.
 
 ### Setup
 
@@ -201,7 +207,7 @@ npm run notify:loop
 npm start
 ```
 
-Set `POLL_INTERVAL_MS` (default 60000 = 1 min) to change poll frequency. Use 30000 for 30 sec to catch launches as they come in. Seen tokens are stored in `.bankr-seen.json` to avoid duplicate notifications.
+Set `POLL_INTERVAL_MS` (default 60000 = 1 min) to change poll frequency. Use 30000 for 30 sec to catch launches as they come in; for watch-list alerts, 20000–30000 reduces the chance of missing a deploy that appears between polls. Seen tokens are stored in `.bankr-seen.json` to avoid duplicate notifications.
 
 ## Deploy on Railway
 
@@ -225,8 +231,8 @@ Railway containers use an **ephemeral filesystem** by default. To persist the se
 1. Add a **Volume** to your service (e.g. mount path `/data`).
 2. Set variables:
    - `WATCH_FILE=/data/bankr-watch.json` — watch list (X, Farcaster, wallet, keywords)
-   - `SEEN_FILE=/data/bankr-seen.json` — tokens we've already notified on (stops "0 new" after restarts)
-3. Optional: if you still get "0 new" after long runs, set `SEEN_MAX_KEYS=3000` so the seen list is capped and newer launches can be detected again (may cause rare duplicate pings for very old tokens).
+   - `SEEN_FILE=/data/bankr-seen.json` — path on a **volume** so the seen list persists across deploys (stops "50 pings then 0 new" on every restart).
+3. Optional: `SEEN_MAX_KEYS` defaults to **50** (rolling window). New launches are detected as long as the API returns newest-first. Set higher (e.g. `3000`) to avoid any duplicate pings for very old tokens.
 
 ## Output Fields
 
