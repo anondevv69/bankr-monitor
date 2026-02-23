@@ -83,6 +83,34 @@ The notify loop uses **incremental scanning** (persists last block in `.bankr-la
 
 Bankr has a [Token Deploy API](https://docs.bankr.bot/token-launching/deploy-api) for **creating** tokens. API keys from [bankr.bot/api](https://bankr.bot/api) also work for **listing** launches via `GET /token-launches` (see source 1 above).
 
+## Lookup: tokens by wallet, X, or Farcaster
+
+Find Bankr tokens where a given wallet is deployer or fee recipient, or where an X/Farcaster handle is associated:
+
+```bash
+BANKR_API_KEY=bk_xxx npm run lookup -- 0x62Bcefd446f97526ECC1375D02e014cFb8b48BA3
+npm run lookup -- @vyrozas
+npm run lookup -- dwr.eth
+```
+
+Searches the most recent launches (up to `BANKR_LAUNCHES_LIMIT`, default 500). The Bankr API does not support server-side filtering by deployer, so the script fetches and filters client-side.
+
+## Fees: claimed vs unclaimed ETH
+
+**Whether a token’s fees have been claimed** and **how much ETH is claimable** are not exposed by the Bankr REST API. Use Bankr’s own tools:
+
+- **In Bankr (app/bot):** e.g. *“check my fees for TokenName”*, *“show my unclaimed fees”*, *“show all my tokens with unclaimed fees”*.
+- **Bankr CLI:** [Claiming Fees](https://docs.bankr.bot/token-launching/claiming-fees) describes the fee dashboard and claiming:
+  ```bash
+  npm install -g @bankr/cli
+  bankr fees                    # fee dashboard
+  bankr fees --token 0x...      # fees for one token
+  bankr fees --json             # raw JSON for scripting
+  bankr fees claim 0x...        # claim fees for token
+  ```
+
+Only the current fee beneficiary can claim; you receive your token + WETH from the 1.2% swap fee (creator share 57%).
+
 ## Setup
 
 ```bash
