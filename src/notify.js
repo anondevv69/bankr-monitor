@@ -290,8 +290,8 @@ function bankrLaunchUrl(tokenAddress) {
   return `https://bankr.bot/launches/${tokenAddress}`;
 }
 
-async function sendDiscord(launch) {
-  if (!DISCORD_WEBHOOK) return;
+/** Build launch embed (for webhook or bot). Exported for discord-bot. */
+export function buildLaunchEmbed(launch) {
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
   const img = imageUrl(launch.image);
@@ -346,7 +346,12 @@ async function sendDiscord(launch) {
     timestamp: new Date().toISOString(),
   };
   if (img) embed.thumbnail = { url: img };
+  return embed;
+}
 
+async function sendDiscordWebhook(launch) {
+  if (!DISCORD_WEBHOOK) return;
+  const embed = buildLaunchEmbed(launch);
   await fetch(DISCORD_WEBHOOK, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -359,7 +364,7 @@ function escapeMarkdown(s) {
   return s.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
 }
 
-async function sendTelegram(launch) {
+export async function sendTelegram(launch) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
@@ -412,14 +417,8 @@ async function sendTelegram(launch) {
   }
 }
 
-async function main() {
-  if (!DISCORD_WEBHOOK && !(TELEGRAM_TOKEN && TELEGRAM_CHAT)) {
-    console.error(
-      "Set DISCORD_WEBHOOK_URL and/or TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID"
-    );
-    process.exit(1);
-  }
-
+/** Run one notify cycle: fetch, filter, update seen. Returns new launches (enriched) and whether they are watch-list matches. */
+export async function runNotifyCycle() {
   const seen = await loadSeen();
   const deployCounts = await loadDeployCounts();
 
@@ -428,7 +427,7 @@ async function main() {
   const launches = await fetchLaunches();
   if (!launches?.length) {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
-    return;
+    return { newLaunches: [], totalCount: 0 };
   }
 
   for (const l of launches) {
@@ -482,16 +481,31 @@ async function main() {
     return true;
   });
 
-  for (const launch of newLaunches) {
+  const enriched = newLaunches.map((launch) => {
     const count = launch.launcher ? deployCounts[launch.launcher.toLowerCase()]?.size : null;
-    const enriched = { ...launch, deployCount: count ?? undefined };
-    console.log(`Notifying: ${launch.name} ($${launch.symbol})`);
-    await sendDiscord(enriched);
-    await sendTelegram(enriched);
-  }
+    return { ...launch, deployCount: count ?? undefined };
+  });
 
   await saveSeen(seen);
-  console.log(`Done. ${newLaunches.length} new, ${launches.length} total.`);
+  const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
+  for (const l of enriched) console.log(`Notifying: ${l.name} ($${l.symbol})`);
+  console.log(`Done. ${enriched.length} new, ${launches.length} total.`);
+  return { newLaunches: enriched, totalCount: launches.length, isWatchMatch: hasWatchList };
+}
+
+async function main() {
+  if (!DISCORD_WEBHOOK && !(TELEGRAM_TOKEN && TELEGRAM_CHAT)) {
+    console.error(
+      "Set DISCORD_WEBHOOK_URL and/or TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID"
+    );
+    process.exit(1);
+  }
+
+  const { newLaunches } = await runNotifyCycle();
+  for (const launch of newLaunches) {
+    await sendDiscordWebhook(launch);
+    await sendTelegram(launch);
+  }
 }
 
 main().catch((e) => {

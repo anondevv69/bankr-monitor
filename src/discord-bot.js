@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
  * Discord bot with /watch commands to manage the Bankr launch watch list.
- * Add/remove X and Farcaster users, list current watchers.
- * Runs the notify loop in the background.
+ * Add/remove X, Farcaster, wallet, keyword watchers. Runs the notify loop in the background.
+ * Launch alerts are posted by the bot to DISCORD_ALERT_CHANNEL_ID or DISCORD_WATCH_ALERT_CHANNEL_ID (not webhook).
  *
- * Env: DISCORD_BOT_TOKEN (required), plus all notify.js vars
+ * Env: DISCORD_BOT_TOKEN (required)
+ *   DISCORD_ALERT_CHANNEL_ID    - channel for all launch alerts (fallback)
+ *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword); use this to separate watch alerts from webhook deployments
  */
 
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
@@ -12,10 +14,13 @@ import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
+import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
+const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
+const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 
 if (!TOKEN) {
@@ -76,19 +81,45 @@ async function registerCommands(appId) {
 }
 
 async function runNotify() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      [join(__dirname, "notify.js")],
-      { stdio: "inherit", env: process.env }
-    );
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
-  });
+  const hasChannel = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  if (hasChannel) {
+    try {
+      const { newLaunches, isWatchMatch } = await runNotifyCycle();
+      const channelId = (isWatchMatch && WATCH_ALERT_CHANNEL_ID) ? WATCH_ALERT_CHANNEL_ID : (ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID);
+      const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
+      if (!channel) return;
+      for (const launch of newLaunches) {
+        const embed = buildLaunchEmbed(launch);
+        await channel.send({ embeds: [embed] });
+        await sendTelegram(launch);
+      }
+    } catch (e) {
+      console.error("Notify failed:", e.message);
+    }
+  } else {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [join(__dirname, "notify.js")],
+        { stdio: "inherit", env: process.env }
+      );
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+    });
+  }
 }
 
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands(client.application.id);
+  if (WATCH_ALERT_CHANNEL_ID) {
+    console.log(`Watch-list alerts will post to channel ${WATCH_ALERT_CHANNEL_ID}`);
+  }
+  if (ALERT_CHANNEL_ID) {
+    console.log(`Launch alerts will post to channel ${ALERT_CHANNEL_ID}`);
+  }
+  if (!ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
+    console.log("DISCORD_ALERT_CHANNEL_ID and DISCORD_WATCH_ALERT_CHANNEL_ID not set; falling back to webhook (notify.js)");
+  }
 
   setInterval(() => {
     runNotify().catch((e) => console.error("Notify failed:", e.message));

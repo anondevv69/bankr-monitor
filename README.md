@@ -130,11 +130,20 @@ Outputs JSON. Without `OUTPUT_JSON=1`, outputs a compact JSON array.
 
 ## Discord & Telegram Notifications
 
-Notify on new launches via Discord webhook and/or Telegram bot.
+Notify on new launches via Discord bot channel (recommended) or webhook, and/or Telegram bot.
+
+### Discord bot channel (recommended for /watch)
+
+When using the Discord bot (`npm start`) with `/watch add`, set **DISCORD_ALERT_CHANNEL_ID** (and optionally **DISCORD_WATCH_ALERT_CHANNEL_ID**) so alerts post to a channel instead of the webhook. Right-click the channel → Copy channel ID (enable Developer Mode in Discord settings).
+
+- **DISCORD_ALERT_CHANNEL_ID** — All launch alerts go here
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** — Dedicated channel for watch-list matches (wallet/X/Farcaster/keyword); use this to separate watch alerts from other webhook deployments
+
+If neither is set, the bot spawns `notify.js`, which uses the webhook.
 
 ### Setup
 
-1. **Discord webhook**
+1. **Discord webhook** (when not using DISCORD_ALERT_CHANNEL_ID or DISCORD_WATCH_ALERT_CHANNEL_ID)
    - Server → Server Settings → Integrations → Webhooks → New Webhook
    - Copy the webhook URL
 
@@ -172,7 +181,7 @@ Set `POLL_INTERVAL_MS` (default 60000 = 1 min) to change poll frequency. Use 300
 
 1. Create a new project on [Railway](https://railway.app)
 2. Connect this repo
-3. Add variables: `BANKR_API_KEY` (recommended), `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CHAIN_ID`
+3. Add variables: `BANKR_API_KEY` (recommended), `DISCORD_BOT_TOKEN`, `DISCORD_ALERT_CHANNEL_ID` or `DISCORD_WATCH_ALERT_CHANNEL_ID` (for watch-list alerts), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CHAIN_ID`
 4. Set start command: `npm start` (or leave default — uses `npm start`)
 5. Deploy; the worker runs and polls every 5 minutes
 
