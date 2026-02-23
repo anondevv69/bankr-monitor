@@ -31,6 +31,7 @@ const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const SEEN_FILE = process.env.SEEN_FILE || join(process.cwd(), ".bankr-seen.json");
+const SEEN_MAX_KEYS = process.env.SEEN_MAX_KEYS ? parseInt(process.env.SEEN_MAX_KEYS, 10) : null;
 const DEPLOY_COUNT_FILE = process.env.DEPLOY_COUNT_FILE || join(process.cwd(), ".bankr-deploy-counts.json");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -119,14 +120,18 @@ async function fetchFromBankrApi() {
     let offset = 0;
 
     while (offset < BANKR_LAUNCHES_LIMIT) {
-      const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
+      const orderParam = offset === 0 ? "&order=desc" : "";
+      const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}${orderParam}`;
       const res = await fetch(url, {
         headers: {
           "X-API-Key": BANKR_API_KEY,
           Accept: "application/json",
         },
       });
-      if (!res.ok) break;
+      if (!res.ok) {
+        console.error(`[Bankr API] ${res.status} ${res.statusText}: ${url}`);
+        break;
+      }
       const json = await res.json();
       const batch = json.launches?.filter((l) => l.status === "deployed") ?? [];
       if (batch.length === 0) break;
@@ -143,8 +148,8 @@ async function fetchFromBankrApi() {
     }
 
     if (allLaunches.length > 0) return allLaunches.map(formatBankrLaunch);
-  } catch {
-    /* non-fatal */
+  } catch (e) {
+    console.error("[Bankr API] Error:", e.message || e);
   }
   return null;
 }
@@ -223,7 +228,12 @@ async function fetchLaunches() {
 async function loadSeen() {
   try {
     const data = await readFile(SEEN_FILE, "utf-8");
-    return new Set(JSON.parse(data));
+    const arr = JSON.parse(data);
+    if (!Array.isArray(arr)) return new Set();
+    const keys = SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && arr.length > SEEN_MAX_KEYS
+      ? arr.slice(-SEEN_MAX_KEYS)
+      : arr;
+    return new Set(keys);
   } catch {
     return new Set();
   }
@@ -231,7 +241,11 @@ async function loadSeen() {
 
 async function saveSeen(seen) {
   await mkdir(dirname(SEEN_FILE), { recursive: true }).catch(() => {});
-  await writeFile(SEEN_FILE, JSON.stringify([...seen], null, 0));
+  const arr = [...seen];
+  const toSave = SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && arr.length > SEEN_MAX_KEYS
+    ? arr.slice(-SEEN_MAX_KEYS)
+    : arr;
+  await writeFile(SEEN_FILE, JSON.stringify(toSave, null, 0));
 }
 
 async function loadDeployCounts() {
@@ -429,6 +443,7 @@ export async function runNotifyCycle() {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
     return { newLaunches: [], totalCount: 0 };
   }
+  console.log(`Fetched ${launches.length} launches (seen set: ${seen.size})`);
 
   for (const l of launches) {
     const addr = l.launcher?.toLowerCase();
@@ -441,28 +456,13 @@ export async function runNotifyCycle() {
 
   const { x: watchX, fc: watchFc, wallet: watchWallet, keywords: watchKeywords } = await getWatchList();
 
+  const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
+
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
     if (seen.has(key)) return false;
 
-    const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
-    if (hasWatchList) {
-      const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
-      const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
-      const launcherAddr = l.launcher ? l.launcher.toLowerCase() : null;
-      const feeAddrs = (l.beneficiaries || [])
-        .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b)?.toLowerCase?.())
-        .filter(Boolean);
-      const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
-      const searchText = `${l.name || ""} ${l.symbol || ""}`.toLowerCase();
-      const inWatchX = deployerX && watchX.has(deployerX);
-      const inWatchFc = deployerFc && watchFc.has(deployerFc);
-      const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
-      const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some(
-        (kw) => searchText.includes(kw.toLowerCase())
-      );
-      if (!inWatchX && !inWatchFc && !inWatchWallet && !inWatchKeyword) return false;
-    } else if (FILTER_X_MATCH) {
+    if (!hasWatchList && FILTER_X_MATCH) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
       const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
@@ -481,16 +481,33 @@ export async function runNotifyCycle() {
     return true;
   });
 
+  function isWatchMatch(launch) {
+    const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
+    const deployerFc = launch.launcherFarcaster ? normHandle(String(launch.launcherFarcaster)) : null;
+    const launcherAddr = launch.launcher ? launch.launcher.toLowerCase() : null;
+    const feeAddrs = (launch.beneficiaries || [])
+      .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b)?.toLowerCase?.())
+      .filter(Boolean);
+    const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
+    const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
+    const inWatchX = deployerX && watchX.has(deployerX);
+    const inWatchFc = deployerFc && watchFc.has(deployerFc);
+    const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
+    const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some(
+      (kw) => searchText.includes(String(kw).toLowerCase().trim())
+    );
+    return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
+  }
+
   const enriched = newLaunches.map((launch) => {
     const count = launch.launcher ? deployCounts[launch.launcher.toLowerCase()]?.size : null;
-    return { ...launch, deployCount: count ?? undefined };
+    return { ...launch, deployCount: count ?? undefined, isWatchMatch: isWatchMatch(launch) };
   });
 
   await saveSeen(seen);
-  const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
-  for (const l of enriched) console.log(`Notifying: ${l.name} ($${l.symbol})`);
-  console.log(`Done. ${enriched.length} new, ${launches.length} total.`);
-  return { newLaunches: enriched, totalCount: launches.length, isWatchMatch: hasWatchList };
+  for (const l of enriched) console.log(`Notifying: ${l.name} ($${l.symbol})${l.isWatchMatch ? " [watch]" : ""}`);
+  console.log(`Done. ${enriched.length} new, ${launches.length} total (seen: ${seen.size}). Set SEEN_FILE=/data/bankr-seen.json on your volume so seen list persists across deploys.`);
+  return { newLaunches: enriched, totalCount: launches.length };
 }
 
 async function main() {

@@ -136,8 +136,8 @@ Notify on new launches via Discord bot channel (recommended) or webhook, and/or 
 
 When using the Discord bot (`npm start`) with `/watch add`, set **DISCORD_ALERT_CHANNEL_ID** (and optionally **DISCORD_WATCH_ALERT_CHANNEL_ID**) so alerts post to a channel instead of the webhook. Right-click the channel → Copy channel ID (enable Developer Mode in Discord settings).
 
-- **DISCORD_ALERT_CHANNEL_ID** — All launch alerts go here
-- **DISCORD_WATCH_ALERT_CHANNEL_ID** — Dedicated channel for watch-list matches (wallet/X/Farcaster/keyword); use this to separate watch alerts from other webhook deployments
+- **DISCORD_ALERT_CHANNEL_ID** — All new launch alerts (regular feed) go here
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** — Watch-list matches only (wallet/X/Farcaster/keyword); use this for a filtered feed alongside the regular feed
 
 If neither is set, the bot spawns `notify.js`, which uses the webhook.
 
@@ -192,7 +192,13 @@ Set `POLL_INTERVAL_MS` (default 60000 = 1 min) to change poll frequency. Use 300
 3. Command: `npm run notify`
 4. Add the same env vars
 
-Railway provides persistent storage by default, so `.bankr-seen.json` persists across restarts.
+Railway containers use an **ephemeral filesystem** by default. To persist the seen list and watch list across deploys:
+
+1. Add a **Volume** to your service (e.g. mount path `/data`).
+2. Set variables:
+   - `WATCH_FILE=/data/bankr-watch.json` — watch list (X, Farcaster, wallet, keywords)
+   - `SEEN_FILE=/data/bankr-seen.json` — tokens we've already notified on (stops "0 new" after restarts)
+3. Optional: if you still get "0 new" after long runs, set `SEEN_MAX_KEYS=3000` so the seen list is capped and newer launches can be detected again (may cause rare duplicate pings for very old tokens).
 
 ## Output Fields
 

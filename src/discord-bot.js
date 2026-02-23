@@ -84,13 +84,14 @@ async function runNotify() {
   const hasChannel = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
   if (hasChannel) {
     try {
-      const { newLaunches, isWatchMatch } = await runNotifyCycle();
-      const channelId = (isWatchMatch && WATCH_ALERT_CHANNEL_ID) ? WATCH_ALERT_CHANNEL_ID : (ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID);
-      const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
-      if (!channel) return;
+      const { newLaunches } = await runNotifyCycle();
+      const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
+      const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
+
       for (const launch of newLaunches) {
         const embed = buildLaunchEmbed(launch);
-        await channel.send({ embeds: [embed] });
+        if (alertChannel) await alertChannel.send({ embeds: [embed] });
+        if (launch.isWatchMatch && watchChannel && watchChannel.id !== alertChannel?.id) await watchChannel.send({ embeds: [embed] });
         await sendTelegram(launch);
       }
     } catch (e) {
