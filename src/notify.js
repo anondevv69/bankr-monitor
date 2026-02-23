@@ -31,7 +31,7 @@ const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const SEEN_FILE = process.env.SEEN_FILE || join(process.cwd(), ".bankr-seen.json");
-const SEEN_MAX_KEYS = process.env.SEEN_MAX_KEYS != null ? parseInt(process.env.SEEN_MAX_KEYS, 10) : 50;
+const SEEN_MAX_KEYS = process.env.SEEN_MAX_KEYS != null ? parseInt(process.env.SEEN_MAX_KEYS, 10) : null;
 const DEPLOY_COUNT_FILE = process.env.DEPLOY_COUNT_FILE || join(process.cwd(), ".bankr-deploy-counts.json");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -230,8 +230,9 @@ async function loadSeen() {
     const data = await readFile(SEEN_FILE, "utf-8");
     const arr = JSON.parse(data);
     if (!Array.isArray(arr)) return [];
-    const max = SEEN_MAX_KEYS > 0 ? SEEN_MAX_KEYS : 50;
-    return arr.length > max ? arr.slice(-max) : arr;
+    if (SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && arr.length > SEEN_MAX_KEYS)
+      return arr.slice(-SEEN_MAX_KEYS);
+    return arr;
   } catch {
     return [];
   }
@@ -239,8 +240,9 @@ async function loadSeen() {
 
 async function saveSeen(seenArr) {
   await mkdir(dirname(SEEN_FILE), { recursive: true }).catch(() => {});
-  const max = SEEN_MAX_KEYS > 0 ? SEEN_MAX_KEYS : 50;
-  const toSave = seenArr.length > max ? seenArr.slice(-max) : seenArr;
+  const toSave = SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && seenArr.length > SEEN_MAX_KEYS
+    ? seenArr.slice(-SEEN_MAX_KEYS)
+    : seenArr;
   await writeFile(SEEN_FILE, JSON.stringify(toSave, null, 0));
 }
 
@@ -439,7 +441,7 @@ export async function runNotifyCycle() {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
     return { newLaunches: [], totalCount: 0 };
   }
-  console.log(`Fetched ${launches.length} launches (seen window: ${seenArr.length}, max ${SEEN_MAX_KEYS})`);
+  console.log(`Fetched ${launches.length} launches (seen: ${seenArr.length}${SEEN_MAX_KEYS != null ? `, max ${SEEN_MAX_KEYS}` : ""})`);
 
   for (const l of launches) {
     const addr = l.launcher?.toLowerCase();
@@ -458,7 +460,7 @@ export async function runNotifyCycle() {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
     if (seenArr.includes(key)) return false;
 
-    if (!hasWatchList && FILTER_X_MATCH) {
+    if (FILTER_X_MATCH) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
       const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
@@ -474,7 +476,7 @@ export async function runNotifyCycle() {
     }
 
     seenArr.push(key);
-    if (seenArr.length > SEEN_MAX_KEYS) seenArr.shift();
+    if (SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && seenArr.length > SEEN_MAX_KEYS) seenArr.shift();
     return true;
   });
 
@@ -503,7 +505,7 @@ export async function runNotifyCycle() {
 
   await saveSeen(seenArr);
   for (const l of enriched) console.log(`Notifying: ${l.name} ($${l.symbol})${l.isWatchMatch ? " [watch]" : ""}`);
-  console.log(`Done. ${enriched.length} new, ${launches.length} total (seen window: ${seenArr.length}). Set SEEN_FILE=/data/bankr-seen.json to persist across deploys.`);
+  console.log(`Done. ${enriched.length} new, ${launches.length} total (seen: ${seenArr.length}). Set SEEN_FILE=/data/bankr-seen.json on a volume so seen list persists across deploys.`);
   return { newLaunches: enriched, totalCount: launches.length };
 }
 

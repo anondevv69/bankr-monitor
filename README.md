@@ -122,7 +122,7 @@ Edit `.env`:
 
 - `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed.
 - `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
-- `FILTER_X_MATCH` — When `1` or `true`, only notify when deployer and fee recipient share the same X or Farcaster account (reduces spam).
+- `FILTER_X_MATCH` — When `1` or `true`, the **main/alert feed** only notifies when deployer and fee recipient share the same X or Farcaster account (reduces spam). Watch-list matches are unchanged and still post to the watch channel.
 - `FILTER_MAX_DEPLOYS` — Max deploy count for launcher; skip if they've launched more (e.g. `2` = only first or second launch).
 - `WATCH_X_USERS` — Comma-separated X handles; only notify when deployer's X is in this list (e.g. `thryxagi,crewdegen`).
 - `WATCH_FC_USERS` — Comma-separated Farcaster handles; only notify when deployer's Farcaster is in this list (e.g. `dwr.eth,vitalik.eth`).
@@ -232,7 +232,7 @@ Railway containers use an **ephemeral filesystem** by default. To persist the se
 2. Set variables:
    - `WATCH_FILE=/data/bankr-watch.json` — watch list (X, Farcaster, wallet, keywords)
    - `SEEN_FILE=/data/bankr-seen.json` — path on a **volume** so the seen list persists across deploys (stops "50 pings then 0 new" on every restart).
-3. Optional: `SEEN_MAX_KEYS` defaults to **50** (rolling window). New launches are detected as long as the API returns newest-first. Set higher (e.g. `3000`) to avoid any duplicate pings for very old tokens.
+3. Optional: `SEEN_MAX_KEYS` — cap the seen list (e.g. `3000`) to limit file size; if unset, the list is unbounded and each token is only ever notified once.
 
 ## Output Fields
 
