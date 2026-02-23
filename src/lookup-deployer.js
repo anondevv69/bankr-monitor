@@ -208,7 +208,10 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const isRunDirectly = process.argv[1]?.includes("lookup-deployer");
+if (isRunDirectly) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
