@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "dotenv/config";
 /**
  * Discord bot with /watch commands to manage the Bankr launch watch list.
  * Add/remove X, Farcaster, wallet, keyword watchers. Runs the notify loop in the background.
@@ -15,6 +16,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
+import { lookupByDeployerOrFee } from "./lookup-deployer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +71,16 @@ async function registerCommands(appId) {
           )
       )
       .addSubcommand((s) => s.setName("list").setDescription("Show current watch list"))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("lookup")
+      .setDescription("Search Bankr token launches by wallet, X handle, or Farcaster")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("Wallet (0x...), X handle (@user or user), or Farcaster (e.g. dwr.eth)")
+          .setRequired(true)
+      )
       .toJSON(),
   ];
 
@@ -141,7 +153,39 @@ client.once("ready", async () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "watch") return;
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === "lookup") {
+    const query = interaction.options.getString("query");
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const { matches, normalized } = await lookupByDeployerOrFee(query);
+      const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}`;
+      if (matches.length === 0) {
+        await interaction.editReply({
+          content: `No Bankr tokens found for **${query}** (normalized: \`${normalized}\`).\nFull search: ${searchUrl}`,
+        });
+        return;
+      }
+      const embed = {
+        color: 0x0052_ff,
+        title: `Bankr lookup: ${query}`,
+        description: `${matches.length} token(s) · [Full list on site](${searchUrl})`,
+        fields: matches.slice(0, 25).map((m) => ({
+          name: `${m.tokenName} ($${m.tokenSymbol})`,
+          value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
+          inline: true,
+        })),
+        footer: matches.length > 25 ? { text: `Showing 25 of ${matches.length}` } : undefined,
+      };
+      await interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      await interaction.editReply({ content: `Lookup failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName !== "watch") return;
 
   const sub = interaction.options.getSubcommand();
   const type = interaction.options.getString("type");

@@ -160,9 +160,12 @@ Outputs JSON. Without `OUTPUT_JSON=1`, outputs a compact JSON array.
 
 Notify on new launches via Discord bot channel (recommended) or webhook, and/or Telegram bot.
 
-### Discord bot channel (recommended for /watch)
+### Discord bot channel (recommended for /watch and /lookup)
 
-When using the Discord bot (`npm start`) with `/watch add`, set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
+When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
+
+- **/watch** — Manage the launch watch list (add/remove X, Farcaster, wallet, keyword).
+- **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.
 
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 

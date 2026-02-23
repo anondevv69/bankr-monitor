@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
  * Look up Bankr token launches by deployer or fee recipient: wallet, X handle, or Farcaster handle.
- * Fetches from Bankr API and filters client-side (API has no filter param).
+ * Uses Bankr search API (same as bankr.bot/launches/search) when possible; falls back to paginated list + filter.
  *
  * Usage: node src/lookup-deployer.js <wallet|@xhandle|farcaster>
  * Example: node src/lookup-deployer.js 0x62Bcefd446f97526ECC1375D02e014cFb8b48BA3
  *          node src/lookup-deployer.js @vyrozas
  *          node src/lookup-deployer.js dwr.eth
  *
- * Env: BANKR_API_KEY (required)
+ * Env: BANKR_API_KEY (required for fallback; search may work without it).
  */
 
+import "dotenv/config";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -18,6 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10);
+const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 
 function norm(s) {
   if (!s || typeof s !== "string") return null;
@@ -27,6 +29,49 @@ function norm(s) {
 
 function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
+}
+
+/** Fetch from Bankr search API (same as bankr.bot/launches/search). Returns raw launch objects or null on failure. */
+async function fetchSearch(query) {
+  const q = encodeURIComponent(String(query).trim());
+  if (!q) return null;
+  const seen = new Set();
+  const out = [];
+  let offset = 0;
+  const pageSize = 10;
+  let totalCount = 0;
+
+  try {
+    while (true) {
+      const url = `${SEARCH_API}?q=${q}&limit=${pageSize}&offset=${offset}`;
+      const res = await fetch(url, {
+        headers: { Accept: "application/json", ...(BANKR_API_KEY && { "X-API-Key": BANKR_API_KEY }) },
+      });
+      if (!res.ok) break;
+      const json = await res.json();
+      const byDeployer = json.groups?.byDeployer?.results ?? [];
+      const byFee = json.groups?.byFeeRecipient?.results ?? [];
+      const total = json.groups?.byDeployer?.totalCount ?? json.groups?.byFeeRecipient?.totalCount ?? 0;
+      if (total > totalCount) totalCount = total;
+
+      let added = 0;
+      for (const l of [...byDeployer, ...byFee]) {
+        if (l.status !== "deployed") continue;
+        const key = l.tokenAddress?.toLowerCase();
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          out.push(l);
+          added++;
+        }
+      }
+      if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
+      offset += pageSize;
+      if (byDeployer.length < pageSize && byFee.length < pageSize) break;
+    }
+    return out.length ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Fetch launches from Bankr API (paginated). Returns raw launch objects. */
@@ -100,13 +145,18 @@ export async function lookupByDeployerOrFee(query) {
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) return { matches: [], query: query };
 
-  const launches = await fetchAllLaunches();
-  const matches = launches.filter((l) => launchMatches(l, normalized, isWalletQuery));
+  let launches = await fetchSearch(query);
+  if (!launches || launches.length === 0) {
+    launches = await fetchAllLaunches();
+    launches = launches.filter((l) => launchMatches(l, normalized, isWalletQuery));
+  } else {
+    launches = launches.filter((l) => launchMatches(l, normalized, isWalletQuery));
+  }
 
   return {
     query,
     normalized,
-    matches: matches.map((l) => ({
+    matches: launches.map((l) => ({
       tokenAddress: l.tokenAddress,
       tokenName: l.tokenName ?? "—",
       tokenSymbol: l.tokenSymbol ?? "—",
@@ -131,18 +181,16 @@ async function main() {
     process.exit(1);
   }
 
-  if (!BANKR_API_KEY) {
-    console.error("BANKR_API_KEY is required.");
-    process.exit(1);
-  }
-
   const { matches, normalized } = await lookupByDeployerOrFee(query);
   console.log(`Query: ${query} (normalized: ${normalized})`);
   console.log(`Matches: ${matches.length} token(s)\n`);
+  if (matches.length > 0) {
+    console.log(`Full list on site: https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}\n`);
+  }
 
   if (matches.length === 0) {
     console.log("No Bankr tokens found for this wallet, X handle, or Farcaster handle.");
-    console.log("(Searches the most recent launches; try a different spelling or check bankr.bot/launches)");
+    console.log("Try bankr.bot/launches/search?q=<your-query> or set BANKR_API_KEY in .env for fallback search.");
     return;
   }
 
