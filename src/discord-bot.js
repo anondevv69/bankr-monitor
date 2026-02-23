@@ -11,7 +11,7 @@ import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "di
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { addX, removeX, addFc, removeFc, list } from "./watch-store.js";
+import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -36,13 +36,15 @@ async function registerCommands(appId) {
           .setName("add")
           .setDescription("Add user to watch list")
           .addStringOption((o) =>
-            o.setName("type").setDescription("X or Farcaster").setRequired(true).addChoices(
+            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
               { name: "X (Twitter)", value: "x" },
-              { name: "Farcaster", value: "fc" }
+              { name: "Farcaster", value: "fc" },
+              { name: "Wallet", value: "wallet" },
+              { name: "Keyword", value: "keyword" }
             )
           )
           .addStringOption((o) =>
-            o.setName("handle").setDescription("Handle (e.g. thryxagi or dwr.eth)").setRequired(true)
+            o.setName("value").setDescription("Handle, 0x address, or keyword").setRequired(true)
           )
       )
       .addSubcommand((s) =>
@@ -50,13 +52,15 @@ async function registerCommands(appId) {
           .setName("remove")
           .setDescription("Remove user from watch list")
           .addStringOption((o) =>
-            o.setName("type").setDescription("X or Farcaster").setRequired(true).addChoices(
+            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
               { name: "X (Twitter)", value: "x" },
-              { name: "Farcaster", value: "fc" }
+              { name: "Farcaster", value: "fc" },
+              { name: "Wallet", value: "wallet" },
+              { name: "Keyword", value: "keyword" }
             )
           )
           .addStringOption((o) =>
-            o.setName("handle").setDescription("Handle to remove").setRequired(true)
+            o.setName("value").setDescription("Handle, address, or keyword to remove").setRequired(true)
           )
       )
       .addSubcommand((s) => s.setName("list").setDescription("Show current watch list"))
@@ -97,31 +101,49 @@ client.on("interactionCreate", async (interaction) => {
 
   const sub = interaction.options.getSubcommand();
   const type = interaction.options.getString("type");
-  const handle = interaction.options.getString("handle");
+  const value = interaction.options.getString("value");
 
   try {
     if (sub === "add") {
       if (type === "x") {
-        await addX(handle);
-        await interaction.reply({ content: `Added **@${handle}** to X watch list.`, ephemeral: true });
+        await addX(value);
+        await interaction.reply({ content: `Added **@${value}** to X watch list.`, ephemeral: true });
+      } else if (type === "fc") {
+        await addFc(value);
+        await interaction.reply({ content: `Added **${value}** to Farcaster watch list.`, ephemeral: true });
+      } else if (type === "wallet") {
+        const ok = await addWallet(value);
+        if (!ok) return interaction.reply({ content: "Invalid wallet address (use 0x + 40 hex chars).", ephemeral: true });
+        await interaction.reply({ content: `Added wallet \`${value.slice(0, 10)}...${value.slice(-6)}\` to watch list.`, ephemeral: true });
       } else {
-        await addFc(handle);
-        await interaction.reply({ content: `Added **${handle}** to Farcaster watch list.`, ephemeral: true });
+        await addKeyword(value);
+        await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, ephemeral: true });
       }
     } else if (sub === "remove") {
       if (type === "x") {
-        await removeX(handle);
-        await interaction.reply({ content: `Removed **@${handle}** from X watch list.`, ephemeral: true });
+        await removeX(value);
+        await interaction.reply({ content: `Removed **@${value}** from X watch list.`, ephemeral: true });
+      } else if (type === "fc") {
+        await removeFc(value);
+        await interaction.reply({ content: `Removed **${value}** from Farcaster watch list.`, ephemeral: true });
+      } else if (type === "wallet") {
+        const ok = await removeWallet(value);
+        await interaction.reply({
+          content: ok ? "Removed wallet from watch list." : "Wallet not found or invalid address.",
+          ephemeral: true,
+        });
       } else {
-        await removeFc(handle);
-        await interaction.reply({ content: `Removed **${handle}** from Farcaster watch list.`, ephemeral: true });
+        await removeKeyword(value);
+        await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, ephemeral: true });
       }
     } else if (sub === "list") {
-      const { x, fc } = await list();
+      const { x, fc, wallet, keywords } = await list();
       const xStr = x.length ? x.map((h) => `@${h}`).join(", ") : "_none_";
       const fcStr = fc.length ? fc.join(", ") : "_none_";
+      const walletStr = wallet.length ? wallet.map((w) => `\`${w.slice(0, 6)}…${w.slice(-4)}\``).join(", ") : "_none_";
+      const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
       await interaction.reply({
-        content: `**Watch list**\n\n**X:** ${xStr}\n**Farcaster:** ${fcStr}`,
+        content: `**Watch list**\n\n**X:** ${xStr}\n**Farcaster:** ${fcStr}\n**Wallets:** ${walletStr}\n**Keywords:** ${kwStr}`,
         ephemeral: true,
       });
     }

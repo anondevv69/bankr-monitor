@@ -440,18 +440,29 @@ async function main() {
   }
   await saveDeployCounts(deployCounts);
 
-  const { x: watchX, fc: watchFc } = await getWatchList();
+  const { x: watchX, fc: watchFc, wallet: watchWallet, keywords: watchKeywords } = await getWatchList();
 
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
     if (seen.has(key)) return false;
 
-    if (watchX.size > 0 || watchFc.size > 0) {
+    const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
+    if (hasWatchList) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const deployerFc = l.launcherFarcaster ? normHandle(String(l.launcherFarcaster)) : null;
+      const launcherAddr = l.launcher ? l.launcher.toLowerCase() : null;
+      const feeAddrs = (l.beneficiaries || [])
+        .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b)?.toLowerCase?.())
+        .filter(Boolean);
+      const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
+      const searchText = `${l.name || ""} ${l.symbol || ""}`.toLowerCase();
       const inWatchX = deployerX && watchX.has(deployerX);
       const inWatchFc = deployerFc && watchFc.has(deployerFc);
-      if (!inWatchX && !inWatchFc) return false;
+      const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
+      const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some(
+        (kw) => searchText.includes(kw.toLowerCase())
+      );
+      if (!inWatchX && !inWatchFc && !inWatchWallet && !inWatchKeyword) return false;
     } else if (FILTER_X_MATCH) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
