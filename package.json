@@ -7,7 +7,7 @@
     "fetch:indexer": "node src/fetch-from-indexer.js",
     "fetch:chain": "node src/fetch-from-chain.js",
     "fetch:all": "node src/fetch-all.js",
-    "start": "node src/notify-loop.js",
+    "start": "node src/discord-bot.js",
     "notify": "node src/notify.js",
     "notify:loop": "node src/notify-loop.js",
     "bot": "node src/discord-bot.js"
