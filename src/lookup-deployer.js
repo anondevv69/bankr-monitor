@@ -186,10 +186,13 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
+  const possiblyCapped = launches.length === 5 && totalCount === 5;
+
   return {
     query,
     normalized,
     totalCount,
+    possiblyCapped,
     matches: launches.map((l) => ({
       tokenAddress: l.tokenAddress,
       tokenName: l.tokenName ?? "—",
