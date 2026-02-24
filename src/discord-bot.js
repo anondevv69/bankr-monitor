@@ -10,7 +10,17 @@ import "dotenv/config";
  *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword); use this to separate watch alerts from webhook deployments
  */
 
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Client,
+  ComponentType,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} from "discord.js";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -24,6 +34,60 @@ const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
+const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
+const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
+function buildLookupEmbed(data, page) {
+  const { matches, query, by, searchUrl, totalCount, possiblyCapped } = data;
+  const total = totalCount > 0 ? totalCount : matches.length;
+  const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
+  const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = currentPage * LOOKUP_PAGE_SIZE;
+  const pageMatches = matches.slice(start, start + LOOKUP_PAGE_SIZE);
+  let description;
+  let footer;
+  if (possiblyCapped) {
+    description = `**At least ${matches.length} token(s)** — search often caps at 5, so there may be more.\n**[View full list on site →](${searchUrl})**`;
+    footer = { text: `Page ${currentPage + 1}/${totalPages} (newest first) · Site shows full total` };
+  } else {
+    description = `**${total} token(s) associated** with this wallet · **newest first**.\n**[View all on site →](${searchUrl})**`;
+    footer = {
+      text: totalPages > 1
+        ? `Page ${currentPage + 1}/${totalPages} of ${matches.length} shown (newest first)`
+        : `${matches.length} token(s) · newest first`,
+    };
+  }
+  return {
+    color: 0x0052_ff,
+    title: `Bankr lookup: ${query}${byLabel}`,
+    description,
+    fields: pageMatches.map((m) => ({
+      name: `${m.tokenName} ($${m.tokenSymbol})`,
+      value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
+      inline: true,
+    })),
+    footer,
+  };
+}
+function buildLookupButtons(data, page) {
+  const { matches } = data;
+  const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("lookup:prev")
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage <= 0),
+    new ButtonBuilder()
+      .setCustomId("lookup:next")
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage >= totalPages - 1)
+  );
+  return [row];
+}
 
 if (!TOKEN) {
   console.error("DISCORD_BOT_TOKEN is required");
@@ -163,7 +227,34 @@ client.once("ready", async () => {
   runNotify().catch((e) => console.error("Notify failed:", e.message));
 });
 
+// Prune stale lookup cache entries
+function pruneLookupCache() {
+  const now = Date.now();
+  for (const [id, entry] of lookupCache.entries()) {
+    if (now - entry.createdAt > LOOKUP_CACHE_TTL_MS) lookupCache.delete(id);
+  }
+}
+
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isButton() && (interaction.customId === "lookup:prev" || interaction.customId === "lookup:next")) {
+    pruneLookupCache();
+    const entry = lookupCache.get(interaction.message?.id);
+    if (!entry) {
+      await interaction.reply({ content: "This lookup has expired. Run /lookup again.", ephemeral: true }).catch(() => {});
+      return;
+    }
+    const totalPages = Math.ceil(entry.matches.length / LOOKUP_PAGE_SIZE) || 1;
+    let nextPage = entry.currentPage;
+    if (interaction.customId === "lookup:next" && entry.currentPage < totalPages - 1) nextPage = entry.currentPage + 1;
+    if (interaction.customId === "lookup:prev" && entry.currentPage > 0) nextPage = entry.currentPage - 1;
+    entry.currentPage = nextPage;
+    entry.createdAt = Date.now();
+    const embed = buildLookupEmbed(entry, nextPage);
+    const components = buildLookupButtons(entry, nextPage);
+    await interaction.update({ embeds: [embed], components }).catch(() => {});
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "lookup") {
@@ -179,37 +270,23 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      const pageSize = 25;
-      const total = totalCount > 0 ? totalCount : matches.length;
-      const showing = Math.min(matches.length, pageSize);
-      const hasMore = total > showing || matches.length > pageSize;
-      const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
-      let description;
-      let footer;
-      if (possiblyCapped) {
-        description = `**At least ${matches.length} token(s)** — search often caps at 5, so there may be more.\n**[View full list on site →](${searchUrl})**`;
-        footer = { text: "The site shows the real total (e.g. 10). Click the link above to see all." };
-      } else if (hasMore && total > showing) {
-        description = `**${total} token(s) associated** with this wallet · Showing first ${showing} below.\n**[View all ${total} on site →](${searchUrl})**`;
-        footer = matches.length > pageSize
-          ? { text: `Showing 1–${pageSize} of ${total} · Click link above for full list` }
-          : { text: `Showing ${matches.length} of ${total} · Click "View all" above to see the rest` };
-      } else {
-        description = `**${total} token(s) total** · [Full list on site](${searchUrl})`;
-        footer = undefined;
-      }
-      const embed = {
-        color: 0x0052_ff,
-        title: `Bankr lookup: ${query}${byLabel}`,
-        description,
-        fields: matches.slice(0, pageSize).map((m) => ({
-          name: `${m.tokenName} ($${m.tokenSymbol})`,
-          value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
-          inline: true,
-        })),
-        footer,
+      const data = {
+        matches,
+        query,
+        by,
+        searchUrl,
+        totalCount,
+        possiblyCapped,
+        currentPage: 0,
+        createdAt: Date.now(),
       };
-      await interaction.editReply({ embeds: [embed] });
+      const embed = buildLookupEmbed(data, 0);
+      const payload = { embeds: [embed] };
+      if (matches.length > LOOKUP_PAGE_SIZE) {
+        payload.components = buildLookupButtons(data, 0);
+      }
+      const msg = await interaction.editReply(payload);
+      if (msg && matches.length > LOOKUP_PAGE_SIZE) lookupCache.set(msg.id, data);
     } catch (e) {
       await interaction.editReply({ content: `Lookup failed: ${e.message}` }).catch(() => {});
     }

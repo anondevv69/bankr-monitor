@@ -204,12 +204,10 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
 
   const possiblyCapped = launches.length === SEARCH_PAGE_SIZE && totalCount === SEARCH_PAGE_SIZE;
 
-  return {
-    query,
-    normalized,
-    totalCount,
-    possiblyCapped,
-    matches: launches.map((l) => ({
+  const result = launches.map((l) => {
+    const deployedAt = l.deployedAt ?? l.createdAt ?? l.completedAt;
+    const sortTime = deployedAt ? new Date(deployedAt).getTime() : 0;
+    return {
       tokenAddress: l.tokenAddress,
       tokenName: l.tokenName ?? "—",
       tokenSymbol: l.tokenSymbol ?? "—",
@@ -220,7 +218,20 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
       feeRecipientX: l.feeRecipient?.xUsername ?? null,
       feeRecipientFc: l.feeRecipient?.farcasterUsername ?? l.feeRecipient?.fcUsername ?? null,
       bankrUrl: `https://bankr.bot/launches/${l.tokenAddress}`,
-    })),
+      deployedAt: deployedAt || null,
+      sortTime,
+    };
+  });
+
+  // Newest first (most recent deploy first); fallback to original order if no timestamps
+  result.sort((a, b) => b.sortTime - a.sortTime);
+
+  return {
+    query,
+    normalized,
+    totalCount,
+    possiblyCapped,
+    matches: result,
   };
 }
 
