@@ -34,39 +34,49 @@ const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
-const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
+const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "3", 10), 3), 25);
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
-const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
+const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, sortOrder, createdAt }
 function buildLookupEmbed(data, page) {
-  const { matches, query, by, searchUrl, totalCount, possiblyCapped } = data;
+  const { matches, query, by, searchUrl, totalCount, possiblyCapped, sortOrder = "newest" } = data;
   const total = totalCount > 0 ? totalCount : matches.length;
   const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
   const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
   const currentPage = Math.max(0, Math.min(page, totalPages - 1));
   const start = currentPage * LOOKUP_PAGE_SIZE;
   const pageMatches = matches.slice(start, start + LOOKUP_PAGE_SIZE);
+  const orderLabel = sortOrder === "oldest" ? "oldest first" : "newest first";
+  const firstMeans = sortOrder === "oldest" ? "#1 = oldest deploy" : "#1 = most recent deploy";
+  const lastNum = start + pageMatches.length;
+  const lastMeans = sortOrder === "oldest" ? `#${lastNum} = newest` : `#${lastNum} = oldest of these`;
   let description;
   let footer;
-  if (possiblyCapped) {
-    description = `**At least ${matches.length} token(s)** — search often caps at 5, so there may be more.\n**[View full list on site →](${searchUrl})**`;
-    footer = { text: `Page ${currentPage + 1}/${totalPages} (newest first) · Site shows full total` };
+  if (total > matches.length) {
+    description = `**${total} token(s) associated** with this wallet · Showing **${matches.length} of ${total}** below (API limit).\n**[View all ${total} on site →](${searchUrl})**`;
+    footer = { text: `${firstMeans}, ${lastMeans} · ${matches.length} of ${total} shown` };
+  } else if (possiblyCapped) {
+    description = `**At least ${matches.length} token(s)** — search often caps at 5.\n**[View full list on site →](${searchUrl})**`;
+    footer = { text: `${firstMeans}, ${lastMeans} · Site shows full total` };
   } else {
-    description = `**${total} token(s) associated** with this wallet · **newest first**.\n**[View all on site →](${searchUrl})**`;
+    description = `**${total} token(s) associated** with this wallet · **${orderLabel}**.\n**[View all on site →](${searchUrl})**`;
     footer = {
       text: totalPages > 1
-        ? `Page ${currentPage + 1}/${totalPages} of ${matches.length} shown (newest first)`
-        : `${matches.length} token(s) · newest first`,
+        ? `Page ${currentPage + 1}/${totalPages} · ${firstMeans}, ${lastMeans}`
+        : `${firstMeans}, ${lastMeans}`,
     };
   }
   return {
     color: 0x0052_ff,
     title: `Bankr lookup: ${query}${byLabel}`,
     description,
-    fields: pageMatches.map((m) => ({
-      name: `${m.tokenName} ($${m.tokenSymbol})`,
-      value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
-      inline: true,
-    })),
+    fields: pageMatches.map((m, i) => {
+      const num = start + i + 1;
+      return {
+        name: `#${num} · ${m.tokenName} ($${m.tokenSymbol})`,
+        value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
+        inline: true,
+      };
+    }),
     footer,
   };
 }
@@ -154,6 +164,16 @@ async function registerCommands(appId) {
             { name: "Deployer", value: "deployer" },
             { name: "Fee recipient", value: "fee" },
             { name: "Both (default)", value: "both" }
+          )
+      )
+      .addStringOption((o) =>
+        o
+          .setName("order")
+          .setDescription("Show newest or oldest deploys first")
+          .setRequired(false)
+          .addChoices(
+            { name: "Newest first", value: "newest" },
+            { name: "Oldest first", value: "oldest" }
           )
       )
       .toJSON(),
@@ -260,9 +280,10 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
     const by = interaction.options.getString("by") || "both";
+    const order = interaction.options.getString("order") || "newest";
     await interaction.deferReply({ ephemeral: true });
     try {
-      const { matches, totalCount, normalized, possiblyCapped } = await lookupByDeployerOrFee(query, by);
+      const { matches, totalCount, normalized, possiblyCapped } = await lookupByDeployerOrFee(query, by, order);
       const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}`;
       if (matches.length === 0) {
         await interaction.editReply({
@@ -277,6 +298,7 @@ client.on("interactionCreate", async (interaction) => {
         searchUrl,
         totalCount,
         possiblyCapped,
+        sortOrder: order,
         currentPage: 0,
         createdAt: Date.now(),
       };

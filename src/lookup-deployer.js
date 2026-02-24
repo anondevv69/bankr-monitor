@@ -173,8 +173,9 @@ function parseQuery(query) {
   return { normalized: normalized || null, isWallet: false };
 }
 
-/** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either */
-export async function lookupByDeployerOrFee(query, filter = "both") {
+/** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either
+ *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first */
+export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest") {
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) return { matches: [], totalCount: 0, query: query };
 
@@ -223,8 +224,8 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
     };
   });
 
-  // Newest first (most recent deploy first); fallback to original order if no timestamps
-  result.sort((a, b) => b.sortTime - a.sortTime);
+  // Sort by deploy time: newest first or oldest first
+  result.sort((a, b) => (sortOrder === "oldest" ? a.sortTime - b.sortTime : b.sortTime - a.sortTime));
 
   return {
     query,
