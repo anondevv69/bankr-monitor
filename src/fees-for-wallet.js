@@ -25,6 +25,7 @@ export async function getFeesSummary(query) {
   const tokens = [];
   let totalUsd = 0;
 
+  const DECIMALS = 18; // token and WETH typically 18
   for (const m of matches) {
     const pool = await fetchPoolByBaseToken(m.tokenAddress);
     if (!pool) continue;
@@ -32,11 +33,20 @@ export async function getFeesSummary(query) {
     if (!fees || (fees.token0Fees == null && fees.token1Fees == null && fees.totalFeesUsd == null)) continue;
     const usd = fees.totalFeesUsd != null ? Number(fees.totalFeesUsd) : 0;
     totalUsd += usd;
+    // Pool base token = launch token (token0); quote = typically WETH (token1). Raw amounts in wei.
+    const rawToken = fees.token0Fees != null ? BigInt(fees.token0Fees) : 0n;
+    const rawWeth = fees.token1Fees != null ? BigInt(fees.token1Fees) : 0n;
+    const tokenAmount = Number(rawToken) / 10 ** DECIMALS;
+    const wethAmount = Number(rawWeth) / 10 ** DECIMALS;
     tokens.push({
       tokenAddress: m.tokenAddress,
       tokenName: m.tokenName,
       tokenSymbol: m.tokenSymbol,
       totalFeesUsd: usd,
+      tokenAmount,
+      wethAmount,
+      rawToken: raw0.toString(),
+      rawWeth: raw1.toString(),
     });
   }
 

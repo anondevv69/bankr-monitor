@@ -170,13 +170,17 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("fees")
-      .setDescription("Show accrued fees (claimable) for a wallet or X/Farcaster as fee recipient")
+      .setDescription("Show claimable fees (token + WETH) for a wallet or X/Farcaster as fee recipient")
       .addStringOption((o) =>
         o
           .setName("query")
           .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
           .setRequired(true)
       )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("help")
+      .setDescription("Show how to use BankrMonitor (watch, lookup, fees)")
       .toJSON(),
   ];
 
@@ -341,9 +345,10 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "💰 /fees",
           value:
-            "**Accrued fees (claimable-style)** for a wallet or X/Farcaster **as fee recipient**.\n" +
+            "**Claimable trading rewards** for a wallet or X/Farcaster **as fee recipient** (57% fee share).\n" +
             "**query:** Same as lookup (wallet, @handle, or link).\n" +
-            "Uses the **Doppler indexer** (set `DOPPLER_INDEXER_URL` to your doppler-indexer or a public one) for `cumulatedFees`. Claim in the Bankr app or with `bankr fees claim <token>`.",
+            "Shows **token amount + WETH** claimable per token, wallet, and token CA (Base). **Claim:** [bankr.bot/terminal](https://bankr.bot/terminal) or DM Bankr: *\"claim my [token] fees\"*.\n" +
+            "Uses **Doppler indexer** (`DOPPLER_INDEXER_URL`) for `cumulatedFees`.",
           inline: false,
         },
         {
@@ -376,22 +381,34 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content:
             `**${query}** as fee recipient: **${out.matchCount ?? 0} token(s)** in our list, but the indexer didn't return fee data.\n` +
-            `Set **DOPPLER_INDEXER_URL** to an indexer that supports \`cumulatedFees\`, or use **Bankr app / \`bankr fees\`** to see claimable amounts.`,
+            `Set **DOPPLER_INDEXER_URL** to an indexer that supports \`cumulatedFees\`, or use **Bankr** to see claimable amounts.`,
         });
         return;
       }
+      function fmtNum(n) {
+        if (n >= 1e9) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        if (n >= 1e6) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        if (n >= 1e3) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        return n.toFixed(6);
+      }
+      const lines = tokens.slice(0, 10).map((t) => {
+        const tokenClaim = t.tokenAmount != null && t.tokenAmount > 0 ? `${fmtNum(t.tokenAmount)} $${t.tokenSymbol} claimable (57% fee share)` : "";
+        const wethClaim = t.wethAmount != null && t.wethAmount > 0 ? `${fmtNum(t.wethAmount)} WETH` : "";
+        const parts = [tokenClaim, wethClaim].filter(Boolean);
+        return `• **${t.tokenName}** ($${t.tokenSymbol})\n  ${parts.join(" · ")}\n  Token: \`${t.tokenAddress}\` (Base)`;
+      });
       const description =
-        `**Accrued fees (claimable-style)** for fee recipient.\n` +
-        (feeWallet ? `Wallet: \`${feeWallet.slice(0, 10)}…${feeWallet.slice(-8)}\`\n` : "") +
-        `**Total: ${totalStr}** across ${tokens.length} token(s).\n\n` +
-        tokens.slice(0, 10).map((t) => `• ${t.tokenName} ($${t.tokenSymbol}): ${formatUsd(t.totalFeesUsd) ?? t.totalFeesUsd}`).join("\n") +
-        (tokens.length > 10 ? `\n… and ${tokens.length - 10} more` : "") +
-        `\n\nClaim via Bankr app or \`bankr fees claim <tokenAddress>\`.`;
+        `**Claimable trading rewards** for fee recipient (57% fee share).\n` +
+        (feeWallet ? `Wallet: \`${feeWallet}\`\n` : "") +
+        `**Total (USD): ${totalStr}** across ${tokens.length} token(s).\n\n` +
+        lines.join("\n\n") +
+        (tokens.length > 10 ? `\n\n… and ${tokens.length - 10} more` : "") +
+        `\n\n**Claim:** [bankr.bot/terminal](https://bankr.bot/terminal) or DM Bankr: *"claim my [token] fees"*`;
       const embed = {
         color: 0x0052_ff,
         title: `Fees: ${query}`,
         description,
-        footer: { text: "Data from Doppler indexer (cumulatedFees). Claim in Bankr." },
+        footer: { text: "Data from Doppler indexer. Claim anytime via Bankr." },
       };
       await interaction.editReply({ embeds: [embed] });
     } catch (e) {
