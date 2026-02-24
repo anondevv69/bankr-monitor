@@ -27,6 +27,7 @@ import { dirname, join } from "path";
 import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee } from "./lookup-deployer.js";
+import { getFeesSummary } from "./fees-for-wallet.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -167,6 +168,16 @@ async function registerCommands(appId) {
           )
       )
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("fees")
+      .setDescription("Show accrued fees (claimable) for a wallet or X/Farcaster as fee recipient")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
+          .setRequired(true)
+      )
+      .toJSON(),
   ];
 
   try {
@@ -300,6 +311,91 @@ client.on("interactionCreate", async (interaction) => {
       if (msg && matches.length > LOOKUP_PAGE_SIZE) lookupCache.set(msg.id, data);
     } catch (e) {
       await interaction.editReply({ content: `Lookup failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "help") {
+    const embed = {
+      color: 0x0052_ff,
+      title: "BankrMonitor – How to use",
+      description:
+        "This bot helps you **watch** Bankr launches, **look up** tokens by wallet/X/Farcaster, and **check accrued fees** for fee recipients. Data: Bankr API + Doppler indexer.",
+      fields: [
+        {
+          name: "📋 /watch",
+          value:
+            "**add** – Add someone to the watch list (type: X, Farcaster, wallet, or keyword + value). New launches matching them are posted to the watch channel.\n" +
+            "**remove** – Remove by type + value.\n**list** – Show current watch list.",
+          inline: false,
+        },
+        {
+          name: "🔍 /lookup",
+          value:
+            "Search Bankr tokens by **deployer** or **fee recipient**.\n" +
+            "**query:** wallet (`0x...`), X handle (`@user` or `https://x.com/user`), or Farcaster (handle or warpcast link).\n" +
+            "**by:** Deployer / Fee recipient / Both (default).\n" +
+            "Shows latest tokens we can return + link to [full list on Bankr](https://bankr.bot/launches/search). Pagination when there are more than 5.",
+          inline: false,
+        },
+        {
+          name: "💰 /fees",
+          value:
+            "**Accrued fees (claimable-style)** for a wallet or X/Farcaster **as fee recipient**.\n" +
+            "**query:** Same as lookup (wallet, @handle, or link).\n" +
+            "Uses the **Doppler indexer** (set `DOPPLER_INDEXER_URL` to your doppler-indexer or a public one) for `cumulatedFees`. Claim in the Bankr app or with `bankr fees claim <token>`.",
+          inline: false,
+        },
+        {
+          name: "📌 Channels",
+          value:
+            "**Alert channel** – all new Bankr launches.\n**Watch channel** – only launches that match your watch list.",
+          inline: false,
+        },
+      ],
+      footer: { text: "Bankr: bankr.bot | Doppler indexer for volume + fees" },
+    };
+    await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (interaction.commandName === "fees") {
+    const query = interaction.options.getString("query");
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const out = await getFeesSummary(query);
+      if (out.error) {
+        await interaction.editReply({
+          content: `${out.error}\n[Search on Bankr](${`https://bankr.bot/launches/search?q=${encodeURIComponent(query)}`})`,
+        });
+        return;
+      }
+      const { totalUsd, tokens, indexerUsed, feeWallet, formatUsd } = out;
+      const totalStr = formatUsd(totalUsd) ?? `$${totalUsd.toFixed(2)}`;
+      if (!indexerUsed || tokens.length === 0) {
+        await interaction.editReply({
+          content:
+            `**${query}** as fee recipient: **${out.matchCount ?? 0} token(s)** in our list, but the indexer didn't return fee data.\n` +
+            `Set **DOPPLER_INDEXER_URL** to an indexer that supports \`cumulatedFees\`, or use **Bankr app / \`bankr fees\`** to see claimable amounts.`,
+        });
+        return;
+      }
+      const description =
+        `**Accrued fees (claimable-style)** for fee recipient.\n` +
+        (feeWallet ? `Wallet: \`${feeWallet.slice(0, 10)}…${feeWallet.slice(-8)}\`\n` : "") +
+        `**Total: ${totalStr}** across ${tokens.length} token(s).\n\n` +
+        tokens.slice(0, 10).map((t) => `• ${t.tokenName} ($${t.tokenSymbol}): ${formatUsd(t.totalFeesUsd) ?? t.totalFeesUsd}`).join("\n") +
+        (tokens.length > 10 ? `\n… and ${tokens.length - 10} more` : "") +
+        `\n\nClaim via Bankr app or \`bankr fees claim <tokenAddress>\`.`;
+      const embed = {
+        color: 0x0052_ff,
+        title: `Fees: ${query}`,
+        description,
+        footer: { text: "Data from Doppler indexer (cumulatedFees). Claim in Bankr." },
+      };
+      await interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
     }
     return;
   }

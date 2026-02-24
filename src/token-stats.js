@@ -1,0 +1,347 @@
+#!/usr/bin/env node
+/**
+ * Show launch info and fee-relevant stats for any Bankr token by address.
+ * - Bankr API: launch metadata (deployer, fee recipient).
+ * - Doppler indexer: trading volume; cumulatedFees(poolId, chainId, beneficiary) for token0/token1/totalFeesUsd when the indexer supports it.
+ * - Optional Doppler SDK: pool state (fee tier, status) via read-only getState().
+ *
+ * Usage: node src/token-stats.js <tokenAddress>
+ * Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
+ *
+ * Env: BANKR_API_KEY (recommended; single-token launch endpoint may return 403 without it)
+ *      DOPPLER_INDEXER_URL (optional, for volume; default testnet; use https://indexer.doppler.lol for Base)
+ *      CHAIN_ID (default 8453)
+ */
+
+import "dotenv/config";
+
+const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
+const DOPPLER_INDEXER_URL =
+  process.env.DOPPLER_INDEXER_URL ||
+  (CHAIN_ID === 8453 ? "https://indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
+const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
+const BANKR_API_KEY = process.env.BANKR_API_KEY;
+
+function normalizeAddress(addr) {
+  if (!addr || typeof addr !== "string") return null;
+  const s = addr.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(s)) return null;
+  return s.toLowerCase();
+}
+
+async function fetchBankrLaunch(tokenAddress) {
+  const urls = [
+    `${BANKR_LAUNCH_URL}/${tokenAddress}`,
+    `${BANKR_LAUNCH_URL}/${tokenAddress.slice(0, 2) + tokenAddress.slice(2).toUpperCase()}`,
+  ];
+  const headers = { Accept: "application/json" };
+  if (BANKR_API_KEY) headers["X-API-Key"] = BANKR_API_KEY;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const launch = json.launch ?? null;
+      if (launch) return launch;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+async function fetchDopplerTokenVolume(tokenAddress) {
+  const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
+
+  // 1) GraphQL: try common id formats (chainId-address, address)
+  const query = `
+    query Token($id: String!) {
+      token(id: $id) {
+        address name symbol volumeUsd holderCount
+        pool { address }
+      }
+    }
+  `;
+  const ids = [`${CHAIN_ID}-${tokenAddress}`, tokenAddress, `base-${tokenAddress}`];
+  for (const id of ids) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables: { id } }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const token = json.data?.token;
+      if (token) return token;
+    } catch {
+      /* try next id */
+    }
+  }
+
+  // 2) GraphQL list with filter (Ponder/Doppler: tokens where address + chainId)
+  // Inline values: some indexers don't support variables inside where
+  const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd } } }`;
+  try {
+    const res = await fetch(`${base}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: listQuery }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (!json.errors?.length) {
+        const items = json.data?.tokens?.items ?? [];
+        if (items.length > 0) return items[0];
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 3) REST search fallback: GET /search/:address?chain_ids=...
+  try {
+    const url = `${base}/search/${encodeURIComponent(tokenAddress)}?chain_ids=${CHAIN_ID}`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const items = Array.isArray(data) ? data : data?.items ?? data?.results ?? [];
+    const match = items.find(
+      (t) => (t.address ?? t.id ?? "").toLowerCase() === tokenAddress
+    );
+    if (match && (match.volumeUsd != null || match.volume != null)) {
+      return {
+        address: match.address ?? match.id,
+        name: match.name,
+        symbol: match.symbol,
+        volumeUsd: match.volumeUsd ?? match.volume,
+        holderCount: match.holderCount,
+        pool: match.pool,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Step 1: Find pool by base token (asset).
+ * Query: pools(where: { baseToken, chainId }) -> pool address or id for cumulatedFees.
+ */
+async function fetchPoolByBaseToken(tokenAddress) {
+  const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
+  const addr = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  // Try common shapes: where with baseToken, or pool filtered by baseToken relation
+  const queries = [
+    `query { pools(where: { baseToken: "${addr}", chainId: ${CHAIN_ID} }, limit: 1) { items { address id } } }`,
+    `query { pools(where: { chainId: ${CHAIN_ID} }, limit: 50) { items { address id baseToken { address } } } }`,
+  ];
+  for (const query of queries) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const items = json.data?.pools?.items ?? json.data?.pools ?? [];
+      const pool = items.find(
+        (p) =>
+          (p.baseToken?.address ?? p.baseToken ?? "").toLowerCase() === tokenAddress
+      ) ?? items[0];
+      if (pool) return { address: pool.address, id: pool.id };
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+/**
+ * Step 2: Cumulated fees for a beneficiary. Uses pool address or id from step 1.
+ */
+async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
+  const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
+  const query = `
+    query CumulatedFees($poolId: String!, $chainId: Int!, $beneficiary: String!) {
+      cumulatedFees(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
+        token0Fees
+        token1Fees
+        totalFeesUsd
+      }
+    }
+  `;
+  try {
+    const res = await fetch(`${base}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        variables: {
+          poolId: poolIdOrAddress,
+          chainId: CHAIN_ID,
+          beneficiary: beneficiaryAddress,
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.errors?.length) return null;
+    return json.data?.cumulatedFees ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const POOL_STATE_TIMEOUT_MS = 8_000;
+
+/** Optional: fetch pool state (fee tier, status) via Doppler SDK read-only getState(). Times out so script never hangs. */
+async function fetchDopplerPoolState(tokenAddress) {
+  const run = async () => {
+    try {
+      const [viem, chains] = await Promise.all([
+        import("viem"),
+        import("viem/chains"),
+      ]);
+      const chain =
+        chains.base?.id === CHAIN_ID
+          ? chains.base
+          : chains.baseSepolia?.id === CHAIN_ID
+            ? chains.baseSepolia
+            : { id: CHAIN_ID, name: "Unknown", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: [] } } };
+      const publicClient = viem.createPublicClient({
+        chain,
+        transport: viem.http(process.env.RPC_URL || undefined),
+      });
+      const { DopplerSDK } = await import("@whetstone-research/doppler-sdk");
+      const sdk = new DopplerSDK({
+        publicClient,
+        walletClient: undefined,
+        chainId: CHAIN_ID,
+      });
+      const pool = await sdk.getMulticurvePool(tokenAddress);
+      const state = await pool.getState();
+      return state;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    return await Promise.race([
+      run(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), POOL_STATE_TIMEOUT_MS)
+      ),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+function formatUsd(value) {
+  if (value == null || value === "" || Number.isNaN(Number(value))) return null;
+  const n = Number(value);
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
+  return `$${n.toFixed(2)}`;
+}
+
+export { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
+
+async function main() {
+  const raw = process.argv[2];
+  const tokenAddress = normalizeAddress(raw);
+  if (!tokenAddress) {
+    console.log("Usage: node src/token-stats.js <tokenAddress>");
+    console.log("Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3");
+    process.exit(1);
+  }
+
+  const [launch, doppler, poolState] = await Promise.all([
+    fetchBankrLaunch(tokenAddress),
+    fetchDopplerTokenVolume(tokenAddress),
+    fetchDopplerPoolState(tokenAddress),
+  ]);
+
+  const name = launch?.tokenName ?? doppler?.name ?? "—";
+  const symbol = launch?.tokenSymbol ?? doppler?.symbol ?? "—";
+  const volumeUsd = doppler?.volumeUsd != null ? String(doppler.volumeUsd) : null;
+  const volumeNum = volumeUsd != null ? Number(volumeUsd) : NaN;
+  const creatorShareBps = 5700; // 57%
+  const swapFeeBps = 120;      // 1.2%
+  const estimatedCreatorFeesUsd = !Number.isNaN(volumeNum) && volumeNum >= 0
+    ? (volumeNum * (swapFeeBps / 10000) * (creatorShareBps / 10000))
+    : null;
+
+  console.log(`\n  Token: ${name} ($${symbol})`);
+  console.log(`  CA:    ${tokenAddress}`);
+  console.log(`  Bankr: https://bankr.bot/launches/${tokenAddress}\n`);
+
+  if (!launch) {
+    console.log("  No Bankr launch found for this address (not a Bankr token or wrong chain).");
+    if (doppler) {
+      console.log(`  Indexer volume: ${formatUsd(volumeUsd) ?? "—"}`);
+    }
+    return;
+  }
+
+  const deployer = launch.deployer;
+  const fee = launch.feeRecipient;
+  const feeWallet = fee?.walletAddress ? normalizeAddress(fee.walletAddress) : null;
+
+  // Indexer: pool by base token, then cumulatedFees for fee recipient
+  let cumulatedFees = null;
+  if (feeWallet) {
+    const pool = await fetchPoolByBaseToken(tokenAddress);
+    if (pool) {
+      cumulatedFees = await fetchCumulatedFees(pool.id ?? pool.address, feeWallet);
+    }
+  }
+
+  console.log("  Deployer:", deployer?.walletAddress ?? "—", deployer?.xUsername ? `@${deployer.xUsername}` : "");
+  console.log("  Fee to: ", fee?.walletAddress ?? "—", fee?.xUsername ? `@${fee.xUsername}` : "");
+  console.log("  Pool:   ", launch.poolId ?? "—");
+  if (launch.tweetUrl) console.log("  Tweet:  ", launch.tweetUrl);
+  if (poolState) {
+    const statusNames = { 0: "Uninitialized", 1: "Initialized", 2: "Locked", 3: "Exited" };
+    const status = statusNames[Number(poolState.status)] ?? `Status ${poolState.status}`;
+    const feeBps = poolState.fee != null ? Number(poolState.fee) : null;
+    console.log("  Pool state (Doppler SDK):", status, feeBps != null ? `| fee ${(feeBps / 10000).toFixed(2)}%` : "");
+  }
+  console.log("");
+
+  if (cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null)) {
+    console.log("  Cumulated fees (indexer) for fee recipient:");
+    if (cumulatedFees.token0Fees != null) console.log("    token0:", cumulatedFees.token0Fees);
+    if (cumulatedFees.token1Fees != null) console.log("    token1:", cumulatedFees.token1Fees);
+    if (cumulatedFees.totalFeesUsd != null) console.log("    total (USD):", formatUsd(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd);
+    console.log("");
+  }
+
+  if (volumeUsd != null) {
+    console.log("  Trading volume (indexer):", formatUsd(volumeUsd) ?? "—");
+    if (estimatedCreatorFeesUsd != null) {
+      console.log("  Estimated creator fees (57% of 1.2% of volume):", formatUsd(estimatedCreatorFeesUsd));
+    }
+    console.log("");
+  } else {
+    console.log("  Volume: not available (indexer may not have this token or use DOPPLER_INDEXER_URL for Base).");
+    console.log("");
+  }
+
+  if (!cumulatedFees || (cumulatedFees.token0Fees == null && cumulatedFees.token1Fees == null && cumulatedFees.totalFeesUsd == null)) {
+    console.log("  Claimable balance is also visible to the fee beneficiary via:");
+    console.log("    bankr fees --token", tokenAddress);
+    console.log("");
+  }
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
