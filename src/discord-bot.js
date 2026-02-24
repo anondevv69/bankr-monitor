@@ -78,7 +78,7 @@ async function registerCommands(appId) {
       .addStringOption((o) =>
         o
           .setName("query")
-          .setDescription("Wallet (0x...), X: @user or x(user) or x.com/user link, Farcaster: user or F(user) or warpcast.com link")
+          .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
           .setRequired(true)
       )
       .addStringOption((o) =>
