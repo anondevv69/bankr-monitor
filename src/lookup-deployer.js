@@ -206,7 +206,8 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   const possiblyCapped = launches.length === SEARCH_PAGE_SIZE && totalCount === SEARCH_PAGE_SIZE;
 
   const result = launches.map((l) => {
-    const deployedAt = l.deployedAt ?? l.createdAt ?? l.completedAt;
+    const deployedAt =
+      l.deployedAt ?? l.createdAt ?? l.completedAt ?? l.deployed_at ?? l.created_at ?? l.completed_at ?? l.timestamp ?? l.blockTimestamp;
     const sortTime = deployedAt ? new Date(deployedAt).getTime() : 0;
     return {
       tokenAddress: l.tokenAddress,
@@ -224,14 +225,18 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     };
   });
 
-  // Sort by deploy time: newest first or oldest first
-  result.sort((a, b) => (sortOrder === "oldest" ? a.sortTime - b.sortTime : b.sortTime - a.sortTime));
+  // Sort by deploy time when we have dates; otherwise keep API order
+  const hasDates = result.some((m) => m.sortTime > 0);
+  if (hasDates) {
+    result.sort((a, b) => (sortOrder === "oldest" ? a.sortTime - b.sortTime : b.sortTime - a.sortTime));
+  }
 
   return {
     query,
     normalized,
     totalCount,
     possiblyCapped,
+    hasDates,
     matches: result,
   };
 }
