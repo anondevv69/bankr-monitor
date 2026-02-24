@@ -4,16 +4,19 @@
   "description": "Fetch and monitor tokens deployed via Bankr on Base (Doppler protocol)",
   "type": "module",
   "scripts": {
+    "check:indexer": "node src/check-indexer.js",
     "fetch:indexer": "node src/fetch-from-indexer.js",
     "fetch:chain": "node src/fetch-from-chain.js",
     "fetch:all": "node src/fetch-all.js",
     "lookup": "node src/lookup-deployer.js",
+    "token-stats": "node src/token-stats.js",
     "start": "node src/discord-bot.js",
     "notify": "node src/notify.js",
     "notify:loop": "node src/notify-loop.js",
     "bot": "node src/discord-bot.js"
   },
   "dependencies": {
+    "@whetstone-research/doppler-sdk": "^0.0.17",
     "discord.js": "^14.25.1",
     "dotenv": "^17.3.1",
     "viem": "^2.21.0"

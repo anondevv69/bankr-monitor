@@ -70,6 +70,85 @@ curl "https://testnet-indexer.doppler.lol/search/0x123...abc?chain_ids=8453,5707
 
 **Indexer events** (what Ponder indexes): `UniswapV3Initializer.Create`, `UniswapV4Initializer.Create`, `Airlock.Migrate`, `UniswapV2Pair.Swap`, pool `Mint`/`Burn`/`Swap`, `DERC20.Transfer`. Supported chains: Base (8453), Base Sepolia (84532), Unichain (130), Ink (57073).
 
+#### Self-hosting the Doppler indexer on Railway
+
+To get reliable volume and (if you add it) cumulated fees, you can self-host the [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) (Ponder) on [Railway](https://railway.app/) and point BankrMonitor at your own GraphQL endpoint.
+
+**1. Repo and DB**
+
+- Fork or clone [whetstoneresearch/doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer).
+- In Railway: **New Project** → **Deploy from GitHub repo** → select your `doppler-indexer` repo.
+- In the same project: **Add service** → **Database** → **PostgreSQL**. Railway will create a Postgres instance and expose `DATABASE_URL`.
+
+**2. Use `DATABASE_URL` in the indexer**
+
+The multicurve config hardcodes a local Postgres URL. So that the app uses Railway’s Postgres, make the connection string env-driven. In your fork, in `ponder.config.multicurve.ts`, set the database config to:
+
+```ts
+database: {
+  kind: "postgres",
+  connectionString: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/default",
+  poolConfig: { max: 100 },
+},
+```
+
+Commit and push so Railway redeploys.
+
+**3. Railway variables**
+
+In the **indexer service** (not the DB), open **Variables** and set:
+
+| Variable | Value |
+|----------|--------|
+| `DATABASE_URL` | Reference: click **New Variable** → **Add Reference** → choose the Postgres service’s `DATABASE_URL`. |
+| `PONDER_RPC_URL_8453` | Base mainnet RPC (e.g. `https://mainnet.base.org` or Alchemy/QuickNode for better rate limits). |
+| `PONDER_RPC_URL_1` | Ethereum mainnet RPC (used for ETH price; e.g. Alchemy). |
+
+Optional, if you use other chains in that config: `PONDER_RPC_URL_84532`, `PONDER_RPC_URL_130`, etc.
+
+**4. Build and start command**
+
+- **Build:** Railway usually detects `pnpm` from the repo. If not, set **Build Command** to `pnpm install`.
+- **Start:** In the indexer service, **Settings** → **Deploy** → **Custom Start Command**:
+
+```bash
+pnpm start --config ./ponder.config.multicurve.ts --schema $RAILWAY_DEPLOYMENT_ID -p $PORT
+```
+
+- `--config ./ponder.config.multicurve.ts` — run the multicurve setup (Base + other chains in that file).
+- `--schema $RAILWAY_DEPLOYMENT_ID` — recommended by [Ponder’s Railway guide](https://ponder.sh/docs/production/railway) for schema isolation per deployment.
+- `-p $PORT` — listen on Railway’s assigned port so the HTTP/GraphQL server is reachable.
+
+**5. Healthcheck**
+
+In **Settings** → **Deploy**: set **Healthcheck Path** to `/ready` and **Healthcheck Timeout** to `3600` (Ponder can take a while to sync).
+
+**6. Public URL**
+
+In **Settings** → **Networking**, click **Generate Domain**. You’ll get a URL like `https://your-app.up.railway.app`. GraphQL is at `https://your-app.up.railway.app/graphql`.
+
+**7. Point BankrMonitor at your indexer**
+
+In the environment where BankrMonitor runs (e.g. Railway app service or `.env`), set:
+
+```bash
+DOPPLER_INDEXER_URL=https://your-app.up.railway.app
+```
+
+Then `token-stats`, `notify`, and any script that uses the indexer will use your instance for volume (and for cumulated fees if you add that to the indexer schema).
+
+**Check that the indexer is working:**
+
+```bash
+npm run check:indexer
+# Or with a custom URL:
+DOPPLER_INDEXER_URL=https://your-app.up.railway.app npm run check:indexer
+```
+
+This hits `/ready` (health) and `/graphql` (one token query). If both show **OK**, the indexer is up. You can also open `https://your-app.up.railway.app/` in a browser (Ponder often shows a simple page) or `https://your-app.up.railway.app/ready` for a 200 response.
+
+**Optional:** Add a `cumulatedFees` (and pools-by-base-token) API in your indexer fork so token-stats can show claimable-style fees; the BankrMonitor side already calls the shape we added earlier.
+
 ### 3. Direct Chain Indexing
 
 Index Doppler **Airlock** `Create` events on Base. Bankr deploys via Doppler; each token creation emits `Create(asset, ...)`. Fetches token metadata (name, symbol, tokenURI) for X/website links.
@@ -85,6 +164,17 @@ Bankr has a [Token Deploy API](https://docs.bankr.bot/token-launching/deploy-api
 
 ## Lookup: tokens by wallet, X, or Farcaster
 
+**Token stats (volume + fee estimate for any token):**
+
+```bash
+npm run token-stats -- 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
+```
+
+Uses the Bankr API (launch metadata: deployer, fee recipient) and optional Doppler indexer (trading volume). Set `BANKR_API_KEY` in `.env` so the single-token launch endpoint does not return 403. Shows **estimated** creator fees (57% of 1.2% of volume). Claimable balance is only visible to the fee beneficiary via `bankr fees --token`. For Base mainnet volume, set `DOPPLER_INDEXER_URL=https://indexer.doppler.lol` and `CHAIN_ID=8453`.
+
+**Why volume comes from the indexer:** Trading volume is aggregated from swap events; there is no single onchain view that returns “total volume” for a pool. The Doppler indexer (Ponder) indexes those events and exposes `volumeUsd` via GraphQL/REST. Contract reads (e.g. viem `readContract`) and the Doppler SDK give pool *state* (fee tier, status), not cumulative volume. Optional: install `@whetstone-research/doppler-sdk` to show pool state (fee %, Locked/Exited) in token-stats.
+
+**Lookup by wallet / X / Farcaster:**
 Find Bankr tokens where a given wallet is deployer or fee recipient, or where an X/Farcaster handle is associated:
 
 ```bash
@@ -93,7 +183,7 @@ npm run lookup -- @vyrozas
 npm run lookup -- dwr.eth
 ```
 
-Searches the most recent launches (up to `BANKR_LAUNCHES_LIMIT`, default 500). The Bankr API does not support server-side filtering by deployer, so the script fetches and filters client-side.
+Searches the most recent launches (up to `BANKR_LAUNCHES_LIMIT`, default 500). The script requests up to 50 results per page from the Bankr search API and shows **total token count**; if the API returns fewer (e.g. a 5-result cap), the CLI and Discord **lookup** still show “Total: N token(s)” and link to the full list at [bankr.bot/launches/search](https://bankr.bot/launches/search?q=). Discord shows “Showing 1–25 of N” when there are more than 25; use the site for full list and pagination.
 
 ## Fees: claimed vs unclaimed ETH
 

@@ -31,14 +31,14 @@ function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
 }
 
-/** Fetch from Bankr search API (same as bankr.bot/launches/search). Returns raw launch objects or null on failure. */
+/** Fetch from Bankr search API (same as bankr.bot/launches/search). Returns { launches, totalCount } or null on failure. */
 async function fetchSearch(query) {
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;
   const seen = new Set();
   const out = [];
   let offset = 0;
-  const pageSize = 10;
+  const pageSize = 50;
   let totalCount = 0;
 
   try {
@@ -68,7 +68,7 @@ async function fetchSearch(query) {
       offset += pageSize;
       if (byDeployer.length < pageSize && byFee.length < pageSize) break;
     }
-    return out.length ? out : null;
+    return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
   } catch {
     return null;
   }
@@ -108,54 +108,88 @@ async function fetchAllLaunches() {
   return out;
 }
 
-/** Check if a launch matches the query (deployer or fee recipient: wallet, X, or Farcaster). */
-function launchMatches(launch, queryNorm, isWalletQuery) {
+/** Check if a launch matches the query. filter: "deployer" | "fee" | "both". */
+function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   const deployer = launch.deployer;
   const fee = launch.feeRecipient;
 
-  if (isWalletQuery) {
-    const dw = deployer?.walletAddress?.toLowerCase();
-    const fw = fee?.walletAddress?.toLowerCase();
-    if (dw === queryNorm || fw === queryNorm) return true;
-    return false;
-  }
+  const matchDeployer = () => {
+    if (isWalletQuery) return deployer?.walletAddress?.toLowerCase() === queryNorm;
+    const q = queryNorm;
+    const deployerX = deployer?.xUsername ? norm(String(deployer.xUsername).replace(/^@/, "")) : null;
+    const deployerFc = norm(deployer?.farcasterUsername ?? deployer?.farcaster ?? deployer?.fcUsername ?? "");
+    return deployerX === q || deployerFc === q;
+  };
+  const matchFee = () => {
+    if (isWalletQuery) return fee?.walletAddress?.toLowerCase() === queryNorm;
+    const q = queryNorm;
+    const feeX = fee?.xUsername ? norm(String(fee.xUsername).replace(/^@/, "")) : null;
+    const feeFc = norm(fee?.farcasterUsername ?? fee?.farcaster ?? fee?.fcUsername ?? "");
+    return (feeX && feeX === q) || (feeFc && feeFc === q);
+  };
 
-  const q = queryNorm;
-  const deployerX = deployer?.xUsername ? norm(String(deployer.xUsername).replace(/^@/, "")) : null;
-  const deployerFc = norm(deployer?.farcasterUsername ?? deployer?.farcaster ?? deployer?.fcUsername ?? "");
-  const feeX = fee?.xUsername ? norm(String(fee.xUsername).replace(/^@/, "")) : null;
-  const feeFc = norm(fee?.farcasterUsername ?? fee?.farcaster ?? fee?.fcUsername ?? "");
-
-  return (
-    deployerX === q ||
-    deployerFc === q ||
-    (feeX && feeX === q) ||
-    (feeFc && feeFc === q)
-  );
+  if (filter === "deployer") return matchDeployer();
+  if (filter === "fee") return matchFee();
+  return matchDeployer() || matchFee();
 }
 
-/** Resolve query to normalized form and whether it's a wallet. */
+/** Extract username from X/Twitter or Farcaster URL; otherwise return null. */
+function extractFromUrl(raw) {
+  const s = String(raw).trim();
+  // x.com/username, twitter.com/username (optional trailing slash or query)
+  const xMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)/i);
+  if (xMatch) return { normalized: xMatch[1].toLowerCase(), isWallet: false };
+  // warpcast.com/~/username or warpcast.com/username, farcaster.xyz/...
+  const fcMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:warpcast\.com\/~\/|warpcast\.com\/|farcaster\.xyz\/)([a-zA-Z0-9_.-]+)/i);
+  if (fcMatch) return { normalized: fcMatch[1].toLowerCase(), isWallet: false };
+  return null;
+}
+
+/** Resolve query to normalized form and whether it's a wallet. Accepts wallet, @username, x(username), F(username), or X/Farcaster profile URL. */
 function parseQuery(query) {
   const raw = String(query).trim();
-  const normalized = raw.startsWith("0x") ? raw.toLowerCase() : raw.replace(/^@/, "").toLowerCase();
-  return { normalized, isWallet: isWallet(raw) };
+  if (!raw) return { normalized: null, isWallet: false };
+  const fromUrl = extractFromUrl(raw);
+  if (fromUrl) return fromUrl;
+  if (isWallet(raw)) return { normalized: raw.toLowerCase(), isWallet: true };
+  // @username, x(username), F(username) -> username
+  const normalized = raw.replace(/^@/, "").replace(/^[xX]\(([^)]+)\)$/, "$1").replace(/^[fF]\(([^)]+)\)$/, "$1").trim().toLowerCase();
+  return { normalized: normalized || null, isWallet: false };
 }
 
-export async function lookupByDeployerOrFee(query) {
+/** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either */
+export async function lookupByDeployerOrFee(query, filter = "both") {
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
-  if (!normalized) return { matches: [], query: query };
+  if (!normalized) return { matches: [], totalCount: 0, query: query };
 
-  let launches = await fetchSearch(query);
-  if (!launches || launches.length === 0) {
-    launches = await fetchAllLaunches();
-    launches = launches.filter((l) => launchMatches(l, normalized, isWalletQuery));
-  } else {
-    launches = launches.filter((l) => launchMatches(l, normalized, isWalletQuery));
+  const matches = (l) => launchMatches(l, normalized, isWalletQuery, filter);
+  let launches = [];
+  let totalCount = 0;
+  const searchResult = await fetchSearch(query);
+  if (searchResult) {
+    launches = searchResult.launches.filter(matches);
+    totalCount = searchResult.totalCount;
   }
+  // Search API caps at 5 results; with API key fetch full list and merge so we return all matches (e.g. 10)
+  if (BANKR_API_KEY) {
+    const all = await fetchAllLaunches();
+    const matched = all.filter(matches);
+    const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
+    for (const l of matched) {
+      const key = l.tokenAddress?.toLowerCase();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        launches.push(l);
+      }
+    }
+    totalCount = launches.length;
+  }
+  if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
   return {
     query,
     normalized,
+    totalCount,
     matches: launches.map((l) => ({
       tokenAddress: l.tokenAddress,
       tokenName: l.tokenName ?? "—",
@@ -181,9 +215,9 @@ async function main() {
     process.exit(1);
   }
 
-  const { matches, normalized } = await lookupByDeployerOrFee(query);
+  const { matches, totalCount, normalized } = await lookupByDeployerOrFee(query);
   console.log(`Query: ${query} (normalized: ${normalized})`);
-  console.log(`Matches: ${matches.length} token(s)\n`);
+  console.log(`Total: ${totalCount} token(s)`);
   if (matches.length > 0) {
     console.log(`Full list on site: https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}\n`);
   }

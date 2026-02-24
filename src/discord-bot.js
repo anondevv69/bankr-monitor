@@ -74,12 +74,23 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("lookup")
-      .setDescription("Search Bankr token launches by wallet, X handle, or Farcaster")
+      .setDescription("Search Bankr tokens by deployer or fee recipient (wallet, X, or Farcaster)")
       .addStringOption((o) =>
         o
           .setName("query")
-          .setDescription("Wallet (0x...), X handle (@user or user), or Farcaster (e.g. dwr.eth)")
+          .setDescription("Wallet (0x...), X: @user or x(user) or x.com/user link, Farcaster: user or F(user) or warpcast.com link")
           .setRequired(true)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("by")
+          .setDescription("Limit to deployer, fee recipient, or both")
+          .setRequired(false)
+          .addChoices(
+            { name: "Deployer", value: "deployer" },
+            { name: "Fee recipient", value: "fee" },
+            { name: "Both (default)", value: "both" }
+          )
       )
       .toJSON(),
   ];
@@ -157,9 +168,10 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
+    const by = interaction.options.getString("by") || "both";
     await interaction.deferReply({ ephemeral: true });
     try {
-      const { matches, normalized } = await lookupByDeployerOrFee(query);
+      const { matches, totalCount, normalized } = await lookupByDeployerOrFee(query, by);
       const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}`;
       if (matches.length === 0) {
         await interaction.editReply({
@@ -167,16 +179,24 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
+      const pageSize = 25;
+      const total = totalCount > 0 ? totalCount : matches.length;
+      const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
       const embed = {
         color: 0x0052_ff,
-        title: `Bankr lookup: ${query}`,
-        description: `${matches.length} token(s) · [Full list on site](${searchUrl})`,
-        fields: matches.slice(0, 25).map((m) => ({
+        title: `Bankr lookup: ${query}${byLabel}`,
+        description: `**${total} token(s) total** · [Full list on site](${searchUrl})`,
+        fields: matches.slice(0, pageSize).map((m) => ({
           name: `${m.tokenName} ($${m.tokenSymbol})`,
           value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
           inline: true,
         })),
-        footer: matches.length > 25 ? { text: `Showing 25 of ${matches.length}` } : undefined,
+        footer:
+          matches.length > pageSize
+            ? { text: `Showing 1–${pageSize} of ${total} · Use site for full list & pagination` }
+            : total > matches.length
+              ? { text: `${matches.length} shown (${total} total) · Use site for full list` }
+              : undefined,
       };
       await interaction.editReply({ embeds: [embed] });
     } catch (e) {
