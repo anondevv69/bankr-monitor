@@ -341,7 +341,11 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only run main when this file is executed directly (e.g. npm run token-stats), not when imported by discord-bot/fees-for-wallet
+const isRunDirectly = process.argv[1]?.includes("token-stats");
+if (isRunDirectly) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
