@@ -181,11 +181,17 @@ client.on("interactionCreate", async (interaction) => {
       }
       const pageSize = 25;
       const total = totalCount > 0 ? totalCount : matches.length;
+      const showing = Math.min(matches.length, pageSize);
+      const hasMore = total > showing || matches.length > pageSize;
       const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
+      const description =
+        hasMore && total > showing
+          ? `**${total} token(s) associated** with this wallet · Showing first ${showing} below.\n**[View all ${total} on site →](${searchUrl})**`
+          : `**${total} token(s) total** · [Full list on site](${searchUrl})`;
       const embed = {
         color: 0x0052_ff,
         title: `Bankr lookup: ${query}${byLabel}`,
-        description: `**${total} token(s) total** · [Full list on site](${searchUrl})`,
+        description,
         fields: matches.slice(0, pageSize).map((m) => ({
           name: `${m.tokenName} ($${m.tokenSymbol})`,
           value: `CA: \`${m.tokenAddress}\`\n[Bankr](${m.bankrUrl})`,
@@ -193,9 +199,9 @@ client.on("interactionCreate", async (interaction) => {
         })),
         footer:
           matches.length > pageSize
-            ? { text: `Showing 1–${pageSize} of ${total} · Use site for full list & pagination` }
+            ? { text: `Showing 1–${pageSize} of ${total} · Click link above for full list` }
             : total > matches.length
-              ? { text: `${matches.length} shown (${total} total) · Use site for full list` }
+              ? { text: `Showing ${matches.length} of ${total} · Click "View all" above to see the rest` }
               : undefined,
       };
       await interaction.editReply({ embeds: [embed] });

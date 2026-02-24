@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
-const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10);
+const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "2000", 10);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 
 function norm(s) {
@@ -170,7 +170,7 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
     launches = searchResult.launches.filter(matches);
     totalCount = searchResult.totalCount;
   }
-  // Search API caps at 5 results; with API key fetch full list and merge so we return all matches (e.g. 10)
+  // Search API often caps at 5 results; with API key fetch full list and merge so we return all matches
   if (BANKR_API_KEY) {
     const all = await fetchAllLaunches();
     const matched = all.filter(matches);
