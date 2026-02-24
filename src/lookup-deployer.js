@@ -18,8 +18,9 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
-const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "5000", 10);
+const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "20000", 10);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
+const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
 function norm(s) {
   if (!s || typeof s !== "string") return null;
@@ -31,14 +32,16 @@ function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
 }
 
-/** Fetch from Bankr search API (same as bankr.bot/launches/search). Returns { launches, totalCount } or null on failure. */
+/** Fetch from Bankr search API (same as bankr.bot/launches/search).
+ * Returns { launches, totalCount } or null on failure.
+ * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
 async function fetchSearch(query) {
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;
   const seen = new Set();
   const out = [];
   let offset = 0;
-  const pageSize = 5;
+  const pageSize = SEARCH_PAGE_SIZE;
   let totalCount = 0;
 
   try {
@@ -74,7 +77,20 @@ async function fetchSearch(query) {
   }
 }
 
-/** Fetch launches from Bankr API (paginated). Returns raw launch objects. */
+/** Fetch one page of launches from Bankr API. */
+async function fetchLaunchesPage(offset, pageSize = 50) {
+  const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
+  const res = await fetch(url, {
+    headers: { "X-API-Key": BANKR_API_KEY, Accept: "application/json" },
+  });
+  if (!res.ok) return [];
+  const json = await res.json();
+  return json.launches?.filter((l) => l.status === "deployed") ?? [];
+}
+
+const FULL_LIST_CONCURRENCY = Math.min(parseInt(process.env.BANKR_FULL_LIST_CONCURRENCY || "10", 10), 20);
+
+/** Fetch launches from Bankr API (paginated, parallel). Returns raw launch objects. */
 async function fetchAllLaunches() {
   if (!BANKR_API_KEY) return [];
   const out = [];
@@ -83,27 +99,27 @@ async function fetchAllLaunches() {
   let offset = 0;
 
   while (offset < BANKR_LAUNCHES_LIMIT) {
-    const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
-    const res = await fetch(url, {
-      headers: { "X-API-Key": BANKR_API_KEY, Accept: "application/json" },
-    });
-    if (!res.ok) {
-      console.error(`[Bankr API] ${res.status} ${res.statusText}`);
-      break;
+    const batchOffsets = [];
+    for (let i = 0; i < FULL_LIST_CONCURRENCY; i++) {
+      const o = offset + i * pageSize;
+      if (o >= BANKR_LAUNCHES_LIMIT) break;
+      batchOffsets.push(o);
     }
-    const json = await res.json();
-    const batch = json.launches?.filter((l) => l.status === "deployed") ?? [];
-    if (batch.length === 0) break;
-
-    for (const l of batch) {
-      const key = l.tokenAddress?.toLowerCase();
-      if (key && !seen.has(key)) {
-        seen.add(key);
-        out.push(l);
+    if (batchOffsets.length === 0) break;
+    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize)));
+    let hasLessThanFull = false;
+    for (const batch of batches) {
+      if (batch.length < pageSize) hasLessThanFull = true;
+      for (const l of batch) {
+        const key = l.tokenAddress?.toLowerCase();
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          out.push(l);
+        }
       }
     }
-    if (batch.length < pageSize) break;
-    offset += batch.length;
+    if (hasLessThanFull || batches.some((b) => b.length === 0)) break;
+    offset += batchOffsets.length * pageSize;
   }
   return out;
 }
@@ -186,7 +202,7 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
-  const possiblyCapped = launches.length === 5 && totalCount === 5;
+  const possiblyCapped = launches.length === SEARCH_PAGE_SIZE && totalCount === SEARCH_PAGE_SIZE;
 
   return {
     query,
