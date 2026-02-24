@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
-const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "2000", 10);
+const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "5000", 10);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 
 function norm(s) {
@@ -38,7 +38,7 @@ async function fetchSearch(query) {
   const seen = new Set();
   const out = [];
   let offset = 0;
-  const pageSize = 50;
+  const pageSize = 5;
   let totalCount = 0;
 
   try {
@@ -65,8 +65,8 @@ async function fetchSearch(query) {
         }
       }
       if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
-      offset += pageSize;
-      if (byDeployer.length < pageSize && byFee.length < pageSize) break;
+      offset += Math.max(byDeployer.length, byFee.length, 1);
+      if (byDeployer.length === 0 && byFee.length === 0) break;
     }
     return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
   } catch {
@@ -182,7 +182,7 @@ export async function lookupByDeployerOrFee(query, filter = "both") {
         launches.push(l);
       }
     }
-    totalCount = launches.length;
+    totalCount = Math.max(launches.length, totalCount);
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
