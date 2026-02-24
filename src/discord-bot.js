@@ -273,10 +273,11 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ ephemeral: true });
     try {
       const { matches, totalCount, normalized, possiblyCapped } = await lookupByDeployerOrFee(query, by);
-      const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}`;
+      const searchQ = normalized || String(query).trim();
+      const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
         await interaction.editReply({
-          content: `No Bankr tokens found for **${query}** (normalized: \`${normalized}\`).\nFull search: ${searchUrl}`,
+          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}`,
         });
         return;
       }

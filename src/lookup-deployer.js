@@ -183,7 +183,8 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   const matches = (l) => launchMatches(l, normalized, isWalletQuery, filter);
   let launches = [];
   let totalCount = 0;
-  const searchResult = await fetchSearch(query);
+  // Search using normalized form (username or wallet) so URLs like https://x.com/ayowtfchil become "ayowtfchil"
+  const searchResult = await fetchSearch(normalized);
   if (searchResult) {
     launches = searchResult.launches.filter(matches);
     totalCount = searchResult.totalCount;
