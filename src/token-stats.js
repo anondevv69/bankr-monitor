@@ -210,6 +210,7 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
           chainId: CHAIN_ID,
           beneficiary: beneficiaryAddress,
         },
+      }),
     });
     if (!res.ok) return null;
     const json = await res.json();
