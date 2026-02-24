@@ -56,10 +56,13 @@ function buildLookupEmbed(data, page) {
     description = `**At least ${matches.length} token(s)** · Latest we can show here.\n**[View full list on site →](${searchUrl})**`;
     footer = { text: "Full list on Bankr" };
   } else {
-    description = `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`;
+    description =
+      totalPages > 1
+        ? `**${total} token(s) associated** with this wallet · **5 per page.** Use Previous/Next below.\n**[View on site →](${searchUrl})**`
+        : `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`;
     footer =
       totalPages > 1
-        ? { text: `Page ${currentPage + 1}/${totalPages}` }
+        ? { text: `Page ${currentPage + 1}/${totalPages} of ${matches.length} tokens` }
         : undefined;
   }
   return {

@@ -18,7 +18,8 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
-const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "20000", 10);
+// How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
+const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000", 10);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
