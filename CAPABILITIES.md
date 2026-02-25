@@ -8,7 +8,7 @@
 | **/watch remove** | Remove a user from the watch list (by type + value). |
 | **/watch list** | Show the current watch list (X, FC, wallets, keywords). |
 | **/lookup** | Search Bankr tokens by **deployer** or **fee recipient**. Query can be a **wallet** (0x…), **X handle** (@user or x.com link), or **Farcaster** (handle or warpcast link). Option **by**: Deployer / Fee recipient / Both. Returns token list (latest 5 we can show + link to full list on Bankr), with pagination when we have more than 5. |
-| **/fees** | Show **accrued fees (claimable-style)** for a wallet or X/Farcaster **as fee recipient**. Uses the **Doppler indexer** (`DOPPLER_INDEXER_URL` → your [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) or a public endpoint) for `cumulatedFees`. |
+| **/deploy** | **Deploy a Bankr token** from Discord. Options: **name** (required), **symbol**, **description**, **image_url**, **website_url**, **tweet_url**. **Fee recipient:** set type (wallet / X / Farcaster / ENS) + value to send 57% creator fees there; otherwise fees go to the API key wallet. **simulate_only** for dry run. Requires **BANKR_API_KEY** with [Agent API (write) access](https://bankr.bot/api); rate limit 50 deploys/24h. |
 | **/help** | Show this breakdown of how to use the bot. |
 
 **Two notification channels (optional):**

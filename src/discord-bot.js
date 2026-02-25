@@ -27,7 +27,7 @@ import { dirname, join } from "path";
 import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee } from "./lookup-deployer.js";
-import { getFeesSummary } from "./fees-for-wallet.js";
+import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -169,18 +169,72 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("fees")
-      .setDescription("Show claimable fees (token + WETH) for a wallet or X/Farcaster as fee recipient")
+      .setName("deploy")
+      .setDescription("Deploy a Bankr token (ticker, description, links; fees to wallet, X, or Farcaster)")
       .addStringOption((o) =>
         o
-          .setName("query")
-          .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
+          .setName("name")
+          .setDescription("Token name (required, 1–100 chars)")
           .setRequired(true)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("symbol")
+          .setDescription("Ticker symbol (optional, 1–10 chars)")
+          .setRequired(false)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("description")
+          .setDescription("Short description (optional, max 500 chars)")
+          .setRequired(false)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("image_url")
+          .setDescription("URL to token logo image")
+          .setRequired(false)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("website_url")
+          .setDescription("Token website URL")
+          .setRequired(false)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("tweet_url")
+          .setDescription("Twitter/X post URL about the token")
+          .setRequired(false)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("fee_recipient_type")
+          .setDescription("Where to send creator fees (57%)")
+          .setRequired(false)
+          .addChoices(
+            { name: "Wallet (0x...)", value: "wallet" },
+            { name: "X (Twitter) handle", value: "x" },
+            { name: "Farcaster handle", value: "farcaster" },
+            { name: "ENS name", value: "ens" }
+          )
+      )
+      .addStringOption((o) =>
+        o
+          .setName("fee_recipient_value")
+          .setDescription("Address, @handle, or ENS (required if fee type is set)")
+          .setRequired(false)
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName("simulate_only")
+          .setDescription("Dry run: no real deploy (default: false)")
+          .setRequired(false)
       )
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("Show how to use BankrMonitor (watch, lookup, fees)")
+      .setDescription("Show how to use BankrMonitor (watch, lookup, deploy)")
       .toJSON(),
   ];
 
@@ -324,7 +378,7 @@ client.on("interactionCreate", async (interaction) => {
       color: 0x0052_ff,
       title: "BankrMonitor – How to use",
       description:
-        "This bot helps you **watch** Bankr launches, **look up** tokens by wallet/X/Farcaster, and **check accrued fees** for fee recipients. Data: Bankr API + Doppler indexer.",
+        "This bot helps you **watch** Bankr launches, **look up** tokens by wallet/X/Farcaster, and **deploy** Bankr tokens. Data: Bankr API.",
       fields: [
         {
           name: "📋 /watch",
@@ -343,12 +397,12 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
         {
-          name: "💰 /fees",
+          name: "🚀 /deploy",
           value:
-            "**Claimable trading rewards** for a wallet or X/Farcaster **as fee recipient** (57% fee share).\n" +
-            "**query:** Same as lookup (wallet, @handle, or link).\n" +
-            "Shows **token amount + WETH** claimable per token, wallet, and token CA (Base). **Claim:** [bankr.bot/terminal](https://bankr.bot/terminal) or DM Bankr: *\"claim my [token] fees\"*.\n" +
-            "Uses **Doppler indexer** (`DOPPLER_INDEXER_URL`) for `cumulatedFees`.",
+            "**Deploy a Bankr token** from Discord.\n" +
+            "**name** (required), **symbol**, **description**, **image_url**, **website_url**, **tweet_url**.\n" +
+            "**Fee recipient:** wallet (0x…), X handle, Farcaster handle, or ENS — set type + value to send 57% creator fees there. Otherwise fees go to the API key wallet.\n" +
+            "**simulate_only:** dry run. Requires **BANKR_API_KEY** with Agent API (write) access at [bankr.bot/api](https://bankr.bot/api). Rate limit: 50 deploys/24h.",
           inline: false,
         },
         {
@@ -358,61 +412,64 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
       ],
-      footer: { text: "Bankr: bankr.bot | Doppler indexer for volume + fees" },
+      footer: { text: "Bankr: bankr.bot" },
     };
     await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => {});
     return;
   }
 
-  if (interaction.commandName === "fees") {
-    const query = interaction.options.getString("query");
+  if (interaction.commandName === "deploy") {
+    const name = interaction.options.getString("name");
+    const symbol = interaction.options.getString("symbol");
+    const description = interaction.options.getString("description");
+    const imageUrl = interaction.options.getString("image_url");
+    const websiteUrl = interaction.options.getString("website_url");
+    const tweetUrl = interaction.options.getString("tweet_url");
+    const feeType = interaction.options.getString("fee_recipient_type");
+    const feeValue = interaction.options.getString("fee_recipient_value");
+    const simulateOnly = interaction.options.getBoolean("simulate_only") ?? false;
     await interaction.deferReply({ ephemeral: true });
     try {
-      const out = await getFeesSummary(query);
-      if (out.error) {
+      if (feeType && !feeValue?.trim()) {
         await interaction.editReply({
-          content: `${out.error}\n[Search on Bankr](${`https://bankr.bot/launches/search?q=${encodeURIComponent(query)}`})`,
+          content: "If you set **fee recipient type**, you must also set **fee recipient value** (address, @handle, or ENS).",
         });
         return;
       }
-      const { totalUsd, tokens, indexerUsed, feeWallet, formatUsd } = out;
-      const totalStr = formatUsd(totalUsd) ?? `$${totalUsd.toFixed(2)}`;
-      if (!indexerUsed || tokens.length === 0) {
-        await interaction.editReply({
-          content:
-            `**${query}** as fee recipient: **${out.matchCount ?? 0} token(s)** in our list, but the indexer didn't return fee data.\n` +
-            `Set **DOPPLER_INDEXER_URL** to an indexer that supports \`cumulatedFees\`, or use **Bankr** to see claimable amounts.`,
-        });
-        return;
-      }
-      function fmtNum(n) {
-        if (n >= 1e9) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-        if (n >= 1e6) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-        if (n >= 1e3) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-        return n.toFixed(6);
-      }
-      const lines = tokens.slice(0, 10).map((t) => {
-        const tokenClaim = t.tokenAmount != null && t.tokenAmount > 0 ? `${fmtNum(t.tokenAmount)} $${t.tokenSymbol} claimable (57% fee share)` : "";
-        const wethClaim = t.wethAmount != null && t.wethAmount > 0 ? `${fmtNum(t.wethAmount)} WETH` : "";
-        const parts = [tokenClaim, wethClaim].filter(Boolean);
-        return `• **${t.tokenName}** ($${t.tokenSymbol})\n  ${parts.join(" · ")}\n  Token: \`${t.tokenAddress}\` (Base)`;
+      const body = buildDeployBody({
+        tokenName: name,
+        tokenSymbol: symbol || undefined,
+        description: description || undefined,
+        image: imageUrl || undefined,
+        websiteUrl: websiteUrl || undefined,
+        tweetUrl: tweetUrl || undefined,
+        feeRecipient: feeType && feeValue ? { type: feeType, value: feeValue } : undefined,
+        simulateOnly,
       });
-      const description =
-        `**Claimable trading rewards** for fee recipient (57% fee share).\n` +
-        (feeWallet ? `Wallet: \`${feeWallet}\`\n` : "") +
-        `**Total (USD): ${totalStr}** across ${tokens.length} token(s).\n\n` +
-        lines.join("\n\n") +
-        (tokens.length > 10 ? `\n\n… and ${tokens.length - 10} more` : "") +
-        `\n\n**Claim:** [bankr.bot/terminal](https://bankr.bot/terminal) or DM Bankr: *"claim my [token] fees"*`;
+      const result = await callBankrDeploy(body);
+      if (result.simulated) {
+        await interaction.editReply({
+          content: `**Simulated deploy** (no tx broadcast).\nPredicted token address: \`${result.tokenAddress ?? "—"}\``,
+        });
+        return;
+      }
+      const tokenAddr = result.tokenAddress ?? "";
+      const launchUrl = tokenAddr ? `https://bankr.bot/launches/${tokenAddr}` : "https://bankr.bot/launches";
+      const lines = [
+        result.tokenAddress ? `**Token:** \`${result.tokenAddress}\`` : "",
+        result.poolId ? `**Pool ID:** \`${result.poolId}\`` : "",
+        result.txHash ? `**Tx:** [BaseScan](${`https://basescan.org/tx/${result.txHash}`})` : "",
+        `**Launch:** [View on Bankr](${launchUrl})`,
+      ].filter(Boolean);
       const embed = {
         color: 0x0052_ff,
-        title: `Fees: ${query}`,
-        description,
-        footer: { text: "Data from Doppler indexer. Claim anytime via Bankr." },
+        title: "Token deployed",
+        description: lines.join("\n"),
+        footer: { text: "Bankr deploy API • Creator fees 57%" },
       };
       await interaction.editReply({ embeds: [embed] });
     } catch (e) {
-      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: `Deploy failed: ${e.message}` }).catch(() => {});
     }
     return;
   }

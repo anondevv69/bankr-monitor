@@ -11,11 +11,19 @@ import "dotenv/config";
 import { lookupByDeployerOrFee } from "./lookup-deployer.js";
 import { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd } from "./token-stats.js";
 
+const FEES_INDEXER_TIMEOUT_MS = 12_000; // reply to Discord before defer expires; indexer may be slow or down
+
 /**
  * Get aggregated fees for a wallet or X/Farcaster handle (as fee recipient).
- * @returns { Promise<{ totalUsd: number, tokens: Array<{ tokenAddress, tokenName, tokenSymbol, totalFeesUsd }>, indexerUsed: boolean, feeWallet: string|null, error?: string }> }
+ * Times out after FEES_INDEXER_TIMEOUT_MS so /fees doesn't hang when indexer is down.
+ * @returns { Promise<{ totalUsd: number, tokens: Array, matchCount: number, indexerUsed: boolean, feeWallet: string|null, error?: string, timeout?: boolean }> }
  */
 export async function getFeesSummary(query) {
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("INDEXER_TIMEOUT")), FEES_INDEXER_TIMEOUT_MS)
+  );
+
+  const run = async () => {
   const { matches } = await lookupByDeployerOrFee(query, "fee");
   if (matches.length === 0) {
     return { totalUsd: 0, tokens: [], matchCount: 0, indexerUsed: false, feeWallet: null, error: "No tokens found where this wallet or handle is fee recipient." };
@@ -45,8 +53,8 @@ export async function getFeesSummary(query) {
       totalFeesUsd: usd,
       tokenAmount,
       wethAmount,
-      rawToken: raw0.toString(),
-      rawWeth: raw1.toString(),
+      rawToken: rawToken.toString(),
+      rawWeth: rawWeth.toString(),
     });
   }
 
@@ -58,6 +66,24 @@ export async function getFeesSummary(query) {
     feeWallet,
     formatUsd,
   };
+  };
+
+  try {
+    return await Promise.race([run(), timeoutPromise]);
+  } catch (e) {
+    if (e?.message === "INDEXER_TIMEOUT") {
+      return {
+        totalUsd: 0,
+        tokens: [],
+        matchCount: 0,
+        indexerUsed: false,
+        feeWallet: null,
+        timeout: true,
+        error: "Indexer timed out or is unavailable. Check DOPPLER_INDEXER_URL and try again, or use [bankr.bot/terminal](https://bankr.bot/terminal) to see claimable fees.",
+      };
+    }
+    throw e;
+  }
 }
 
 async function main() {
