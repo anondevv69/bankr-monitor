@@ -125,6 +125,31 @@ async function fetchAllLaunches() {
   return out;
 }
 
+/** Build map of normalized X/FC handle -> wallet from launches (so we can resolve "gork" -> wallet and search by wallet). */
+function buildHandleToWalletMap(launches) {
+  const map = new Map();
+  for (const l of launches) {
+    const d = l.deployer;
+    const f = l.feeRecipient;
+    const add = (handle, wallet) => {
+      if (!handle || !wallet) return;
+      const h = norm(String(handle).replace(/^@/, ""));
+      if (h) map.set(h, (map.get(h) || wallet).toLowerCase());
+    };
+    if (d) {
+      if (d.xUsername) add(d.xUsername, d.walletAddress);
+      const fc = d.farcasterUsername ?? d.farcaster ?? d.fcUsername;
+      if (fc) add(fc, d.walletAddress);
+    }
+    if (f) {
+      if (f.xUsername) add(f.xUsername, f.walletAddress);
+      const fc = f.farcasterUsername ?? f.farcaster ?? f.fcUsername;
+      if (fc) add(fc, f.walletAddress);
+    }
+  }
+  return map;
+}
+
 /** Check if a launch matches the query. filter: "deployer" | "fee" | "both". */
 function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   const deployer = launch.deployer;
@@ -174,6 +199,22 @@ function parseQuery(query) {
   return { normalized: normalized || null, isWallet: false };
 }
 
+/**
+ * Resolve an X or Farcaster handle (or URL) to a wallet address using Bankr launch data.
+ * Requires BANKR_API_KEY. Returns the wallet if we have it in our launch list; otherwise null.
+ * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean }> }
+ */
+export async function resolveHandleToWallet(query) {
+  const { normalized, isWallet } = parseQuery(query);
+  if (!normalized) return { wallet: null, normalized: null, isWallet: false };
+  if (isWallet) return { wallet: normalized, normalized, isWallet: true };
+  if (!BANKR_API_KEY) return { wallet: null, normalized, isWallet: false };
+  const all = await fetchAllLaunches();
+  const handleToWallet = buildHandleToWalletMap(all);
+  const wallet = handleToWallet.get(normalized) ?? null;
+  return { wallet, normalized, isWallet: false };
+}
+
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either
  *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first */
 export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest") {
@@ -204,6 +245,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   // Search API often caps at 5 results; with API key fetch full list and merge so we return all matches
   if (BANKR_API_KEY) {
     const all = await fetchAllLaunches();
+    const handleToWallet = buildHandleToWalletMap(all);
     const matched = all.filter(matches);
     const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
     for (const l of matched) {
@@ -214,6 +256,27 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       }
     }
     totalCount = Math.max(launches.length, totalCount);
+    // Resolve X/FC handle -> wallet from the list, then search by wallet so we get all tokens (Bankr search finds by wallet; handle search often misses fee recipient)
+    if (!isWalletQuery && normalized) {
+      const wallet = handleToWallet.get(normalized);
+      if (wallet) {
+        resolvedWallet = wallet;
+        const byWallet = await fetchSearch(wallet);
+        if (byWallet && byWallet.launches.length > 0) {
+          const walletMatchesFn = (l) => launchMatches(l, wallet, true, filter);
+          const fromWallet = byWallet.launches.filter(walletMatchesFn);
+          const seenAddr = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
+          for (const l of fromWallet) {
+            const key = l.tokenAddress?.toLowerCase();
+            if (key && !seenAddr.has(key)) {
+              seenAddr.add(key);
+              launches.push(l);
+            }
+          }
+          totalCount = Math.max(byWallet.totalCount ?? totalCount, launches.length);
+        }
+      }
+    }
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
@@ -265,8 +328,9 @@ async function main() {
     process.exit(1);
   }
 
-  const { matches, totalCount, normalized } = await lookupByDeployerOrFee(query);
+  const { matches, totalCount, normalized, resolvedWallet } = await lookupByDeployerOrFee(query);
   console.log(`Query: ${query} (normalized: ${normalized})`);
+  if (resolvedWallet) console.log(`Resolved wallet: ${resolvedWallet}`);
   console.log(`Total: ${totalCount} token(s)`);
   if (matches.length > 0) {
     console.log(`Full list on site: https://bankr.bot/launches/search?q=${encodeURIComponent(String(query).trim())}\n`);

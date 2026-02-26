@@ -27,7 +27,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
-import { lookupByDeployerOrFee } from "./lookup-deployer.js";
+import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,28 +40,31 @@ const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
 function buildLookupEmbed(data, page) {
-  const { matches, query, by, searchUrl, totalCount, possiblyCapped } = data;
+  const { matches, query, by, searchUrl, totalCount, possiblyCapped, resolvedWallet } = data;
   const total = totalCount > 0 ? totalCount : matches.length;
   const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
   const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
   const currentPage = Math.max(0, Math.min(page, totalPages - 1));
   const start = currentPage * LOOKUP_PAGE_SIZE;
   const pageMatches = matches.slice(start, start + LOOKUP_PAGE_SIZE);
+  const walletLine = resolvedWallet ? `**Wallet:** \`${resolvedWallet}\`\n\n` : "";
   let description;
   let footer;
   if (total > matches.length) {
     description =
+      walletLine +
       `**${total} token(s) associated** with this wallet · **Latest ${matches.length} we can show here.**\n` +
       `Click the link below to see all ${total} on Bankr.\n**[View all ${total} on site →](${searchUrl})**`;
     footer = { text: `Showing latest ${matches.length} of ${total} · Full list on Bankr` };
   } else if (possiblyCapped) {
-    description = `**At least ${matches.length} token(s)** · Latest we can show here.\n**[View full list on site →](${searchUrl})**`;
+    description = walletLine + `**At least ${matches.length} token(s)** · Latest we can show here.\n**[View full list on site →](${searchUrl})**`;
     footer = { text: "Full list on Bankr" };
   } else {
     description =
-      totalPages > 1
+      walletLine +
+      (totalPages > 1
         ? `**${total} token(s) associated** with this wallet · **5 per page.** Use Previous/Next below.\n**[View on site →](${searchUrl})**`
-        : `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`;
+        : `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`);
     footer =
       totalPages > 1
         ? { text: `Page ${currentPage + 1}/${totalPages} of ${matches.length} tokens` }
@@ -170,6 +173,16 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
+      .setName("resolve")
+      .setDescription("Get the wallet address for an X or Farcaster account")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("X handle (@user), Farcaster handle, or profile URL (e.g. x.com/gork)")
+          .setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName("deploy")
       .setDescription("Deploy a Bankr token (ticker, description, links; fees to wallet, X, or Farcaster)")
       .addStringOption((o) =>
@@ -235,7 +248,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("Show how to use BankrMonitor (watch, lookup, deploy)")
+      .setDescription("Show how to use BankrMonitor (watch, lookup, resolve, deploy)")
       .toJSON(),
   ];
 
@@ -337,12 +350,36 @@ client.on("interactionCreate", async (interaction) => {
 
   if (!interaction.isChatInputCommand()) return;
 
+  if (interaction.commandName === "resolve") {
+    const query = interaction.options.getString("query");
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query);
+      if (wallet) {
+        await interaction.editReply({
+          content:
+            (isWallet ? `**Wallet:** \`${wallet}\`\n\n` : `**Wallet for ${normalized}:** \`${wallet}\`\n\n`) +
+            "Use **/lookup** with the same handle or wallet to see token deployments.",
+        });
+      } else {
+        await interaction.editReply({
+          content:
+            `Could not resolve a wallet for **${normalized || query}**. ` +
+            "We only know wallets from Bankr launches (set BANKR_API_KEY). Try **/lookup** to see tokens, or use the full wallet address.",
+        });
+      }
+    } catch (e) {
+      await interaction.editReply({ content: `Resolve failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
     const by = interaction.options.getString("by") || "both";
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const { matches, totalCount, normalized, possiblyCapped } = await lookupByDeployerOrFee(query, by);
+      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by);
       const searchQ = normalized || String(query).trim();
       const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
@@ -358,6 +395,7 @@ client.on("interactionCreate", async (interaction) => {
         searchUrl,
         totalCount,
         possiblyCapped,
+        resolvedWallet: resolvedWallet ?? null,
         currentPage: 0,
         createdAt: Date.now(),
       };
@@ -391,10 +429,17 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "🔍 /lookup",
           value:
-            "Search Bankr tokens by **deployer** or **fee recipient**.\n" +
-            "**query:** wallet (`0x...`), X handle (`@user` or `https://x.com/user`), or Farcaster (handle or warpcast link).\n" +
+            "**Deployment info:** Search Bankr tokens by **deployer** or **fee recipient**.\n" +
+            "**query:** wallet (`0x...`), X handle (`@user` or x.com/user/...), or Farcaster (handle or farcaster.xyz/...).\n" +
             "**by:** Deployer / Fee recipient / Both (default).\n" +
-            "Shows latest tokens we can return + link to [full list on Bankr](https://bankr.bot/launches/search). Pagination when there are more than 5.",
+            "Shows tokens + link to [full list on Bankr](https://bankr.bot/launches/search). Pagination when there are more than 5.",
+          inline: false,
+        },
+        {
+          name: "🔗 /resolve",
+          value:
+            "**Get wallet for X or Farcaster.** Resolves a handle (or profile URL) to its wallet address from Bankr launch data.\n" +
+            "**query:** X handle, Farcaster handle, or profile URL. Use **/lookup** with the same handle to see their token deployments.",
           inline: false,
         },
         {
