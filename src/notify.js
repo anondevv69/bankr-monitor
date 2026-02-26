@@ -85,7 +85,8 @@ function getFarcaster(d) {
 }
 
 function walletAddr(obj) {
-  if (!obj) return null;
+  if (obj == null) return null;
+  if (typeof obj === "string" && /^0x[a-fA-F0-9]{40}$/.test(obj.trim())) return obj.trim().toLowerCase();
   const a = obj.walletAddress ?? obj.wallet ?? obj.address ?? obj.beneficiary;
   return a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null;
 }
@@ -100,8 +101,8 @@ function formatBankrLaunch(l) {
   const deployerFc = normHandle(rawDeployerFc);
   const feeFc = normHandle(rawFeeFc);
   const x = deployerX || feeX || null;
-  const launcherWallet = walletAddr(l.deployer);
-  const feeWallet = walletAddr(l.feeRecipient);
+  const launcherWallet = walletAddr(l.deployer) ?? walletAddr(l.deployerWallet ?? l.deployerWalletAddress);
+  const feeWallet = walletAddr(l.feeRecipient) ?? walletAddr(l.feeRecipientWallet ?? l.feeRecipientWalletAddress ?? l.feeRecipientAddress);
   return {
     name: l.tokenName,
     symbol: l.tokenSymbol,
@@ -471,6 +472,7 @@ export async function runNotifyCycle() {
   const { x: watchX, fc: watchFc, wallet: watchWallet, keywords: watchKeywords } = await getWatchList();
 
   const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
+  if (hasWatchList) console.log(`[watch] Loaded: ${watchWallet.size} wallet(s), ${watchKeywords.size} keyword(s)`);
 
   const newLaunches = launches.filter((l) => {
     const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
@@ -524,7 +526,13 @@ export async function runNotifyCycle() {
   });
 
   await saveSeen(seenArr);
-  for (const l of enriched) console.log(`Notifying: ${l.name} ($${l.symbol})${l.isWatchMatch ? " [watch]" : ""}`);
+  for (const l of enriched) {
+    const fee0 = l.beneficiaries?.[0] && (typeof l.beneficiaries[0] === "object" ? (l.beneficiaries[0].beneficiary ?? l.beneficiaries[0].address) : l.beneficiaries[0]);
+    const launcherShort = l.launcher ? `${l.launcher.slice(0, 6)}..${l.launcher.slice(-4)}` : "—";
+    const feeShort = fee0 ? `${String(fee0).slice(0, 6)}..${String(fee0).slice(-4)}` : "—";
+    if (hasWatchList) console.log(`Notifying: ${l.name} ($${l.symbol}) launcher=${launcherShort} fee=${feeShort}${l.isWatchMatch ? " [WATCH MATCH]" : ""}`);
+    else console.log(`Notifying: ${l.name} ($${l.symbol})${l.isWatchMatch ? " [watch]" : ""}`);
+  }
   console.log(`Done. ${enriched.length} new, ${launches.length} total (seen: ${seenArr.length}). Set SEEN_FILE=/data/bankr-seen.json on a volume so seen list persists across deploys.`);
   return { newLaunches: enriched, totalCount: launches.length };
 }
