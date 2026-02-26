@@ -283,11 +283,16 @@ async function resolveHandleViaDeploySimulate(handle) {
           feeRecipient: { type, value: handle },
         }),
       });
+      if (res.status === 401 || res.status === 403) return null;
       if (!res.ok) continue;
       const data = await res.json().catch(() => ({}));
       const creator = data?.feeDistribution?.creator;
-      const addr = creator?.address ?? creator?.wallet ?? (typeof creator === "string" ? creator : null);
-      if (addr && /^0x[a-fA-F0-9]{40}$/.test(addr)) return addr.trim().toLowerCase();
+      const addr =
+        creator?.address ??
+        creator?.wallet ??
+        creator?.walletAddress ??
+        (typeof creator === "string" ? creator : null);
+      if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim())) return String(addr).trim().toLowerCase();
     } catch {
       // ignore and try next type
     }
