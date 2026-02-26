@@ -1,0 +1,26 @@
+# Dependencies and caches (rebuilt in image)
+node_modules
+npm-debug.log*
+.npm
+.pnpm-store
+
+# Env and local state (never in image)
+.env
+.env.*
+!.env.example
+.bankr-*.json
+*.log
+
+# Git and editor
+.git
+.gitignore
+.cursor
+.vscode
+*.swp
+.DS_Store
+
+# Optional: shrink context (uncomment if build still slow)
+# .github
+# docs
+# *.md
+# !README.md

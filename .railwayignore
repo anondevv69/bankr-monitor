@@ -1,0 +1,11 @@
+# Don’t upload these to Railway (smaller/faster deploy)
+node_modules
+.git
+.env
+.env.*
+!.env.example
+.bankr-*.json
+*.log
+.cursor
+.vscode
+.DS_Store
