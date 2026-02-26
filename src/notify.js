@@ -24,7 +24,11 @@ import { fetchNewLaunches } from "./fetch-from-chain.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
-const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10);
+// Cap pagination to avoid 429; only need recent launches for notify. Override with BANKR_LAUNCHES_LIMIT.
+const BANKR_LAUNCHES_LIMIT = Math.min(
+  parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10),
+  2000
+);
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
 const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
 const DOPPLER_INDEXER_URL =
@@ -129,7 +133,11 @@ async function fetchFromBankrApi() {
         },
       });
       if (!res.ok) {
-        console.error(`[Bankr API] ${res.status} ${res.statusText}: ${url}`);
+        if (res.status === 429) {
+          console.warn("[Bankr API] Rate limited (429). Using results so far; next poll after interval.");
+        } else {
+          console.error(`[Bankr API] ${res.status} ${res.statusText}: ${url}`);
+        }
         break;
       }
       const json = await res.json();

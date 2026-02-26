@@ -184,7 +184,16 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   let launches = [];
   let totalCount = 0;
   // Search using normalized form (username or wallet) so URLs like https://x.com/ayowtfchil become "ayowtfchil"
-  const searchResult = await fetchSearch(normalized);
+  let searchResult = await fetchSearch(normalized);
+  // If handle (no wallet) and no results, try with @ prefix — Bankr search may index X as "@gork"
+  if (!isWalletQuery && (!searchResult || searchResult.launches.length === 0) && normalized && !normalized.startsWith("@")) {
+    const withAt = await fetchSearch("@" + normalized);
+    if (withAt && withAt.launches.length > 0) {
+      searchResult = searchResult
+        ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
+        : withAt;
+    }
+  }
   if (searchResult) {
     launches = searchResult.launches.filter(matches);
     totalCount = searchResult.totalCount;

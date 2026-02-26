@@ -17,6 +17,7 @@ import {
   Client,
   ComponentType,
   GatewayIntentBits,
+  MessageFlags,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -319,7 +320,7 @@ client.on("interactionCreate", async (interaction) => {
     pruneLookupCache();
     const entry = lookupCache.get(interaction.message?.id);
     if (!entry) {
-      await interaction.reply({ content: "This lookup has expired. Run /lookup again.", ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: "This lookup has expired. Run /lookup again.", flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
     const totalPages = Math.ceil(entry.matches.length / LOOKUP_PAGE_SIZE) || 1;
@@ -339,7 +340,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
     const by = interaction.options.getString("by") || "both";
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const { matches, totalCount, normalized, possiblyCapped } = await lookupByDeployerOrFee(query, by);
       const searchQ = normalized || String(query).trim();
@@ -414,7 +415,7 @@ client.on("interactionCreate", async (interaction) => {
       ],
       footer: { text: "Bankr: bankr.bot" },
     };
-    await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => {});
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
     return;
   }
 
@@ -428,7 +429,7 @@ client.on("interactionCreate", async (interaction) => {
     const feeType = interaction.options.getString("fee_recipient_type");
     const feeValue = interaction.options.getString("fee_recipient_value");
     const simulateOnly = interaction.options.getBoolean("simulate_only") ?? false;
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       if (feeType && !feeValue?.trim()) {
         await interaction.editReply({
@@ -461,11 +462,19 @@ client.on("interactionCreate", async (interaction) => {
         result.txHash ? `**Tx:** [BaseScan](${`https://basescan.org/tx/${result.txHash}`})` : "",
         `**Launch:** [View on Bankr](${launchUrl})`,
       ].filter(Boolean);
+      const rl = result.rateLimit;
+      const footerParts = ["Bankr deploy API • Creator fees 57%"];
+      if (rl?.remaining != null && !Number.isNaN(rl.remaining)) {
+        const limit = rl.limit != null && !Number.isNaN(rl.limit) ? rl.limit : 50;
+        footerParts.push(` • ${rl.remaining} deploys left in 24h (of ${limit})`);
+      } else {
+        footerParts.push(" • Limit: 50/24h (Bankr Club: 100)");
+      }
       const embed = {
         color: 0x0052_ff,
         title: "Token deployed",
         description: lines.join("\n"),
-        footer: { text: "Bankr deploy API • Creator fees 57%" },
+        footer: { text: footerParts.join("") },
       };
       await interaction.editReply({ embeds: [embed] });
     } catch (e) {
@@ -484,34 +493,34 @@ client.on("interactionCreate", async (interaction) => {
     if (sub === "add") {
       if (type === "x") {
         await addX(value);
-        await interaction.reply({ content: `Added **@${value}** to X watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Added **@${value}** to X watch list.`, flags: MessageFlags.Ephemeral });
       } else if (type === "fc") {
         await addFc(value);
-        await interaction.reply({ content: `Added **${value}** to Farcaster watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Added **${value}** to Farcaster watch list.`, flags: MessageFlags.Ephemeral });
       } else if (type === "wallet") {
         const ok = await addWallet(value);
-        if (!ok) return interaction.reply({ content: "Invalid wallet address (use 0x + 40 hex chars).", ephemeral: true });
-        await interaction.reply({ content: `Added wallet \`${value.slice(0, 10)}...${value.slice(-6)}\` to watch list.`, ephemeral: true });
+        if (!ok) return interaction.reply({ content: "Invalid wallet address (use 0x + 40 hex chars).", flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: `Added wallet \`${value.slice(0, 10)}...${value.slice(-6)}\` to watch list.`, flags: MessageFlags.Ephemeral });
       } else {
         await addKeyword(value);
-        await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, flags: MessageFlags.Ephemeral });
       }
     } else if (sub === "remove") {
       if (type === "x") {
         await removeX(value);
-        await interaction.reply({ content: `Removed **@${value}** from X watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Removed **@${value}** from X watch list.`, flags: MessageFlags.Ephemeral });
       } else if (type === "fc") {
         await removeFc(value);
-        await interaction.reply({ content: `Removed **${value}** from Farcaster watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Removed **${value}** from Farcaster watch list.`, flags: MessageFlags.Ephemeral });
       } else if (type === "wallet") {
         const ok = await removeWallet(value);
         await interaction.reply({
           content: ok ? "Removed wallet from watch list." : "Wallet not found or invalid address.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       } else {
         await removeKeyword(value);
-        await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, ephemeral: true });
+        await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
       }
     } else if (sub === "list") {
       const { x, fc, wallet, keywords } = await list();
@@ -521,11 +530,11 @@ client.on("interactionCreate", async (interaction) => {
       const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
       await interaction.reply({
         content: `**Watch list**\n\n**X:** ${xStr}\n**Farcaster:** ${fcStr}\n**Wallets:** ${walletStr}\n**Keywords:** ${kwStr}`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
   } catch (e) {
-    await interaction.reply({ content: `Error: ${e.message}`, ephemeral: true }).catch(() => {});
+    await interaction.reply({ content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 });
 

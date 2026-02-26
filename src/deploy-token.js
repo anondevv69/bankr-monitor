@@ -58,9 +58,24 @@ export function buildDeployBody(opts) {
 }
 
 /**
+ * Parse rate limit headers (if Bankr sends them). Common names: X-RateLimit-Remaining, X-RateLimit-Limit, Retry-After.
+ * @returns {{ remaining: number | null, limit: number | null, retryAfterSec: number | null }}
+ */
+function parseRateLimitHeaders(res) {
+  const remaining = res.headers.get("X-RateLimit-Remaining") ?? res.headers.get("x-ratelimit-remaining");
+  const limit = res.headers.get("X-RateLimit-Limit") ?? res.headers.get("x-ratelimit-limit");
+  const retryAfter = res.headers.get("Retry-After");
+  return {
+    remaining: remaining != null && remaining !== "" ? parseInt(remaining, 10) : null,
+    limit: limit != null && limit !== "" ? parseInt(limit, 10) : null,
+    retryAfterSec: retryAfter != null && retryAfter !== "" ? parseInt(retryAfter, 10) : null,
+  };
+}
+
+/**
  * Call Bankr deploy API.
  * @param {ReturnType<buildDeployBody>} body - From buildDeployBody().
- * @returns {Promise<{ success: boolean, tokenAddress?: string, poolId?: string, txHash?: string, activityId?: string, chain?: string, simulated?: boolean, feeDistribution?: object, error?: string }>}
+ * @returns {Promise<{ success: boolean, tokenAddress?: string, poolId?: string, txHash?: string, activityId?: string, chain?: string, simulated?: boolean, feeDistribution?: object, rateLimit?: { remaining: number | null, limit: number | null, retryAfterSec: number | null }, error?: string }>}
  */
 export async function callBankrDeploy(body) {
   if (!BANKR_API_KEY || !BANKR_API_KEY.trim()) {
@@ -74,13 +89,21 @@ export async function callBankrDeploy(body) {
     },
     body: JSON.stringify(body),
   });
+  const rateLimit = parseRateLimitHeaders(res);
   const data = await res.json().catch(() => ({}));
   if (res.ok) {
-    return data;
+    return { ...data, rateLimit };
   }
   const msg = data?.message || data?.error || res.statusText || `HTTP ${res.status}`;
   if (res.status === 401) throw new Error("Invalid API key. Check BANKR_API_KEY.");
   if (res.status === 403) throw new Error("API key must have Agent API (write) access. Enable at bankr.bot/api");
-  if (res.status === 429) throw new Error("Rate limit exceeded. Try again later (50 deploys/24h standard).");
+  if (res.status === 429) {
+    const parts = [
+      "Rate limit exceeded (50 deploys/24h for this key; Bankr Club: 100/24h).",
+      rateLimit.retryAfterSec != null ? `Retry after ${rateLimit.retryAfterSec}s.` : "Try again later.",
+      "Or deploy at bankr.bot.",
+    ];
+    throw new Error(parts.join(" "));
+  }
   throw new Error(msg || `Deploy failed (${res.status})`);
 }
