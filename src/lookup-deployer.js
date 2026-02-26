@@ -23,6 +23,7 @@ const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000
 // When handle not found in newest launches, fetch this many oldest (order=asc) to resolve X/FC -> wallet
 const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMIT || "10000", 10), 50000);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
+const DEPLOY_API = "https://api.bankr.bot/token-launches/deploy";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
 /** Optional handle -> wallet overrides (e.g. BANKR_HANDLE_WALLET_OVERRIDES='{"gork":"0x23..."}') when API doesn't return them. */
@@ -252,7 +253,46 @@ export async function resolveHandleToWallet(query) {
     for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
     wallet = handleToWallet.get(normalized) ?? null;
   }
+  // Last resort: Bankr resolves handle→wallet when we deploy; same resolution is not exposed as a read API.
+  // We can call the deploy endpoint with simulateOnly: true and feeRecipient { type: "x"|"farcaster", value } to get the resolved wallet from feeDistribution.creator.
+  if (!wallet) {
+    const resolved = await resolveHandleViaDeploySimulate(normalized);
+    if (resolved) wallet = resolved;
+  }
   return { wallet, normalized, isWallet: false };
+}
+
+/**
+ * Resolve a handle to wallet by calling Bankr deploy API with simulateOnly: true.
+ * Bankr resolves fee recipient (x/farcaster) server-side; the response includes feeDistribution.creator with the resolved address.
+ * Requires BANKR_API_KEY with Agent API (write) access. Returns null if resolution fails or key missing.
+ * @param {string} handle - Normalized handle (no @).
+ * @returns {Promise<string | null>} Resolved wallet (lowercase) or null.
+ */
+async function resolveHandleViaDeploySimulate(handle) {
+  if (!BANKR_API_KEY || !handle) return null;
+  const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
+  for (const type of typesToTry) {
+    try {
+      const res = await fetch(DEPLOY_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": BANKR_API_KEY.trim() },
+        body: JSON.stringify({
+          tokenName: "ResolveCheck",
+          simulateOnly: true,
+          feeRecipient: { type, value: handle },
+        }),
+      });
+      if (!res.ok) continue;
+      const data = await res.json().catch(() => ({}));
+      const creator = data?.feeDistribution?.creator;
+      const addr = creator?.address ?? creator?.wallet ?? (typeof creator === "string" ? creator : null);
+      if (addr && /^0x[a-fA-F0-9]{40}$/.test(addr)) return addr.trim().toLowerCase();
+    } catch {
+      // ignore and try next type
+    }
+  }
+  return null;
 }
 
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either
