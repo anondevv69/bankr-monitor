@@ -365,7 +365,9 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content:
             `Could not resolve a wallet for **${normalized || query}**. ` +
-            "We only know wallets from Bankr launches (set BANKR_API_KEY). Try **/lookup** to see tokens, or use the full wallet address.",
+            "We only know wallets from launches where this X or Farcaster is deployer or fee recipient (BANKR_API_KEY required). " +
+            "If this account has received tokens on Bankr, try **/lookup** with the same handle—sometimes tokens appear there. " +
+            "Otherwise use the wallet address (0x...) directly.",
         });
       }
     } catch (e) {
@@ -383,8 +385,11 @@ client.on("interactionCreate", async (interaction) => {
       const searchQ = normalized || String(query).trim();
       const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
+        const looksLikeHandle = !/^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
         await interaction.editReply({
-          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}`,
+          content:
+            `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}` +
+            (looksLikeHandle ? "\n\nTry **/resolve** with the same handle to get the wallet, then **/lookup** with that wallet (0x...)." : ""),
         });
         return;
       }

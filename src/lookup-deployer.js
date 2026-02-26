@@ -20,6 +20,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 // How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000", 10);
+// When handle not found in newest launches, fetch this many oldest (order=asc) to resolve X/FC -> wallet
+const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMIT || "10000", 10), 50000);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
@@ -78,9 +80,10 @@ async function fetchSearch(query) {
   }
 }
 
-/** Fetch one page of launches from Bankr API. */
-async function fetchLaunchesPage(offset, pageSize = 50) {
-  const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
+/** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. */
+async function fetchLaunchesPage(offset, pageSize = 50, order) {
+  let url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
+  if (order === "asc") url += "&order=asc";
   const res = await fetch(url, {
     headers: { "X-API-Key": BANKR_API_KEY, Accept: "application/json" },
   });
@@ -91,23 +94,23 @@ async function fetchLaunchesPage(offset, pageSize = 50) {
 
 const FULL_LIST_CONCURRENCY = Math.min(parseInt(process.env.BANKR_FULL_LIST_CONCURRENCY || "10", 10), 20);
 
-/** Fetch launches from Bankr API (paginated, parallel). Returns raw launch objects. */
-async function fetchAllLaunches() {
+/** Fetch launches from Bankr API (paginated, parallel). order: undefined (newest first) or "asc" (oldest first). */
+async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order) {
   if (!BANKR_API_KEY) return [];
   const out = [];
   const seen = new Set();
   const pageSize = 50;
   let offset = 0;
 
-  while (offset < BANKR_LAUNCHES_LIMIT) {
+  while (offset < limit) {
     const batchOffsets = [];
     for (let i = 0; i < FULL_LIST_CONCURRENCY; i++) {
       const o = offset + i * pageSize;
-      if (o >= BANKR_LAUNCHES_LIMIT) break;
+      if (o >= limit) break;
       batchOffsets.push(o);
     }
     if (batchOffsets.length === 0) break;
-    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize)));
+    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize, order)));
     let hasLessThanFull = false;
     for (const batch of batches) {
       if (batch.length < pageSize) hasLessThanFull = true;
@@ -136,14 +139,16 @@ function buildHandleToWalletMap(launches) {
       const h = norm(String(handle).replace(/^@/, ""));
       if (h) map.set(h, (map.get(h) || wallet).toLowerCase());
     };
-    if (d) {
-      if (d.xUsername) add(d.xUsername, d.walletAddress);
-      const fc = d.farcasterUsername ?? d.farcaster ?? d.fcUsername;
+    const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
+    const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
+    if (d?.walletAddress) {
+      if (xFrom(d)) add(xFrom(d), d.walletAddress);
+      const fc = fcFrom(d);
       if (fc) add(fc, d.walletAddress);
     }
-    if (f) {
-      if (f.xUsername) add(f.xUsername, f.walletAddress);
-      const fc = f.farcasterUsername ?? f.farcaster ?? f.fcUsername;
+    if (f?.walletAddress) {
+      if (xFrom(f)) add(xFrom(f), f.walletAddress);
+      const fc = fcFrom(f);
       if (fc) add(fc, f.walletAddress);
     }
   }
@@ -210,8 +215,14 @@ export async function resolveHandleToWallet(query) {
   if (isWallet) return { wallet: normalized, normalized, isWallet: true };
   if (!BANKR_API_KEY) return { wallet: null, normalized, isWallet: false };
   const all = await fetchAllLaunches();
-  const handleToWallet = buildHandleToWalletMap(all);
-  const wallet = handleToWallet.get(normalized) ?? null;
+  let handleToWallet = buildHandleToWalletMap(all);
+  let wallet = handleToWallet.get(normalized) ?? null;
+  if (!wallet && OLDEST_FETCH_LIMIT > 0) {
+    const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
+    const mapOld = buildHandleToWalletMap(oldest);
+    for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
+    wallet = handleToWallet.get(normalized) ?? null;
+  }
   return { wallet, normalized, isWallet: false };
 }
 
@@ -244,8 +255,20 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   }
   // Search API often caps at 5 results; with API key fetch full list and merge so we return all matches
   if (BANKR_API_KEY) {
-    const all = await fetchAllLaunches();
-    const handleToWallet = buildHandleToWalletMap(all);
+    let all = await fetchAllLaunches();
+    let handleToWallet = buildHandleToWalletMap(all);
+    if (!handleToWallet.has(normalized) && OLDEST_FETCH_LIMIT > 0) {
+      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
+      const mapOld = buildHandleToWalletMap(oldest);
+      for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
+      const seenAddr = new Set(all.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
+      all = [...all, ...oldest.filter((l) => {
+        const k = l.tokenAddress?.toLowerCase();
+        if (!k || seenAddr.has(k)) return false;
+        seenAddr.add(k);
+        return true;
+      })];
+    }
     const matched = all.filter(matches);
     const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
     for (const l of matched) {
