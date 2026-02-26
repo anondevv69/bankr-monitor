@@ -25,6 +25,32 @@ const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMI
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
+/** Optional handle -> wallet overrides (e.g. BANKR_HANDLE_WALLET_OVERRIDES='{"gork":"0x23..."}') when API doesn't return them. */
+function getHandleOverrides() {
+  const raw = process.env.BANKR_HANDLE_WALLET_OVERRIDES;
+  if (!raw || typeof raw !== "string") return new Map();
+  const map = new Map();
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed)) {
+        const h = norm(String(k).replace(/^@/, ""));
+        if (h && v && /^0x[a-fA-F0-9]{40}$/.test(String(v).trim())) map.set(h, String(v).trim().toLowerCase());
+      }
+    }
+  } catch {
+    // Fallback: "gork:0x23...,other:0x..."
+    for (const part of raw.split(",")) {
+      const idx = part.indexOf(":");
+      if (idx <= 0) continue;
+      const h = norm(part.slice(0, idx).trim().replace(/^@/, ""));
+      const w = part.slice(idx + 1).trim();
+      if (h && w && /^0x[a-fA-F0-9]{40}$/.test(w)) map.set(h, w.toLowerCase());
+    }
+  }
+  return map;
+}
+
 function norm(s) {
   if (!s || typeof s !== "string") return null;
   const t = s.trim().toLowerCase();
@@ -213,6 +239,9 @@ export async function resolveHandleToWallet(query) {
   const { normalized, isWallet } = parseQuery(query);
   if (!normalized) return { wallet: null, normalized: null, isWallet: false };
   if (isWallet) return { wallet: normalized, normalized, isWallet: true };
+  const overrides = getHandleOverrides();
+  const overrideWallet = overrides.get(normalized);
+  if (overrideWallet) return { wallet: overrideWallet, normalized, isWallet: false };
   if (!BANKR_API_KEY) return { wallet: null, normalized, isWallet: false };
   const all = await fetchAllLaunches();
   let handleToWallet = buildHandleToWalletMap(all);
@@ -257,6 +286,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   if (BANKR_API_KEY) {
     let all = await fetchAllLaunches();
     let handleToWallet = buildHandleToWalletMap(all);
+    for (const [h, w] of getHandleOverrides()) handleToWallet.set(h, w);
     if (!handleToWallet.has(normalized) && OLDEST_FETCH_LIMIT > 0) {
       const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
       const mapOld = buildHandleToWalletMap(oldest);
