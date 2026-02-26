@@ -351,6 +351,61 @@ function formatUsd(value) {
 
 export { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
 
+const CREATOR_SHARE_BPS = 5700;
+const SWAP_FEE_BPS = 120;
+
+/**
+ * Get fee-relevant data for one Bankr token (for Discord /fees-token or CLI).
+ * @param {string} tokenAddress - Normalized 0x address.
+ * @returns {Promise<{ tokenAddress: string, name: string, symbol: string, launch: object|null, feeRecipient: object|null, feeWallet: string|null, cumulatedFees: object|null, volumeUsd: string|null, estimatedCreatorFeesUsd: number|null, formatUsd: function, error?: string }>}
+ */
+export async function getTokenFees(tokenAddress) {
+  const addr = normalizeAddress(tokenAddress);
+  if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
+
+  const [launch, doppler, poolState] = await Promise.all([
+    fetchBankrLaunch(addr),
+    fetchDopplerTokenVolume(addr),
+    fetchDopplerPoolState(addr),
+  ]);
+
+  const name = launch?.tokenName ?? doppler?.name ?? "—";
+  const symbol = launch?.tokenSymbol ?? doppler?.symbol ?? "—";
+  const volumeUsd = doppler?.volumeUsd != null ? String(doppler.volumeUsd) : null;
+  const volumeNum = volumeUsd != null ? Number(volumeUsd) : NaN;
+  const estimatedCreatorFeesUsd = !Number.isNaN(volumeNum) && volumeNum >= 0
+    ? (volumeNum * (SWAP_FEE_BPS / 10000) * (CREATOR_SHARE_BPS / 10000))
+    : null;
+
+  if (!launch) {
+    return { tokenAddress: addr, name, symbol, launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd, estimatedCreatorFeesUsd, formatUsd, error: "No Bankr launch found for this address." };
+  }
+
+  const fee = launch.feeRecipient;
+  const feeWallet = fee?.walletAddress ? normalizeAddress(fee.walletAddress) : (fee?.wallet ?? fee?.address ? normalizeAddress(fee.wallet ?? fee.address) : null);
+  let cumulatedFees = null;
+  if (feeWallet) {
+    const pool = await fetchPoolByBaseToken(addr);
+    if (pool) {
+      cumulatedFees = await fetchCumulatedFees(pool.id ?? pool.address, feeWallet);
+    }
+  }
+
+  return {
+    tokenAddress: addr,
+    name,
+    symbol,
+    launch,
+    feeRecipient: fee ?? null,
+    feeWallet,
+    cumulatedFees,
+    volumeUsd,
+    estimatedCreatorFeesUsd,
+    formatUsd,
+    poolState,
+  };
+}
+
 async function main() {
   const raw = process.argv[2];
   const tokenAddress = normalizeAddress(raw);
@@ -360,46 +415,31 @@ async function main() {
     process.exit(1);
   }
 
-  const [launch, doppler, poolState] = await Promise.all([
-    fetchBankrLaunch(tokenAddress),
-    fetchDopplerTokenVolume(tokenAddress),
-    fetchDopplerPoolState(tokenAddress),
-  ]);
-
-  const name = launch?.tokenName ?? doppler?.name ?? "—";
-  const symbol = launch?.tokenSymbol ?? doppler?.symbol ?? "—";
-  const volumeUsd = doppler?.volumeUsd != null ? String(doppler.volumeUsd) : null;
-  const volumeNum = volumeUsd != null ? Number(volumeUsd) : NaN;
-  const creatorShareBps = 5700; // 57%
-  const swapFeeBps = 120;      // 1.2%
-  const estimatedCreatorFeesUsd = !Number.isNaN(volumeNum) && volumeNum >= 0
-    ? (volumeNum * (swapFeeBps / 10000) * (creatorShareBps / 10000))
-    : null;
+  const out = await getTokenFees(tokenAddress);
+  const { name, symbol, launch, feeRecipient: fee, cumulatedFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, poolState } = out;
+  const deployer = launch?.deployer;
 
   console.log(`\n  Token: ${name} ($${symbol})`);
   console.log(`  CA:    ${tokenAddress}`);
   console.log(`  Bankr: https://bankr.bot/launches/${tokenAddress}\n`);
 
-  if (!launch) {
-    console.log("  No Bankr launch found for this address (not a Bankr token or wrong chain).");
-    if (doppler) {
-      console.log(`  Indexer volume: ${formatUsd(volumeUsd) ?? "—"}`);
-    }
+  if (out.error || !launch) {
+    console.log("  ", out.error ?? "No Bankr launch found.");
+    if (volumeUsd) console.log(`  Indexer volume: ${fmt(volumeUsd) ?? "—"}`);
     return;
   }
 
-  const deployer = launch.deployer;
-  const fee = launch.feeRecipient;
-  const feeWallet = fee?.walletAddress ? normalizeAddress(fee.walletAddress) : null;
-
-  // Indexer: pool by base token, then cumulatedFees for fee recipient
-  let cumulatedFees = null;
-  if (feeWallet) {
-    const pool = await fetchPoolByBaseToken(tokenAddress);
-    if (pool) {
-      cumulatedFees = await fetchCumulatedFees(pool.id ?? pool.address, feeWallet);
-    }
+  console.log("  Deployer:", deployer?.walletAddress ?? "—", deployer?.xUsername ? `@${deployer.xUsername}` : "");
+  console.log("  Fee to: ", fee?.walletAddress ?? fee?.wallet ?? "—", fee?.xUsername ? `@${fee.xUsername}` : "");
+  console.log("  Pool:   ", launch.poolId ?? "—");
+  if (launch.tweetUrl) console.log("  Tweet:  ", launch.tweetUrl);
+  if (poolState) {
+    const statusNames = { 0: "Uninitialized", 1: "Initialized", 2: "Locked", 3: "Exited" };
+    const status = statusNames[Number(poolState.status)] ?? `Status ${poolState.status}`;
+    const feeBps = poolState.fee != null ? Number(poolState.fee) : null;
+    console.log("  Pool state (Doppler SDK):", status, feeBps != null ? `| fee ${(feeBps / 10000).toFixed(2)}%` : "");
   }
+  console.log("");
 
   console.log("  Deployer:", deployer?.walletAddress ?? "—", deployer?.xUsername ? `@${deployer.xUsername}` : "");
   console.log("  Fee to: ", fee?.walletAddress ?? "—", fee?.xUsername ? `@${fee.xUsername}` : "");
@@ -422,9 +462,9 @@ async function main() {
   }
 
   if (volumeUsd != null) {
-    console.log("  Trading volume (indexer):", formatUsd(volumeUsd) ?? "—");
+    console.log("  Trading volume (indexer):", fmt(volumeUsd) ?? "—");
     if (estimatedCreatorFeesUsd != null) {
-      console.log("  Estimated creator fees (57% of 1.2% of volume):", formatUsd(estimatedCreatorFeesUsd));
+      console.log("  Estimated creator fees (57% of 1.2% of volume):", fmt(estimatedCreatorFeesUsd));
     }
     console.log("");
   } else {

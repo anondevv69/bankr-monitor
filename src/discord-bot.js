@@ -29,6 +29,7 @@ import { addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watc
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
+import { getTokenFees } from "./token-stats.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -244,6 +245,16 @@ async function registerCommands(appId) {
           .setName("simulate_only")
           .setDescription("Dry run: no real deploy (default: false)")
           .setRequired(false)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("fees-token")
+      .setDescription("Show accrued/claimable fees for a Bankr token (by address or launch URL)")
+      .addStringOption((o) =>
+        o
+          .setName("token")
+          .setDescription("Token address (0x...) or Bankr launch URL (e.g. bankr.bot/launches/0x...)")
+          .setRequired(true)
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -472,6 +483,13 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
         {
+          name: "💰 /fees-token",
+          value:
+            "**Accrued/claimable fees** for one Bankr token.\n" +
+            "**token:** Token address (0x…) or Bankr launch URL (e.g. bankr.bot/launches/0x…). Shows fee recipient, indexer accrued fees (token + WETH + USD) when available, or estimated from volume. Claimed vs unclaimed is not in the API — use [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token <ca>` to see/claim.",
+          inline: false,
+        },
+        {
           name: "📌 Channels",
           value:
             "**Alert channel** – all new Bankr launches.\n**Watch channel** – only launches that match your watch list.",
@@ -544,6 +562,62 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     } catch (e) {
       await interaction.editReply({ content: `Deploy failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "fees-token") {
+    const tokenInput = interaction.options.getString("token");
+    const addrMatch = tokenInput && tokenInput.match(/0x[a-fA-F0-9]{40}/);
+    const tokenAddress = addrMatch ? addrMatch[0].toLowerCase() : null;
+    if (!tokenAddress) {
+      await interaction.reply({
+        content: "Provide a token address (0x...) or a Bankr launch URL (e.g. https://bankr.bot/launches/0x...).",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const out = await getTokenFees(tokenAddress);
+      const { name, symbol, feeWallet, feeRecipient, cumulatedFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
+      const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
+      const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
+      if (error && !out.launch) {
+        await interaction.editReply({
+          content: `**${name}** ($${symbol})\n\n${error}\n\n[View on Bankr](${launchUrl})`,
+        });
+        return;
+      }
+      const lines = [
+        `**Token:** ${name} ($${symbol})`,
+        `**CA:** \`${tokenAddress}\``,
+        `**Fee recipient:** ${feeLabel}${feeWallet ? ` (\`${feeWallet.slice(0, 6)}…${feeWallet.slice(-4)}\`)` : ""}`,
+        "",
+      ];
+      const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
+      if (hasIndexerFees) {
+        const DECIMALS = 18;
+        const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
+        const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
+        const tokenAmt = Number(raw0) / 10 ** DECIMALS;
+        const wethAmt = Number(raw1) / 10 ** DECIMALS;
+        lines.push("**Accrued fees (indexer)** — typically claimable until claimed:");
+        if (cumulatedFees.token0Fees != null) lines.push(`• Token: ${tokenAmt.toFixed(4)}`);
+        if (cumulatedFees.token1Fees != null) lines.push(`• WETH: ${wethAmt.toFixed(6)}`);
+        if (cumulatedFees.totalFeesUsd != null) lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
+      } else if (estimatedCreatorFeesUsd != null) {
+        lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
+      } else {
+        lines.push("_Accrued fees not available from indexer. Set DOPPLER_INDEXER_URL to an indexer that supports cumulatedFees._");
+      }
+      lines.push("");
+      lines.push("_Claimed vs unclaimed is not exposed by the API. To see or claim: [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
+      await interaction.editReply({
+        content: lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`,
+      });
+    } catch (e) {
+      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
     }
     return;
   }
