@@ -557,7 +557,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to add wallet to watch list." });
           return;
         }
-        const short = `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
+        const short = `${wallet.slice(0, 6)}…${wallet.slice(-4)}`; // display only; full wallet is stored
         await interaction.editReply({
           content: `Added **${type === "x" ? "@" : ""}${normalized || value}** (wallet \`${short}\`) to watch list.`,
         });
@@ -597,7 +597,7 @@ client.on("interactionCreate", async (interaction) => {
       const { x, fc, wallet, keywords } = await list();
       const xStr = x.length ? x.map((h) => `@${h}`).join(", ") : "_none_";
       const fcStr = fc.length ? fc.join(", ") : "_none_";
-      const walletStr = wallet.length ? wallet.map((w) => `\`${w.slice(0, 6)}…${w.slice(-4)}\``).join(", ") : "_none_";
+      const walletStr = wallet.length ? wallet.map((w) => `\`${w.slice(0, 6)}…${w.slice(-4)}\``).join(", ") : "_none_"; // full addresses stored; truncated for display
       const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
       await interaction.reply({
         content: `**Watch list**\n\n**X:** ${xStr}\n**Farcaster:** ${fcStr}\n**Wallets:** ${walletStr}\n**Keywords:** ${kwStr}`,

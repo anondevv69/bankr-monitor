@@ -16,6 +16,7 @@ function parseHandle(s, stripAt = true) {
   return stripAt && t.startsWith("@") ? t.slice(1) : t;
 }
 
+/** Only accepts full 0x + 40 hex chars. Truncated display (0x1234…abcd) is never stored. */
 function parseWallet(s) {
   if (!s || typeof s !== "string") return null;
   const t = s.trim();

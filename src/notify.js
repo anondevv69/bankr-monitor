@@ -84,6 +84,12 @@ function getFarcaster(d) {
   return d?.farcasterUsername || d?.farcaster || d?.fcUsername || null;
 }
 
+function walletAddr(obj) {
+  if (!obj) return null;
+  const a = obj.walletAddress ?? obj.wallet ?? obj.address ?? obj.beneficiary;
+  return a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null;
+}
+
 function formatBankrLaunch(l) {
   const rawDeployerX = l.deployer?.xUsername ? (l.deployer.xUsername.startsWith("@") ? l.deployer.xUsername.slice(1) : l.deployer.xUsername) : null;
   const rawFeeX = l.feeRecipient?.xUsername ? (l.feeRecipient.xUsername.startsWith("@") ? l.feeRecipient.xUsername.slice(1) : l.feeRecipient.xUsername) : null;
@@ -94,16 +100,18 @@ function formatBankrLaunch(l) {
   const deployerFc = normHandle(rawDeployerFc);
   const feeFc = normHandle(rawFeeFc);
   const x = deployerX || feeX || null;
+  const launcherWallet = walletAddr(l.deployer);
+  const feeWallet = walletAddr(l.feeRecipient);
   return {
     name: l.tokenName,
     symbol: l.tokenSymbol,
     tokenAddress: l.tokenAddress,
-    launcher: l.deployer?.walletAddress ?? null,
+    launcher: launcherWallet,
     launcherX: rawDeployerX,
     launcherFarcaster: rawDeployerFc,
-    launcherWallet: l.deployer?.walletAddress ?? null,
-    beneficiaries: l.feeRecipient?.walletAddress
-      ? [{ beneficiary: l.feeRecipient.walletAddress, xUsername: rawFeeX, farcaster: rawFeeFc }]
+    launcherWallet,
+    beneficiaries: feeWallet
+      ? [{ beneficiary: feeWallet, xUsername: rawFeeX, farcaster: rawFeeFc }]
       : null,
     image: l.imageUri || null,
     pool: l.poolId ?? null,
@@ -491,9 +499,13 @@ export async function runNotifyCycle() {
   function isWatchMatch(launch) {
     const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
     const deployerFc = launch.launcherFarcaster ? normHandle(String(launch.launcherFarcaster)) : null;
-    const launcherAddr = launch.launcher ? launch.launcher.toLowerCase() : null;
+    const normAddr = (a) => (a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null);
+    const launcherAddr = normAddr(launch.launcher);
     const feeAddrs = (launch.beneficiaries || [])
-      .map((b) => (typeof b === "object" ? b.beneficiary || b.address : b)?.toLowerCase?.())
+      .map((b) => {
+        const v = typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b;
+        return normAddr(v);
+      })
       .filter(Boolean);
     const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
     const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
