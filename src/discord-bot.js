@@ -383,7 +383,9 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by);
       const searchQ = normalized || String(query).trim();
-      const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
+      const searchUrl = resolvedWallet
+        ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
+        : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
         const looksLikeHandle = !/^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
         await interaction.editReply({
