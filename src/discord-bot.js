@@ -25,7 +25,7 @@ import {
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { addX, removeX, addFc, removeFc, addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
+import { addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
@@ -429,7 +429,7 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "📋 /watch",
           value:
-            "**add** – Add someone to the watch list (type: X, Farcaster, wallet, or keyword + value). New launches matching them are posted to the watch channel.\n" +
+            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). X and Farcaster are resolved to wallet first, then that wallet is added. New launches matching them are posted to the watch channel.\n" +
             "**remove** – Remove by type + value.\n**list** – Show current watch list.",
           inline: false,
         },
@@ -543,12 +543,24 @@ client.on("interactionCreate", async (interaction) => {
 
   try {
     if (sub === "add") {
-      if (type === "x") {
-        await addX(value);
-        await interaction.reply({ content: `Added **@${value}** to X watch list.`, flags: MessageFlags.Ephemeral });
-      } else if (type === "fc") {
-        await addFc(value);
-        await interaction.reply({ content: `Added **${value}** to Farcaster watch list.`, flags: MessageFlags.Ephemeral });
+      if (type === "x" || type === "fc") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const { wallet, normalized } = await resolveHandleToWallet(value);
+        if (!wallet) {
+          await interaction.editReply({
+            content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. Add a wallet address (0x...) directly with type **wallet**.`,
+          });
+          return;
+        }
+        const ok = await addWallet(wallet);
+        if (!ok) {
+          await interaction.editReply({ content: "Failed to add wallet to watch list." });
+          return;
+        }
+        const short = `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
+        await interaction.editReply({
+          content: `Added **${type === "x" ? "@" : ""}${normalized || value}** (wallet \`${short}\`) to watch list.`,
+        });
       } else if (type === "wallet") {
         const ok = await addWallet(value);
         if (!ok) return interaction.reply({ content: "Invalid wallet address (use 0x + 40 hex chars).", flags: MessageFlags.Ephemeral });
@@ -558,12 +570,19 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, flags: MessageFlags.Ephemeral });
       }
     } else if (sub === "remove") {
-      if (type === "x") {
-        await removeX(value);
-        await interaction.reply({ content: `Removed **@${value}** from X watch list.`, flags: MessageFlags.Ephemeral });
-      } else if (type === "fc") {
-        await removeFc(value);
-        await interaction.reply({ content: `Removed **${value}** from Farcaster watch list.`, flags: MessageFlags.Ephemeral });
+      if (type === "x" || type === "fc") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const { wallet, normalized } = await resolveHandleToWallet(value);
+        if (!wallet) {
+          await interaction.editReply({
+            content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. If you added by wallet, remove with type **wallet** and the address.`,
+          });
+          return;
+        }
+        const ok = await removeWallet(wallet);
+        await interaction.editReply({
+          content: ok ? `Removed **${type === "x" ? "@" : ""}${normalized || value}** (wallet) from watch list.` : "That wallet was not on the watch list.",
+        });
       } else if (type === "wallet") {
         const ok = await removeWallet(value);
         await interaction.reply({
