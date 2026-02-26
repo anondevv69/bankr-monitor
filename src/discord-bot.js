@@ -552,19 +552,26 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        const ok = await addWallet(wallet);
-        if (!ok) {
-          await interaction.editReply({ content: "Failed to add wallet to watch list." });
+        const added = await addWallet(wallet);
+        if (!added) {
+          await interaction.editReply({
+            content: `**${type === "x" ? "@" : ""}${normalized || value}** is already on the watch list (wallet \`${wallet}\`).`,
+          });
           return;
         }
-        const short = `${wallet.slice(0, 6)}…${wallet.slice(-4)}`; // display only; full wallet is stored
         await interaction.editReply({
-          content: `Added **${type === "x" ? "@" : ""}${normalized || value}** (wallet \`${short}\`) to watch list.`,
+          content: `Added **${type === "x" ? "@" : ""}${normalized || value}** (wallet \`${wallet}\`) to watch list.`,
         });
       } else if (type === "wallet") {
-        const ok = await addWallet(value);
-        if (!ok) return interaction.reply({ content: "Invalid wallet address (use 0x + 40 hex chars).", flags: MessageFlags.Ephemeral });
-        await interaction.reply({ content: `Added wallet \`${value.slice(0, 10)}...${value.slice(-6)}\` to watch list.`, flags: MessageFlags.Ephemeral });
+        const added = await addWallet(value);
+        if (!added) {
+          const valid = /^0x[a-fA-F0-9]{40}$/.test(String(value).trim());
+          return interaction.reply({
+            content: valid ? `That wallet is already on the watch list: \`${String(value).trim().toLowerCase()}\`.` : "Invalid wallet address (use 0x + 40 hex chars).",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        await interaction.reply({ content: `Added wallet \`${String(value).trim().toLowerCase()}\` to watch list.`, flags: MessageFlags.Ephemeral });
       } else {
         await addKeyword(value);
         await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, flags: MessageFlags.Ephemeral });
@@ -594,13 +601,11 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
       }
     } else if (sub === "list") {
-      const { x, fc, wallet, keywords } = await list();
-      const xStr = x.length ? x.map((h) => `@${h}`).join(", ") : "_none_";
-      const fcStr = fc.length ? fc.join(", ") : "_none_";
-      const walletStr = wallet.length ? wallet.map((w) => `\`${w.slice(0, 6)}…${w.slice(-4)}\``).join(", ") : "_none_"; // full addresses stored; truncated for display
+      const { wallet, keywords } = await list();
+      const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
       const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
       await interaction.reply({
-        content: `**Watch list**\n\n**X:** ${xStr}\n**Farcaster:** ${fcStr}\n**Wallets:** ${walletStr}\n**Keywords:** ${kwStr}`,
+        content: `**Watch list**\n\n**Wallets** (X/FC handles are resolved to wallet when added):\n${walletBlock}\n\n**Keywords:** ${kwStr}`,
         flags: MessageFlags.Ephemeral,
       });
     }

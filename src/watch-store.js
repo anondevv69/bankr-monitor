@@ -116,12 +116,12 @@ export async function removeFc(handle) {
   return true;
 }
 
-/** Add wallet address to file store */
+/** Add wallet address to file store. Returns true if newly added, false if already present. */
 export async function addWallet(addr) {
   const a = parseWallet(addr);
   if (!a) return false;
   const raw = await loadRaw();
-  if (raw.wallet.includes(a)) return true;
+  if (raw.wallet.includes(a)) return false; // already on list
   raw.wallet.push(a);
   raw.wallet.sort();
   await saveRaw(raw);
