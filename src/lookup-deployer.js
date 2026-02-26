@@ -153,11 +153,11 @@ function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
 /** Extract username from X/Twitter or Farcaster URL; otherwise return null. */
 function extractFromUrl(raw) {
   const s = String(raw).trim();
-  // x.com/username, twitter.com/username (optional trailing slash or query)
-  const xMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)/i);
+  // x.com/username, .../username/with_replies, .../username/status/123456 — first path segment = handle
+  const xMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)(?:\/|$|\?)/i);
   if (xMatch) return { normalized: xMatch[1].toLowerCase(), isWallet: false };
-  // warpcast.com/~/username or warpcast.com/username, farcaster.xyz/...
-  const fcMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:warpcast\.com\/~\/|warpcast\.com\/|farcaster\.xyz\/)([a-zA-Z0-9_.-]+)/i);
+  // warpcast.com/~/username, farcaster.xyz/username, farcaster.xyz/username/0x... — first path segment = handle
+  const fcMatch = s.match(/^(?:https?:\/\/)?(?:www\.)?(?:warpcast\.com\/~\/|warpcast\.com\/|farcaster\.xyz\/)([a-zA-Z0-9_.-]+)(?:\/|$|\?)/i);
   if (fcMatch) return { normalized: fcMatch[1].toLowerCase(), isWallet: false };
   return null;
 }
@@ -185,13 +185,16 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   let totalCount = 0;
   // Search using normalized form (username or wallet) so URLs like https://x.com/ayowtfchil become "ayowtfchil"
   let searchResult = await fetchSearch(normalized);
-  // If handle (no wallet) and no results, try with @ prefix — Bankr search may index X as "@gork"
-  if (!isWalletQuery && (!searchResult || searchResult.launches.length === 0) && normalized && !normalized.startsWith("@")) {
-    const withAt = await fetchSearch("@" + normalized);
-    if (withAt && withAt.launches.length > 0) {
-      searchResult = searchResult
-        ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
-        : withAt;
+  // If handle (no wallet), also try @ prefix — Bankr search may index X as "@gork"; try when no results or after filter we'd have 0
+  if (!isWalletQuery && normalized && !normalized.startsWith("@")) {
+    const filteredFromFirst = searchResult ? searchResult.launches.filter(matches) : [];
+    if (filteredFromFirst.length === 0) {
+      const withAt = await fetchSearch("@" + normalized);
+      if (withAt && withAt.launches.length > 0) {
+        searchResult = searchResult
+          ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
+          : withAt;
+      }
     }
   }
   if (searchResult) {
