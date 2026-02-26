@@ -244,20 +244,18 @@ export async function resolveHandleToWallet(query) {
   const overrideWallet = overrides.get(normalized);
   if (overrideWallet) return { wallet: overrideWallet, normalized, isWallet: false };
   if (!BANKR_API_KEY) return { wallet: null, normalized, isWallet: false };
-  const all = await fetchAllLaunches();
-  let handleToWallet = buildHandleToWalletMap(all);
-  let wallet = handleToWallet.get(normalized) ?? null;
-  if (!wallet && OLDEST_FETCH_LIMIT > 0) {
-    const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
-    const mapOld = buildHandleToWalletMap(oldest);
-    for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
-    wallet = handleToWallet.get(normalized) ?? null;
-  }
-  // Last resort: Bankr resolves handle→wallet when we deploy; same resolution is not exposed as a read API.
-  // We can call the deploy endpoint with simulateOnly: true and feeRecipient { type: "x"|"farcaster", value } to get the resolved wallet from feeDistribution.creator.
+  // Try deploy-simulate first: one POST, no list fetches. Works even when list API is 429'd.
+  let wallet = await resolveHandleViaDeploySimulate(normalized) ?? null;
   if (!wallet) {
-    const resolved = await resolveHandleViaDeploySimulate(normalized);
-    if (resolved) wallet = resolved;
+    const all = await fetchAllLaunches();
+    let handleToWallet = buildHandleToWalletMap(all);
+    wallet = handleToWallet.get(normalized) ?? null;
+    if (!wallet && OLDEST_FETCH_LIMIT > 0) {
+      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
+      const mapOld = buildHandleToWalletMap(oldest);
+      for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
+      wallet = handleToWallet.get(normalized) ?? null;
+    }
   }
   return { wallet, normalized, isWallet: false };
 }
@@ -293,6 +291,7 @@ async function resolveHandleViaDeploySimulate(handle) {
         creator?.walletAddress ??
         (typeof creator === "string" ? creator : null);
       if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim())) return String(addr).trim().toLowerCase();
+      if (res.ok && data?.success) console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
     } catch {
       // ignore and try next type
     }
