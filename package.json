@@ -10,6 +10,7 @@
     "fetch:all": "node src/fetch-all.js",
     "lookup": "node src/lookup-deployer.js",
     "token-stats": "node src/token-stats.js",
+    "fee-api": "node src/fee-api.js",
     "fees": "node src/fees-for-wallet.js",
     "start": "node src/discord-bot.js",
     "notify": "node src/notify.js",

@@ -58,6 +58,18 @@
   - **/fees (Discord)** – Aggregates **across all tokens** where the queried wallet (or X/FC) is fee recipient: total USD + per-token breakdown when indexer data is available.
 - **Official claiming:** Use [Bankr’s fee dashboard and CLI](https://docs.bankr.bot/token-launching/claiming-fees): `bankr fees`, `bankr fees --token 0x...`, `bankr fees claim 0x...`. Only the fee beneficiary can claim.
 
+### Best route: see claimable fees for **any** token (not just yours)
+
+You can look up claimable-style fees for **any** Bankr/Rehype token — you don’t need to be the fee recipient. All of these accept **any token address** (or poolId):
+
+| Route | Use when |
+|-------|----------|
+| **Discord `/fees-token`** | Quick check from Discord: paste token CA or Bankr launch URL. Shows fee recipient, indexer/hook fees, and estimated from volume. |
+| **Fee API `GET /claimable?token=<CA>`** | Automation, dashboards, or other apps. Stateless; 60s cache. Example: `curl "https://your-api/claimable?token=0x..."`. |
+| **CLI `npm run token-stats -- <CA>`** | One-off from terminal. Same data as above plus pool state. |
+
+For **poolId only** (no Bankr lookup): use **Fee API `GET /claimable?pool=<poolId>`**. All data is public on-chain; the only limitation is that we show **pool-level** beneficiary totals (if the pool has one beneficiary, that’s the full claimable amount).
+
 ---
 
 ## 6. **Data sources and scripts**

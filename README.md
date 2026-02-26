@@ -149,6 +149,39 @@ This hits `/ready` (health) and `/graphql` (one token query). If both show **OK*
 
 **Optional:** Add a `cumulatedFees` (and pools-by-base-token) API in your indexer fork so token-stats can show claimable-style fees; the BankrMonitor side already calls the shape we added earlier.
 
+#### Lightweight fee API (no indexer, no Postgres)
+
+If you only need **fee + pool analytics** (e.g. “how much is claimable?”) and want minimal storage and maintenance, you can skip the full [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) and run a **stateless fee API** that uses Base RPC on-demand:
+
+- **No Postgres**, no block syncing, no swap indexing.
+- **On-chain reads only:** RehypeDopplerHook `getHookFees(poolId)` for beneficiary fee totals (Rehype/Bankr pools on Base).
+- Optional **in-memory cache** (60s) to avoid hammering RPC.
+
+**Run the fee API:**
+
+```bash
+npm run fee-api
+# Listens on PORT (default 3899). Requires RPC_URL or RPC_URL_BASE for Base.
+```
+
+**Endpoints:**
+
+| Route | Query | Description |
+|-------|--------|-------------|
+| `GET /health` | — | Health check (Railway/Render/Fly). |
+| `GET /claimable` | `?pool=<poolId>` | Beneficiary fees for pool (0x + 64 hex). |
+| `GET /claimable` | `?token=<assetAddress>` | Resolve poolId + fee recipient via Bankr, then hook fees. |
+
+**Example:**
+
+```bash
+curl "http://localhost:3899/claimable?token=0x40d5fef68d07ec540e95a1e6630906b6de6a9ba3"
+```
+
+**Deploy on Railway:** Add a service that runs `node src/fee-api.js`, set `PORT` (Railway provides it), and `RPC_URL` or `RPC_URL_BASE` (e.g. Alchemy/QuickNode Base RPC). Optionally set `BANKR_API_KEY` for reliable `?token=` resolution. Generate a domain in Networking. No database required.
+
+**When to use the full indexer instead:** Use [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) if you need volume charts, OHLC, leaderboards, historical performance, or per-beneficiary **cumulatedFees** from indexed events. For “how much is claimable right now?” the stateless API is enough.
+
 ### 3. Direct Chain Indexing
 
 Index Doppler **Airlock** `Create` events on Base. Bankr deploys via Doppler; each token creation emits `Create(asset, ...)`. Fetches token metadata (name, symbol, tokenURI) for X/website links.

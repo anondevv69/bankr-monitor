@@ -580,7 +580,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const out = await getTokenFees(tokenAddress);
-      const { name, symbol, feeWallet, feeRecipient, cumulatedFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
+      const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
       const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
       const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
       if (error && !out.launch) {
@@ -596,6 +596,8 @@ client.on("interactionCreate", async (interaction) => {
         "",
       ];
       const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
+      const hasHookFees = hookFees && (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n);
+      const hasHookData = hookFees != null; // on-chain read succeeded (even if zero)
       if (hasIndexerFees) {
         const DECIMALS = 18;
         const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
@@ -606,13 +608,25 @@ client.on("interactionCreate", async (interaction) => {
         if (cumulatedFees.token0Fees != null) lines.push(`• Token: ${tokenAmt.toFixed(4)}`);
         if (cumulatedFees.token1Fees != null) lines.push(`• WETH: ${wethAmt.toFixed(6)}`);
         if (cumulatedFees.totalFeesUsd != null) lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
-      } else if (estimatedCreatorFeesUsd != null) {
-        lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
-      } else {
-        lines.push("_Accrued fees not available from indexer. Set DOPPLER_INDEXER_URL to an indexer that supports cumulatedFees._");
+      } else if (hasHookFees) {
+        const DECIMALS = 18;
+        const tokenAmt = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
+        const wethAmt = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
+        lines.push("**On-chain (Rehype hook)** — beneficiary share (claimable until claimed):");
+        if (hookFees.beneficiaryFees0 > 0n) lines.push(`• Token: ${tokenAmt.toFixed(4)}`);
+        if (hookFees.beneficiaryFees1 > 0n) lines.push(`• WETH: ${wethAmt.toFixed(6)}`);
+      } else if (hasHookData) {
+        lines.push("**On-chain (Rehype hook):** No beneficiary fees accrued yet for this pool.");
+      }
+      if (!hasIndexerFees && !hasHookFees) {
+        if (estimatedCreatorFeesUsd != null && !hasHookData) {
+          lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
+        } else if (!hasHookData) {
+          lines.push("_No indexer or on-chain fees for this token. Set DOPPLER_INDEXER_URL for indexer; RPC_URL is used for on-chain Rehype read._");
+        }
       }
       lines.push("");
-      lines.push("_Claimed vs unclaimed is not exposed by the API. To see or claim: [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
+      lines.push("_Works for any token — paste any Bankr token address or launch URL. To claim: [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
       await interaction.editReply({
         content: lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`,
       });

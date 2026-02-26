@@ -349,7 +349,49 @@ function formatUsd(value) {
   return `$${n.toFixed(2)}`;
 }
 
-export { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
+export { fetchPoolByBaseToken, fetchCumulatedFees, fetchHookFeesOnChain, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
+
+/** On-chain read of RehypeDopplerHook.getHookFees(poolId). Returns beneficiary share (token0, token1) or null. Requires RPC_URL for Base. */
+async function fetchHookFeesOnChain(poolId) {
+  if (!poolId || typeof poolId !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(poolId.trim())) return null;
+  if (CHAIN_ID !== 8453) return null;
+  try {
+    const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+    const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
+    const publicClient = viem.createPublicClient({
+      chain,
+      transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org"),
+    });
+    const { getAddresses } = await import("@whetstone-research/doppler-sdk");
+    const { rehypeDopplerHookAbi } = await import("@whetstone-research/doppler-sdk");
+    const addresses = getAddresses(CHAIN_ID);
+    const hookAddress = addresses?.rehypeDopplerHook;
+    if (!hookAddress) return null;
+    const result = await publicClient.readContract({
+      address: hookAddress,
+      abi: rehypeDopplerHookAbi,
+      functionName: "getHookFees",
+      args: [poolId.trim()],
+    });
+    // viem may return object (named outputs) or array [fees0, fees1, beneficiaryFees0, beneficiaryFees1, customFee]
+    const r = result;
+    const b0 = r?.beneficiaryFees0 ?? (Array.isArray(r) ? r[2] : undefined);
+    const b1 = r?.beneficiaryFees1 ?? (Array.isArray(r) ? r[3] : undefined);
+    const f0 = r?.fees0 ?? (Array.isArray(r) ? r[0] : undefined);
+    const f1 = r?.fees1 ?? (Array.isArray(r) ? r[1] : undefined);
+    if (r && (b0 != null || b1 != null)) {
+      return {
+        beneficiaryFees0: b0 != null ? BigInt(b0) : 0n,
+        beneficiaryFees1: b1 != null ? BigInt(b1) : 0n,
+        fees0: f0 != null ? BigInt(f0) : 0n,
+        fees1: f1 != null ? BigInt(f1) : 0n,
+      };
+    }
+  } catch {
+    /* not a Rehype pool or RPC failed */
+  }
+  return null;
+}
 
 const CREATOR_SHARE_BPS = 5700;
 const SWAP_FEE_BPS = 120;
@@ -391,6 +433,12 @@ export async function getTokenFees(tokenAddress) {
     }
   }
 
+  let hookFees = null;
+  const poolId = typeof launch.poolId === "string" ? launch.poolId.trim() : null;
+  if (poolId) {
+    hookFees = await fetchHookFeesOnChain(poolId);
+  }
+
   return {
     tokenAddress: addr,
     name,
@@ -399,6 +447,7 @@ export async function getTokenFees(tokenAddress) {
     feeRecipient: fee ?? null,
     feeWallet,
     cumulatedFees,
+    hookFees,
     volumeUsd,
     estimatedCreatorFeesUsd,
     formatUsd,
@@ -416,7 +465,7 @@ async function main() {
   }
 
   const out = await getTokenFees(tokenAddress);
-  const { name, symbol, launch, feeRecipient: fee, cumulatedFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, poolState } = out;
+  const { name, symbol, launch, feeRecipient: fee, cumulatedFees, hookFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, poolState } = out;
   const deployer = launch?.deployer;
 
   console.log(`\n  Token: ${name} ($${symbol})`);
@@ -441,23 +490,17 @@ async function main() {
   }
   console.log("");
 
-  console.log("  Deployer:", deployer?.walletAddress ?? "—", deployer?.xUsername ? `@${deployer.xUsername}` : "");
-  console.log("  Fee to: ", fee?.walletAddress ?? "—", fee?.xUsername ? `@${fee.xUsername}` : "");
-  console.log("  Pool:   ", launch.poolId ?? "—");
-  if (launch.tweetUrl) console.log("  Tweet:  ", launch.tweetUrl);
-  if (poolState) {
-    const statusNames = { 0: "Uninitialized", 1: "Initialized", 2: "Locked", 3: "Exited" };
-    const status = statusNames[Number(poolState.status)] ?? `Status ${poolState.status}`;
-    const feeBps = poolState.fee != null ? Number(poolState.fee) : null;
-    console.log("  Pool state (Doppler SDK):", status, feeBps != null ? `| fee ${(feeBps / 10000).toFixed(2)}%` : "");
-  }
-  console.log("");
-
   if (cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null)) {
     console.log("  Cumulated fees (indexer) for fee recipient:");
     if (cumulatedFees.token0Fees != null) console.log("    token0:", cumulatedFees.token0Fees);
     if (cumulatedFees.token1Fees != null) console.log("    token1:", cumulatedFees.token1Fees);
     if (cumulatedFees.totalFeesUsd != null) console.log("    total (USD):", formatUsd(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd);
+    console.log("");
+  } else if (hookFees && (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n)) {
+    const dec = 18;
+    console.log("  On-chain (Rehype hook) — beneficiary share:");
+    if (hookFees.beneficiaryFees0 > 0n) console.log("    token:", Number(hookFees.beneficiaryFees0) / 10 ** dec);
+    if (hookFees.beneficiaryFees1 > 0n) console.log("    WETH:", Number(hookFees.beneficiaryFees1) / 10 ** dec);
     console.log("");
   }
 
