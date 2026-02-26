@@ -171,6 +171,24 @@ async function fetchFromBankrApi() {
   return null;
 }
 
+/** Fetch one launch by token address (Bankr GET token-launches/:address). Returns full launch with deployer/feeRecipient or null. */
+async function fetchSingleBankrLaunch(tokenAddress) {
+  if (!BANKR_API_KEY || !tokenAddress) return null;
+  try {
+    const url = `https://api.bankr.bot/token-launches/${encodeURIComponent(tokenAddress)}`;
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", "X-API-Key": BANKR_API_KEY },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const raw = json.launch ?? json;
+    if (raw?.tokenAddress) return raw;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 async function fetchLaunches() {
   if (BANKR_API_KEY && CHAIN_ID === 8453) {
     const bankrLaunches = await fetchFromBankrApi();
@@ -474,10 +492,7 @@ export async function runNotifyCycle() {
   const hasWatchList = watchX.size > 0 || watchFc.size > 0 || watchWallet.size > 0 || watchKeywords.size > 0;
   if (hasWatchList) console.log(`[watch] Loaded: ${watchWallet.size} wallet(s), ${watchKeywords.size} keyword(s)`);
 
-  const newLaunches = launches.filter((l) => {
-    const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
-    if (seenArr.includes(key)) return false;
-
+  function passesFilters(l) {
     if (FILTER_X_MATCH) {
       const deployerX = l.launcherX ? normX(String(l.launcherX)) : null;
       const feeX = l.beneficiaries?.[0]?.xUsername ? normX(String(l.beneficiaries[0].xUsername)) : null;
@@ -487,17 +502,46 @@ export async function runNotifyCycle() {
       const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
       if (!xMatch && !fcMatch) return false;
     }
-
     if (FILTER_MAX_DEPLOYS != null && FILTER_MAX_DEPLOYS > 0) {
       const count = l.launcher ? deployCounts[l.launcher.toLowerCase()]?.size : 0;
       if (count > FILTER_MAX_DEPLOYS) return false;
     }
+    return true;
+  }
 
+  // Include launch if new and (passes filters OR we have a watch list). Watch list is independent of FILTER_X_MATCH / FILTER_MAX_DEPLOYS.
+  const newLaunches = launches.filter((l) => {
+    const key = `${CHAIN_ID}:${l.tokenAddress.toLowerCase()}`;
+    if (seenArr.includes(key)) return false;
+    const passes = passesFilters(l);
+    if (!passes && !hasWatchList) return false;
     seenArr.push(key);
     if (SEEN_MAX_KEYS != null && SEEN_MAX_KEYS > 0 && seenArr.length > SEEN_MAX_KEYS) seenArr.shift();
     return true;
   });
 
+  // When list API omits deployer/feeRecipient, fetch single-launch for watch matching (Bankr GET token-launches/:address)
+  const SINGLE_LAUNCH_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_SINGLE_LAUNCH_FETCH_LIMIT || "15", 10), 25);
+  if (hasWatchList && watchWallet.size > 0 && newLaunches.length > 0 && BANKR_API_KEY && CHAIN_ID === 8453) {
+    let fetched = 0;
+    for (const launch of newLaunches) {
+      if (fetched >= SINGLE_LAUNCH_FETCH_LIMIT) break;
+      const hasWallet = launch.launcher || (launch.beneficiaries?.length > 0);
+      if (hasWallet) continue;
+      const raw = await fetchSingleBankrLaunch(launch.tokenAddress);
+      if (!raw) continue;
+      fetched++;
+      const filled = formatBankrLaunch(raw);
+      if (filled.launcher) launch.launcher = filled.launcher;
+      if (filled.launcherX) launch.launcherX = filled.launcherX;
+      if (filled.launcherFarcaster) launch.launcherFarcaster = filled.launcherFarcaster;
+      if (filled.beneficiaries?.length) launch.beneficiaries = filled.beneficiaries;
+      if (fetched < newLaunches.length) await new Promise((r) => setTimeout(r, 120));
+    }
+    if (fetched > 0) console.log(`[watch] Fetched ${fetched} single-launch detail(s) for deployer/fee matching`);
+  }
+
+  // Watch list: ping when this wallet is deployer OR fee recipient (or keyword in name/symbol). Ignores FILTER_X_MATCH, FILTER_MAX_DEPLOYS.
   function isWatchMatch(launch) {
     const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
     const deployerFc = launch.launcherFarcaster ? normHandle(String(launch.launcherFarcaster)) : null;
@@ -522,7 +566,12 @@ export async function runNotifyCycle() {
 
   const enriched = newLaunches.map((launch) => {
     const count = launch.launcher ? deployCounts[launch.launcher.toLowerCase()]?.size : null;
-    return { ...launch, deployCount: count ?? undefined, isWatchMatch: isWatchMatch(launch) };
+    return {
+      ...launch,
+      deployCount: count ?? undefined,
+      isWatchMatch: isWatchMatch(launch),
+      passedFilters: passesFilters(launch),
+    };
   });
 
   await saveSeen(seenArr);

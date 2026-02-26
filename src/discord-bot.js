@@ -270,18 +270,31 @@ async function runNotify() {
 
       for (const launch of newLaunches) {
         const embed = buildLaunchEmbed(launch);
-        if (alertChannel) {
-          try {
-            await alertChannel.send({ embeds: [embed] });
-          } catch (e) {
-            console.error(`Alert channel ${ALERT_CHANNEL_ID} failed:`, e.message);
+        const showInAlert = launch.passedFilters !== false;
+        const showInWatch = launch.isWatchMatch;
+        const sameChannel = alertChannel && watchChannel && alertChannel.id === watchChannel.id;
+        if (sameChannel) {
+          if ((showInAlert || showInWatch) && alertChannel) {
+            try {
+              await alertChannel.send({ embeds: [embed] });
+            } catch (e) {
+              console.error(`Alert/Watch channel failed:`, e.message);
+            }
           }
-        }
-        if (launch.isWatchMatch && watchChannel && watchChannel.id !== alertChannel?.id) {
-          try {
-            await watchChannel.send({ embeds: [embed] });
-          } catch (e) {
-            console.error(`Watch channel ${WATCH_ALERT_CHANNEL_ID} failed:`, e.message, "- Check bot has Send Messages + Embed Links in that channel.");
+        } else {
+          if (alertChannel && showInAlert) {
+            try {
+              await alertChannel.send({ embeds: [embed] });
+            } catch (e) {
+              console.error(`Alert channel ${ALERT_CHANNEL_ID} failed:`, e.message);
+            }
+          }
+          if (watchChannel && showInWatch) {
+            try {
+              await watchChannel.send({ embeds: [embed] });
+            } catch (e) {
+              console.error(`Watch channel ${WATCH_ALERT_CHANNEL_ID} failed:`, e.message, "- Check bot has Send Messages + Embed Links in that channel.");
+            }
           }
         }
         await sendTelegram(launch);
