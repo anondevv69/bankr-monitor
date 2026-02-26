@@ -304,6 +304,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   const matches = (l) => launchMatches(l, normalized, isWalletQuery, filter);
   let launches = [];
   let totalCount = 0;
+  let resolvedWallet = null;
   // Search using normalized form (username or wallet) so URLs like https://x.com/ayowtfchil become "ayowtfchil"
   let searchResult = await fetchSearch(normalized);
   // If handle (no wallet), also try @ prefix — Bankr search may index X as "@gork"; try when no results or after filter we'd have 0
@@ -349,9 +350,13 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       }
     }
     totalCount = Math.max(launches.length, totalCount);
-    // Resolve X/FC handle -> wallet from the list, then search by wallet so we get all tokens (Bankr search finds by wallet; handle search often misses fee recipient)
+    // Resolve X/FC handle -> wallet (from list, overrides, or deploy-simulate), then search by that wallet so we get all tokens
     if (!isWalletQuery && normalized) {
-      const wallet = handleToWallet.get(normalized);
+      let wallet = handleToWallet.get(normalized) ?? null;
+      if (!wallet) {
+        const resolved = await resolveHandleToWallet(query);
+        wallet = resolved.wallet ?? null;
+      }
       if (wallet) {
         resolvedWallet = wallet;
         const byWallet = await fetchSearch(wallet);
@@ -407,6 +412,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     totalCount,
     possiblyCapped,
     hasDates,
+    resolvedWallet: resolvedWallet ?? null,
     matches: result,
   };
 }
