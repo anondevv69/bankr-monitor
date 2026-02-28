@@ -84,11 +84,18 @@ async function fetchSearch(query) {
       const json = await res.json();
       const byDeployer = json.groups?.byDeployer?.results ?? [];
       const byFee = json.groups?.byFeeRecipient?.results ?? [];
-      const total = json.groups?.byDeployer?.totalCount ?? json.groups?.byFeeRecipient?.totalCount ?? 0;
+      const byWallet = json.groups?.byWallet?.results ?? [];
+      const flatResults = Array.isArray(json.results) ? json.results : Array.isArray(json.launches) ? json.launches : [];
+      const total =
+        json.groups?.byDeployer?.totalCount ??
+        json.groups?.byFeeRecipient?.totalCount ??
+        json.groups?.byWallet?.totalCount ??
+        json.totalCount ??
+        0;
       if (total > totalCount) totalCount = total;
 
       let added = 0;
-      for (const l of [...byDeployer, ...byFee]) {
+      for (const l of [...byDeployer, ...byFee, ...byWallet, ...flatResults]) {
         if (l.status !== "deployed") continue;
         const key = l.tokenAddress?.toLowerCase();
         if (key && !seen.has(key)) {
@@ -98,8 +105,8 @@ async function fetchSearch(query) {
         }
       }
       if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
-      offset += Math.max(byDeployer.length, byFee.length, 1);
-      if (byDeployer.length === 0 && byFee.length === 0) break;
+      offset += Math.max(byDeployer.length, byFee.length, byWallet.length, flatResults.length, 1);
+      if (byDeployer.length === 0 && byFee.length === 0 && byWallet.length === 0 && flatResults.length === 0) break;
     }
     return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
   } catch {
@@ -182,20 +189,29 @@ function buildHandleToWalletMap(launches) {
   return map;
 }
 
+/** Get wallet from deployer or fee object (API may use walletAddress, wallet, or address). */
+function walletFrom(obj) {
+  if (!obj) return null;
+  const w = obj.walletAddress ?? obj.wallet ?? obj.address;
+  return w && /^0x[a-fA-F0-9]{40}$/.test(String(w).trim()) ? String(w).trim().toLowerCase() : null;
+}
+
 /** Check if a launch matches the query. filter: "deployer" | "fee" | "both". */
 function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   const deployer = launch.deployer;
   const fee = launch.feeRecipient;
+  const deployerWallet = walletFrom(deployer);
+  const feeWallet = walletFrom(fee);
 
   const matchDeployer = () => {
-    if (isWalletQuery) return deployer?.walletAddress?.toLowerCase() === queryNorm;
+    if (isWalletQuery) return deployerWallet === queryNorm;
     const q = queryNorm;
     const deployerX = deployer?.xUsername ? norm(String(deployer.xUsername).replace(/^@/, "")) : null;
     const deployerFc = norm(deployer?.farcasterUsername ?? deployer?.farcaster ?? deployer?.fcUsername ?? "");
     return deployerX === q || deployerFc === q;
   };
   const matchFee = () => {
-    if (isWalletQuery) return fee?.walletAddress?.toLowerCase() === queryNorm;
+    if (isWalletQuery) return feeWallet === queryNorm;
     const q = queryNorm;
     const feeX = fee?.xUsername ? norm(String(fee.xUsername).replace(/^@/, "")) : null;
     const feeFc = norm(fee?.farcasterUsername ?? fee?.farcaster ?? fee?.fcUsername ?? "");
