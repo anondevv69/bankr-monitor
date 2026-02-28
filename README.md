@@ -4,6 +4,25 @@ Fetch and monitor tokens deployed via [Bankr](https://bankr.bot) on Base. Bankr 
 
 The [bankr.bot/launches](https://bankr.bot/launches) feed shows real-time token deployments with metadata: launcher, fee recipient, contract address, name, X/website links. This project provides alternative data sources when you need to fetch launches programmatically.
 
+---
+
+## Ready to share: checklist
+
+Once these are done, you can invite the bot to many servers and let each server run **/setup** with their own API key, rules, and watchlist.
+
+| Step | What to do |
+|------|-------------|
+| **1. Deploy Doppler indexer** | Run the [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) on Railway (Postgres + indexer service). See **Self-hosting the Doppler indexer on Railway** below. |
+| **2. Set BankrMonitor env** | In the place where the bot runs (Railway, VPS, or `.env`): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DOPPLER_INDEXER_URL` (your indexer URL), `RPC_URL` (Base RPC), and optionally `BANKR_API_KEY` (so /lookup and /fees-token work without 403). |
+| **3. Run the bot** | `npm start` (or deploy the Discord bot service). Optional: run `npm run fee-api` if you want the claimable-fees API. |
+| **4. Share** | Invite the bot to servers. Each server runs **/setup** (API key, alert channel, rules) and **/watch add** for their watchlist. Use **/settings** anytime to edit. |
+
+Verify the indexer: `DOPPLER_INDEXER_URL=https://your-indexer.up.railway.app npm run check:indexer` should show OK.
+
+For **one Railway project** (Postgres + indexer + bot) and **where per-server settings are stored** (file + volume), see [docs/RAILWAY_AND_TENANT_STORAGE.md](docs/RAILWAY_AND_TENANT_STORAGE.md).
+
+---
+
 ## Data Sources
 
 Fetch order: **Bankr API** (when `BANKR_API_KEY` set) → **Doppler Indexer** → **Chain** (Airlock events).
@@ -137,15 +156,20 @@ DOPPLER_INDEXER_URL=https://your-app.up.railway.app
 
 Then `token-stats`, `notify`, and any script that uses the indexer will use your instance for volume (and for cumulated fees if you add that to the indexer schema).
 
+**What BankrMonitor actually uses:** Only **`/graphql`** (POST) and, as fallback, **`/search/:address`** (GET). The root `/` and **`/ready`** are not used for fee or token data — they may be empty or 404 on your indexer; that’s fine. As long as **`/graphql`** returns 200 and valid GraphQL (e.g. `tokens`, `v4pools`, `cumulatedFees`), the bot will use the indexer.
+
 **Check that the indexer is working:**
 
 ```bash
+# In .env set:
+# DOPPLER_INDEXER_URL=https://natural-embrace-production-07b7.up.railway.app
+
 npm run check:indexer
-# Or with a custom URL:
-DOPPLER_INDEXER_URL=https://your-app.up.railway.app npm run check:indexer
+# Or with a custom URL (no trailing slash):
+DOPPLER_INDEXER_URL=https://natural-embrace-production-07b7.up.railway.app npm run check:indexer
 ```
 
-This hits `/ready` (health) and `/graphql` (one token query). If both show **OK**, the indexer is up. You can also open `https://your-app.up.railway.app/` in a browser (Ponder often shows a simple page) or `https://your-app.up.railway.app/ready` for a 200 response.
+This hits **`/ready`** (optional health) and **`/graphql`** (one token query). If **`/graphql`** shows **OK**, the indexer is usable. If you see **502** or “application failed to respond” on `/` or `/ready`, the indexer app on Railway may be crashing or not listening — check the **indexer service’s deploy logs** in Railway and ensure the start command and `PORT` are correct. Once **`/graphql`** responds with 200 and data, BankrMonitor will use it for volume and cumulated fees. For a step-by-step fix when the indexer returns 502 or "application failed to respond", see **[Indexer Railway troubleshooting](docs/INDEXER_RAILWAY_TROUBLESHOOTING.md)**.
 
 **Optional:** Add a `cumulatedFees` (and pools-by-base-token) API in your indexer fork so token-stats can show claimable-style fees; the BankrMonitor side already calls the shape we added earlier.
 
@@ -218,7 +242,19 @@ npm run lookup -- dwr.eth
 
 Searches the most recent launches (up to `BANKR_LAUNCHES_LIMIT`, default 500). The script requests up to 50 results per page from the Bankr search API and shows **total token count**; if the API returns fewer (e.g. a 5-result cap), the CLI and Discord **lookup** still show “Total: N token(s)” and link to the full list at [bankr.bot/launches/search](https://bankr.bot/launches/search?q=). Discord shows “Showing 1–25 of N” when there are more than 25; use the site for full list and pagination.
 
-## Fees: claimed vs unclaimed ETH
+## Fees: claimable now, historical, and claimed
+
+This project focuses on three fee views (no leaderboards, charts, or OHLC):
+
+| What | How you see it | Source |
+|------|----------------|--------|
+| **Claimable right now** (token + WETH) | Discord: mention bot + token address, or **/fees-token**; or `GET /claimable?token=<addr>` (fee-api); or `bankr fees --token <addr>`. Same **with or without** indexer. | **On-chain** only: Rehype hook `getHookFees(poolId)` via Base RPC. |
+| **Historical accrued** (all-time fees for beneficiary) | Shown in Discord/CLI when the indexer is running and has `cumulatedFees` for that pool+beneficiary. | **Indexer** (Doppler indexer `cumulatedFees`). |
+| **Already claimed** | When both indexer and chain data exist: **Already claimed ≈ Accrued − Claimable** (shown in Discord for that token). | Derived: indexer accrued minus on-chain claimable. |
+
+**Requirements:** `RPC_URL` (or `RPC_URL_BASE`) for Base to read claimable. Bankr launch must have `poolId` (from Bankr API). For historical + claimed you need `DOPPLER_INDEXER_URL` and an indexer that exposes `cumulatedFees`.
+
+## Fees: claimed vs unclaimed ETH (Bankr app)
 
 **Whether a token’s fees have been claimed** and **how much ETH is claimable** are not exposed by the Bankr REST API. Use Bankr’s own tools:
 

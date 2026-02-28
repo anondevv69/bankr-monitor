@@ -26,10 +26,18 @@ import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { addWallet, removeWallet, addKeyword, removeKeyword, list } from "./watch-store.js";
+import {
+  getTenant,
+  setTenant,
+  listActiveTenantGuildIds,
+  getWatchListForGuild,
+  updateWatchListForGuild,
+} from "./tenant-store.js";
 import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
+import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -110,7 +118,13 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
 
 async function registerCommands(appId) {
   const rest = new REST().setToken(TOKEN);
@@ -258,6 +272,84 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
+      .setName("setup")
+      .setDescription("Configure Bankr monitor for this server (API key, channels, rules)")
+      .addStringOption((o) =>
+        o
+          .setName("api_key")
+          .setDescription("Your Bankr API key (from bankr.bot/api)")
+          .setRequired(true)
+      )
+      .addChannelOption((o) =>
+        o
+          .setName("alert_channel")
+          .setDescription("Channel for all new token launch alerts")
+          .setRequired(true)
+      )
+      .addChannelOption((o) =>
+        o
+          .setName("watch_channel")
+          .setDescription("Channel for watch-list matches only (optional)")
+          .setRequired(false)
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName("filter_x_match")
+          .setDescription("Only alert when deployer and fee recipient share same X/FC (default: false)")
+          .setRequired(false)
+      )
+      .addIntegerOption((o) =>
+        o
+          .setName("filter_max_deploys")
+          .setDescription("Max deploys per day to alert (optional, 0 = no limit)")
+          .setRequired(false)
+      )
+      .addNumberOption((o) =>
+        o
+          .setName("poll_interval_min")
+          .setDescription("Minutes between checks (default: 1)")
+          .setRequired(false)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("settings")
+      .setDescription("View or edit this server's Bankr monitor config")
+      .addSubcommand((s) => s.setName("show").setDescription("Show current config (channels, rules; API key hidden)"))
+      .addSubcommand((s) =>
+        s
+          .setName("api_key")
+          .setDescription("Update your Bankr API key")
+          .addStringOption((o) =>
+            o.setName("key").setDescription("New Bankr API key").setRequired(true)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("channels")
+          .setDescription("Update alert channels")
+          .addChannelOption((o) =>
+            o.setName("alert_channel").setDescription("Channel for all launch alerts").setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("rules")
+          .setDescription("Update monitoring rules")
+          .addBooleanOption((o) =>
+            o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
+          )
+          .addIntegerOption((o) =>
+            o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
+          )
+          .addNumberOption((o) =>
+            o.setName("poll_interval_min").setDescription("Minutes between checks").setRequired(false)
+          )
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName("help")
       .setDescription("Show how to use BankrMonitor (watch, lookup, resolve, deploy)")
       .toJSON(),
@@ -351,6 +443,118 @@ function pruneLookupCache() {
     if (now - entry.createdAt > LOOKUP_CACHE_TTL_MS) lookupCache.delete(id);
   }
 }
+
+/** Build fee reply text for a token (used by /fees-token and by mention + address). */
+function formatFeesTokenReply(out, tokenAddress) {
+  const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
+  const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
+  const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
+  if (error && !out.launch) {
+    return `**${name}** ($${symbol})\n\n${error}\n\n[View on Bankr](${launchUrl})`;
+  }
+  const DECIMALS = 18;
+  const lines = [
+    `**Token:** ${name} ($${symbol})`,
+    `**CA:** \`${tokenAddress}\``,
+    `**Fee recipient:** ${feeLabel}${feeWallet ? ` (\`${feeWallet.slice(0, 6)}…${feeWallet.slice(-4)}\`)` : ""}`,
+    "",
+  ];
+
+  // Claimable right now — always from chain (getHookFees). Same with or without indexer.
+  const hasHookData = hookFees != null;
+  const claimableToken = hasHookData ? Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS : null;
+  const claimableWeth = hasHookData ? Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS : null;
+
+  if (hasHookData) {
+    lines.push("**Claimable right now** (on-chain `getHookFees`) — what the recipient can claim:");
+    if (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n) {
+      if (hookFees.beneficiaryFees0 > 0n) lines.push(`• Token: ${claimableToken.toFixed(4)}`);
+      if (hookFees.beneficiaryFees1 > 0n) lines.push(`• WETH: ${claimableWeth.toFixed(6)}`);
+    } else {
+      lines.push("• No unclaimed fees yet.");
+    }
+    lines.push("");
+  }
+
+  // Historical accrued (indexer) and "already claimed" when we have both indexer + chain
+  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
+  if (hasIndexerFees) {
+    const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
+    const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
+    const accruedToken = Number(raw0) / 10 ** DECIMALS;
+    const accruedWeth = Number(raw1) / 10 ** DECIMALS;
+    lines.push("**Historical accrued** (indexer) — all-time fees for this beneficiary:");
+    if (cumulatedFees.token0Fees != null) lines.push(`• Token: ${accruedToken.toFixed(4)}`);
+    if (cumulatedFees.token1Fees != null) lines.push(`• WETH: ${accruedWeth.toFixed(6)}`);
+    if (cumulatedFees.totalFeesUsd != null) lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
+    if (hasHookData) {
+      const claimedT = Math.max(0, accruedToken - (claimableToken ?? 0));
+      const claimedW = Math.max(0, accruedWeth - (claimableWeth ?? 0));
+      if (claimedT > 0 || claimedW > 0) {
+        lines.push("**Already claimed** ≈ Accrued − Claimable:");
+        if (claimedT > 0) lines.push(`• Token: ${claimedT.toFixed(4)}`);
+        if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(6)}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (!hasHookData) {
+    if (estimatedCreatorFeesUsd != null) {
+      lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
+    } else {
+      lines.push("_Claimable: set RPC_URL (Base) and ensure token has a Bankr launch with poolId. Then claimable comes from chain._");
+    }
+    lines.push("");
+  }
+  lines.push("");
+  lines.push("_Bankr token — claim at [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
+  return lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`;
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.mentions.has(client.user?.id)) return;
+  const addrMatch = message.content.match(/0x[a-fA-F0-9]{40}/);
+  const tokenAddress = addrMatch ? addrMatch[0].toLowerCase() : null;
+  if (!tokenAddress) {
+    await message.reply("To get fees: mention me and include a **token contract address** (0x...). Example: `@Bot 0x1234...`").catch(() => {});
+    return;
+  }
+  await message.channel.sendTyping().catch(() => {});
+  try {
+    const out = await getTokenFees(tokenAddress);
+    if (out.launch) {
+      const content = formatFeesTokenReply(out, tokenAddress);
+      await message.reply(content).catch(() => {});
+      return;
+    }
+    // No launch for this address — try as fee-recipient wallet (on-chain only, no indexer)
+    const recipient = await getFeesSummaryOnChainOnly(tokenAddress);
+    if (recipient.tokens && recipient.tokens.length > 0) {
+      const DECIMALS = 18;
+      const lines = [
+        `**Fees for recipient** \`${recipient.feeWallet ?? tokenAddress}\` (on-chain claimable, no indexer)`,
+        `**Bankr tokens:** ${recipient.matchCount} (showing up to ${recipient.tokens.length})`,
+        "",
+      ];
+      for (const t of recipient.tokens) {
+        const h = t.hookFees;
+        const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
+        const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
+        lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
+        lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
+        lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
+      }
+      lines.push("");
+      lines.push("_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
+      await message.reply(lines.join("\n")).catch(() => {});
+      return;
+    }
+    await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
+  } catch (e) {
+    await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
+  }
+});
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && (interaction.customId === "lookup:prev" || interaction.customId === "lookup:next")) {
@@ -580,58 +784,139 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const out = await getTokenFees(tokenAddress);
-      const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, volumeUsd, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
-      const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
-      const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
-      if (error && !out.launch) {
+      const content = formatFeesTokenReply(out, tokenAddress);
+      await interaction.editReply({ content });
+    } catch (e) {
+      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "setup") {
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await interaction.reply({
+        content: "Setup is only available in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const apiKey = interaction.options.getString("api_key")?.trim();
+      const alertChannel = interaction.options.getChannel("alert_channel");
+      const watchChannel = interaction.options.getChannel("watch_channel");
+      const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
+      const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
+      const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
+      if (!apiKey || !alertChannel) {
         await interaction.editReply({
-          content: `**${name}** ($${symbol})\n\n${error}\n\n[View on Bankr](${launchUrl})`,
+          content: "Provide **api_key** and **alert_channel**. Get a key at [bankr.bot/api](https://bankr.bot/api).",
         });
         return;
       }
+      const updates = {
+        bankrApiKey: apiKey,
+        alertChannelId: alertChannel.id,
+        watchAlertChannelId: watchChannel?.id ?? null,
+        rules: {
+          filterXMatch,
+          filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
+          pollIntervalMs: pollIntervalMin != null ? Math.max(0.5, pollIntervalMin) * 60_000 : 60_000,
+        },
+      };
+      await setTenant(guildId, updates);
       const lines = [
-        `**Token:** ${name} ($${symbol})`,
-        `**CA:** \`${tokenAddress}\``,
-        `**Fee recipient:** ${feeLabel}${feeWallet ? ` (\`${feeWallet.slice(0, 6)}…${feeWallet.slice(-4)}\`)` : ""}`,
+        "**Server config saved.**",
+        `• Alert channel: ${alertChannel.name}`,
+        watchChannel ? `• Watch channel: ${watchChannel.name}` : "• Watch channel: (none)",
+        `• Filter X match: ${filterXMatch}`,
+        filterMaxDeploys != null ? `• Max deploys/day: ${filterMaxDeploys}` : "",
+        `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
         "",
+        "Use **/watch add** to add X, Farcaster, wallets, or keywords. Use **/settings show** to view or **/settings** subcommands to edit.",
       ];
-      const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
-      const hasHookFees = hookFees && (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n);
-      const hasHookData = hookFees != null; // on-chain read succeeded (even if zero)
-      if (hasIndexerFees) {
-        const DECIMALS = 18;
-        const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
-        const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
-        const tokenAmt = Number(raw0) / 10 ** DECIMALS;
-        const wethAmt = Number(raw1) / 10 ** DECIMALS;
-        lines.push("**Accrued fees (indexer)** — typically claimable until claimed:");
-        if (cumulatedFees.token0Fees != null) lines.push(`• Token: ${tokenAmt.toFixed(4)}`);
-        if (cumulatedFees.token1Fees != null) lines.push(`• WETH: ${wethAmt.toFixed(6)}`);
-        if (cumulatedFees.totalFeesUsd != null) lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
-      } else if (hasHookFees) {
-        const DECIMALS = 18;
-        const tokenAmt = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
-        const wethAmt = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
-        lines.push("**On-chain (Rehype hook)** — beneficiary share (claimable until claimed):");
-        if (hookFees.beneficiaryFees0 > 0n) lines.push(`• Token: ${tokenAmt.toFixed(4)}`);
-        if (hookFees.beneficiaryFees1 > 0n) lines.push(`• WETH: ${wethAmt.toFixed(6)}`);
-      } else if (hasHookData) {
-        lines.push("**On-chain (Rehype hook):** No beneficiary fees accrued yet for this pool.");
-      }
-      if (!hasIndexerFees && !hasHookFees) {
-        if (estimatedCreatorFeesUsd != null && !hasHookData) {
-          lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
-        } else if (!hasHookData) {
-          lines.push("_No indexer or on-chain fees for this token. Set DOPPLER_INDEXER_URL for indexer; RPC_URL is used for on-chain Rehype read._");
-        }
-      }
-      lines.push("");
-      lines.push("_Works for any token — paste any Bankr token address or launch URL. To claim: [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
-      await interaction.editReply({
-        content: lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`,
-      });
+      await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
     } catch (e) {
-      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: `Setup failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "settings") {
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await interaction.reply({
+        content: "Settings are only available in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const sub = interaction.options.getSubcommand();
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      if (sub === "show") {
+        const tenant = await getTenant(guildId);
+        if (!tenant) {
+          await interaction.editReply({
+            content: "No config for this server yet. Run **/setup** to configure API key, channels, and rules.",
+          });
+          return;
+        }
+        const w = tenant.watchlist || {};
+        const lines = [
+          "**Current config** (API key hidden)",
+          `• Alert channel: ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
+          `• Watch channel: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
+          `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
+          `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
+          `• Poll interval: ${((tenant.rules?.pollIntervalMs ?? 60000) / 60_000)} min`,
+          "• Watchlist: X " + (w.x?.length ?? 0) + ", FC " + (w.fc?.length ?? 0) + ", wallets " + (w.wallet?.length ?? 0) + ", keywords " + (w.keywords?.length ?? 0),
+          "",
+          "Use **/settings api_key**, **/settings channels**, or **/settings rules** to edit.",
+        ];
+        await interaction.editReply({ content: lines.join("\n") });
+        return;
+      }
+      if (sub === "api_key") {
+        const key = interaction.options.getString("key")?.trim();
+        if (!key) {
+          await interaction.editReply({ content: "Provide a key." });
+          return;
+        }
+        await setTenant(guildId, { bankrApiKey: key });
+        await interaction.editReply({ content: "API key updated." });
+        return;
+      }
+      if (sub === "channels") {
+        const alertChannel = interaction.options.getChannel("alert_channel");
+        const watchChannel = interaction.options.getChannel("watch_channel");
+        const updates = {};
+        if (alertChannel) updates.alertChannelId = alertChannel.id;
+        if (watchChannel !== null) updates.watchAlertChannelId = watchChannel?.id ?? null;
+        if (Object.keys(updates).length === 0) {
+          await interaction.editReply({ content: "Provide at least one channel to update." });
+          return;
+        }
+        await setTenant(guildId, updates);
+        await interaction.editReply({ content: "Channels updated." });
+        return;
+      }
+      if (sub === "rules") {
+        const filterXMatch = interaction.options.getBoolean("filter_x_match");
+        const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
+        const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
+        const tenant = await getTenant(guildId);
+        const rules = { ...(tenant?.rules ?? {}) };
+        if (filterXMatch !== null) rules.filterXMatch = filterXMatch;
+        if (filterMaxDeploys !== null) rules.filterMaxDeploys = filterMaxDeploys;
+        if (pollIntervalMin != null) rules.pollIntervalMs = Math.max(0.5, pollIntervalMin) * 60_000;
+        await setTenant(guildId, { rules });
+        await interaction.editReply({ content: "Rules updated." });
+        return;
+      }
+    } catch (e) {
+      await interaction.editReply({ content: `Settings failed: ${e.message}` }).catch(() => {});
     }
     return;
   }
@@ -641,74 +926,135 @@ client.on("interactionCreate", async (interaction) => {
   const sub = interaction.options.getSubcommand();
   const type = interaction.options.getString("type");
   const value = interaction.options.getString("value");
+  const guildId = interaction.guildId ?? null;
+  const useTenant = guildId && (await getTenant(guildId));
 
   try {
     if (sub === "add") {
       if (type === "x" || type === "fc") {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        const { wallet, normalized } = await resolveHandleToWallet(value);
-        if (!wallet) {
+        const normalized = value ? String(value).trim().toLowerCase().replace(/^@/, "") : "";
+        if (useTenant) {
+          const added = await updateWatchListForGuild(guildId, type, value, true);
           await interaction.editReply({
-            content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. Add a wallet address (0x...) directly with type **wallet**.`,
+            content: added
+              ? `Added **${type === "x" ? "@" : ""}${normalized || value}** to this server's watch list.`
+              : `**${type === "x" ? "@" : ""}${normalized || value}** is already on the watch list.`,
           });
-          return;
-        }
-        const added = await addWallet(wallet);
-        if (!added) {
+        } else {
+          const { wallet, normalized: norm } = await resolveHandleToWallet(value);
+          if (!wallet) {
+            await interaction.editReply({
+              content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. Add a wallet address (0x...) directly with type **wallet**. Run **/setup** to use a per-server watchlist.`,
+            });
+            return;
+          }
+          const added = await addWallet(wallet);
           await interaction.editReply({
-            content: `**${type === "x" ? "@" : ""}${normalized || value}** is already on the watch list (wallet \`${wallet}\`).`,
+            content: added
+              ? `Added **${type === "x" ? "@" : ""}${norm || value}** (wallet \`${wallet}\`) to watch list. Run **/setup** to use a per-server watchlist.`
+              : `**${type === "x" ? "@" : ""}${norm || value}** is already on the watch list (wallet \`${wallet}\`).`,
           });
-          return;
         }
-        await interaction.editReply({
-          content: `Added **${type === "x" ? "@" : ""}${normalized || value}** (wallet \`${wallet}\`) to watch list.`,
-        });
       } else if (type === "wallet") {
-        const added = await addWallet(value);
-        if (!added) {
-          const valid = /^0x[a-fA-F0-9]{40}$/.test(String(value).trim());
-          return interaction.reply({
-            content: valid ? `That wallet is already on the watch list: \`${String(value).trim().toLowerCase()}\`.` : "Invalid wallet address (use 0x + 40 hex chars).",
+        const addr = typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
+        if (useTenant) {
+          const added = addr ? await updateWatchListForGuild(guildId, "wallet", addr, true) : false;
+          await interaction.reply({
+            content: addr
+              ? (added ? `Added wallet \`${addr}\` to this server's watch list.` : `That wallet is already on the watch list.`)
+              : "Invalid wallet address (use 0x + 40 hex chars).",
+            flags: MessageFlags.Ephemeral,
+          });
+        } else {
+          const added = await addWallet(value);
+          await interaction.reply({
+            content: added
+              ? `Added wallet \`${String(value).trim().toLowerCase()}\` to watch list. Run **/setup** for per-server watchlist.`
+              : (addr ? "That wallet is already on the watch list." : "Invalid wallet address (use 0x + 40 hex chars)."),
             flags: MessageFlags.Ephemeral,
           });
         }
-        await interaction.reply({ content: `Added wallet \`${String(value).trim().toLowerCase()}\` to watch list.`, flags: MessageFlags.Ephemeral });
       } else {
-        await addKeyword(value);
-        await interaction.reply({ content: `Added keyword **"${value}"** to watch list.`, flags: MessageFlags.Ephemeral });
+        if (useTenant) {
+          const added = await updateWatchListForGuild(guildId, "keywords", value, true);
+          await interaction.reply({
+            content: added ? `Added keyword **"${value}"** to this server's watch list.` : `Keyword **"${value}"** is already on the watch list.`,
+            flags: MessageFlags.Ephemeral,
+          });
+        } else {
+          await addKeyword(value);
+          await interaction.reply({ content: `Added keyword **"${value}"** to watch list. Run **/setup** for per-server watchlist.`, flags: MessageFlags.Ephemeral });
+        }
       }
     } else if (sub === "remove") {
       if (type === "x" || type === "fc") {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        const { wallet, normalized } = await resolveHandleToWallet(value);
-        if (!wallet) {
+        if (useTenant) {
+          const ok = await updateWatchListForGuild(guildId, type, value, false);
           await interaction.editReply({
-            content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. If you added by wallet, remove with type **wallet** and the address.`,
+            content: ok ? `Removed **${type === "x" ? "@" : ""}${value}** from this server's watch list.` : "That handle was not on the watch list.",
           });
-          return;
+        } else {
+          const { wallet, normalized: norm } = await resolveHandleToWallet(value);
+          if (!wallet) {
+            await interaction.editReply({
+              content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. If you added by wallet, remove with type **wallet** and the address.`,
+            });
+            return;
+          }
+          const ok = await removeWallet(wallet);
+          await interaction.editReply({
+            content: ok ? `Removed **${type === "x" ? "@" : ""}${norm || value}** (wallet) from watch list.` : "That wallet was not on the watch list.",
+          });
         }
-        const ok = await removeWallet(wallet);
-        await interaction.editReply({
-          content: ok ? `Removed **${type === "x" ? "@" : ""}${normalized || value}** (wallet) from watch list.` : "That wallet was not on the watch list.",
-        });
       } else if (type === "wallet") {
-        const ok = await removeWallet(value);
-        await interaction.reply({
-          content: ok ? "Removed wallet from watch list." : "Wallet not found or invalid address.",
-          flags: MessageFlags.Ephemeral,
-        });
+        if (useTenant) {
+          const ok = await updateWatchListForGuild(guildId, "wallet", value, false);
+          await interaction.reply({
+            content: ok ? "Removed wallet from this server's watch list." : "Wallet not found or invalid address.",
+            flags: MessageFlags.Ephemeral,
+          });
+        } else {
+          const ok = await removeWallet(value);
+          await interaction.reply({
+            content: ok ? "Removed wallet from watch list." : "Wallet not found or invalid address.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
       } else {
-        await removeKeyword(value);
-        await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
+        if (useTenant) {
+          const ok = await updateWatchListForGuild(guildId, "keywords", value, false);
+          await interaction.reply({
+            content: ok ? `Removed keyword **"${value}"** from this server's watch list.` : "Keyword not found.",
+            flags: MessageFlags.Ephemeral,
+          });
+        } else {
+          await removeKeyword(value);
+          await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
+        }
       }
     } else if (sub === "list") {
-      const { wallet, keywords } = await list();
-      const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
-      const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
-      await interaction.reply({
-        content: `**Watch list**\n\n**Wallets** (X/FC handles are resolved to wallet when added):\n${walletBlock}\n\n**Keywords:** ${kwStr}`,
-        flags: MessageFlags.Ephemeral,
-      });
+      if (useTenant) {
+        const wl = await getWatchListForGuild(guildId);
+        const x = [...wl.x], fc = [...wl.fc], wallet = [...wl.wallet], keywords = [...wl.keywords];
+        const lines = [
+          "**Watch list** (this server)",
+          "**X:** " + (x.length ? x.map((h) => `@${h}`).join(", ") : "_none_"),
+          "**Farcaster:** " + (fc.length ? fc.join(", ") : "_none_"),
+          "**Wallets:** " + (wallet.length ? wallet.map((w) => `\`${w}\``).join(", ") : "_none_"),
+          "**Keywords:** " + (keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_"),
+        ];
+        await interaction.reply({ content: lines.join("\n"), flags: MessageFlags.Ephemeral });
+      } else {
+        const { wallet, keywords } = await list();
+        const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
+        const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
+        await interaction.reply({
+          content: `**Watch list** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup** to use a per-server watchlist.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
     }
   } catch (e) {
     await interaction.reply({ content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});

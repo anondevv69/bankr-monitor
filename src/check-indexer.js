@@ -13,20 +13,21 @@ const base = (process.env.DOPPLER_INDEXER_URL || process.argv[2] || "https://tes
 async function check() {
   console.log(`Checking indexer: ${base}\n`);
 
-  // 1. Health
+  // 1. Health (/ready is optional; many indexers don't expose it)
   try {
     const r = await fetch(`${base}/ready`);
     const ok = r.ok;
-    console.log(`  /ready: ${ok ? "OK" : r.status}`);
+    console.log(`  /ready: ${ok ? "OK" : r.status} (optional — BankrMonitor uses /graphql only)`);
     if (!ok && r.status !== 404) {
       const t = await r.text();
       if (t) console.log(`    ${t.slice(0, 200)}`);
     }
   } catch (e) {
-    console.log(`  /ready: FAIL — ${e.message}`);
+    console.log(`  /ready: ${e.message} (optional)`);
   }
 
-  // 2. GraphQL
+  // 2. GraphQL — this is what BankrMonitor uses for tokens, v4pools, cumulatedFees
+  let graphqlOk = false;
   try {
     const r = await fetch(`${base}/graphql`, {
       method: "POST",
@@ -38,14 +39,16 @@ async function check() {
     });
     const ok = r.ok;
     const json = await r.json().catch(() => ({}));
-    const hasData = json?.data?.tokens?.items?.length >= 0;
-    console.log(`  /graphql: ${ok && hasData ? "OK" : !ok ? r.status : "no data"}`);
-    if (json?.errors?.length) console.log(`    errors: ${JSON.stringify(json.errors).slice(0, 150)}`);
+    const hasData = json?.data?.tokens !== undefined; // items can be []
+    graphqlOk = ok && !json?.errors?.length;
+    console.log(`  /graphql: ${graphqlOk ? "OK" : !ok ? r.status : "error"}`);
+    if (r.status === 502) console.log(`    502 = indexer app may be down or still starting. Check Railway deploy logs and PORT.`);
+    if (json?.errors?.length) console.log(`    errors: ${JSON.stringify(json.errors).slice(0, 200)}`);
   } catch (e) {
     console.log(`  /graphql: FAIL — ${e.message}`);
   }
 
-  console.log("\nIf both show OK, the indexer is working. Use DOPPLER_INDEXER_URL in .env to point token-stats/notify here.");
+  console.log("\n" + (graphqlOk ? "Indexer is usable. Set DOPPLER_INDEXER_URL in .env (no trailing slash)." : "Fix indexer so /graphql returns 200; then set DOPPLER_INDEXER_URL in .env."));
 }
 
 check().catch((e) => {

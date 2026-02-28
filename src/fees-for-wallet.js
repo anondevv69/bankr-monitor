@@ -9,9 +9,10 @@
 
 import "dotenv/config";
 import { lookupByDeployerOrFee } from "./lookup-deployer.js";
-import { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd } from "./token-stats.js";
+import { fetchPoolByBaseToken, fetchCumulatedFees, formatUsd, getTokenFees } from "./token-stats.js";
 
 const FEES_INDEXER_TIMEOUT_MS = 12_000; // reply to Discord before defer expires; indexer may be slow or down
+const RECIPIENT_ONCHAIN_MAX_TOKENS = 20; // limit tokens to avoid timeout when using on-chain only
 
 /**
  * Get aggregated fees for a wallet or X/Farcaster handle (as fee recipient).
@@ -84,6 +85,37 @@ export async function getFeesSummary(query) {
     }
     throw e;
   }
+}
+
+/**
+ * Claimable fees for a recipient wallet using only Bankr API + on-chain hook reads. No indexer.
+ * Use this when the indexer is not available or still backfilling.
+ * @param {string} walletOrHandle - 0x wallet or X/FC handle (fee recipient).
+ * @returns { Promise<{ tokens: Array<{ tokenAddress, tokenName, tokenSymbol, hookFees }>, matchCount: number, feeWallet: string|null, error?: string }> }
+ */
+export async function getFeesSummaryOnChainOnly(walletOrHandle) {
+  const { matches } = await lookupByDeployerOrFee(walletOrHandle, "fee");
+  if (matches.length === 0) {
+    return { tokens: [], matchCount: 0, feeWallet: null, error: "No Bankr tokens found where this wallet or handle is fee recipient." };
+  }
+  const feeWallet = matches[0].feeRecipientWallet?.toLowerCase() ?? null;
+  const tokens = [];
+  const slice = matches.slice(0, RECIPIENT_ONCHAIN_MAX_TOKENS);
+  for (const m of slice) {
+    const out = await getTokenFees(m.tokenAddress);
+    if (!out.launch?.poolId || !out.hookFees) continue;
+    tokens.push({
+      tokenAddress: m.tokenAddress,
+      tokenName: out.name ?? m.tokenName,
+      tokenSymbol: out.symbol ?? m.tokenSymbol,
+      hookFees: out.hookFees,
+    });
+  }
+  return {
+    tokens,
+    matchCount: matches.length,
+    feeWallet,
+  };
 }
 
 async function main() {
