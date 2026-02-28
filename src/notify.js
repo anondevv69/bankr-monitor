@@ -344,7 +344,7 @@ function buildTradeLinks(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
-  const bbUrl = `https://t.me/based_eth_bot?start=r_bankr_b_${addr}`;
+  const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
   const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
 }
@@ -365,7 +365,7 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
 
   const tokenLines = [
     `**Chain:** Base`,
-    `**CA:** \`${tokenAddress}\` • [Basescan](${basescanTokenUrl})`,
+    `**CA:** \`${tokenAddress}\``,
     `**Bankr:** [View Launch](${launchUrl})`,
   ];
   if (out.dexMetrics?.marketCap != null && out.formatUsd) {
@@ -448,7 +448,7 @@ export function buildLaunchEmbed(launch) {
 
   const fields = [
     { name: "Token", value: `${launch.name} ($${launch.symbol})`, inline: true },
-    { name: "CA", value: `\`${launch.tokenAddress}\` • [Basescan](${basescanTokenUrl})`, inline: true },
+    { name: "CA", value: `\`${launch.tokenAddress}\``, inline: true },
     { name: "Launcher", value: launcherValue, inline: false },
   ];
 
