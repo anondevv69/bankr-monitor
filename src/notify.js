@@ -337,11 +337,13 @@ function bankrLaunchUrl(tokenAddress) {
   return `https://bankr.bot/launches/${tokenAddress}`;
 }
 
-/** Trade links for a Base token (GMGN, BB, FCW). Used in token detail embed. */
+const GMGN_REFERRAL = "infobot";
+
+/** Trade links for a Base token (GMGN Telegram, BB, FCW). Used in token detail embed. GMGN uses referral i_infobot. */
 function buildTradeLinks(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
-  const gmgnUrl = `https://gmgn.ai/token/base/${addr}`;
+  const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_bankr_b_${addr}`;
   const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
@@ -363,7 +365,7 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
 
   const tokenLines = [
     `**Chain:** Base`,
-    `**CA:** [\`${tokenAddress.slice(0, 10)}...${tokenAddress.slice(-8)}\`](${basescanTokenUrl})`,
+    `**CA:** [\`${tokenAddress}\`](${basescanTokenUrl})`,
     `**Bankr:** [View Launch](${launchUrl})`,
   ];
   if (out.dexMetrics?.marketCap != null && out.formatUsd) {
@@ -411,9 +413,9 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
   }
   fields.push({ name: "Fee Recipient", value: feeValue, inline: false });
 
-  fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
+  fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
 
   const embed = {
     color: 0x0052ff,
