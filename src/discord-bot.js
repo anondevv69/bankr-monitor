@@ -33,7 +33,7 @@ import {
   getWatchListForGuild,
   updateWatchListForGuild,
 } from "./tenant-store.js";
-import { runNotifyCycle, buildLaunchEmbed, sendTelegram } from "./notify.js";
+import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
@@ -561,35 +561,14 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // No mention: in any channel, if message contains a Bankr token (0x...ba3), reply with token info
+  // No mention: in any channel, if message contains a Bankr token (0x...ba3), reply with rich token embed
   if (bankrTokens.length === 0) return;
   const tokenAddress = bankrTokens[0];
   await message.channel.sendTyping().catch(() => {});
   try {
     const out = await getTokenFees(tokenAddress);
-    const name = out.name ?? "—";
-    const symbol = out.symbol ?? "—";
-    const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
-    const lines = [
-      `**${name}** ($${symbol})`,
-      `CA: \`${tokenAddress}\``,
-      `[View on Bankr](${launchUrl})`,
-    ];
-    if (out.launch) {
-      const fee = out.launch.feeRecipient;
-      const feeTo = fee?.xUsername ? `@${fee.xUsername}` : fee?.walletAddress ?? fee?.wallet ?? "—";
-      lines.push(`Fee recipient: ${feeTo}`);
-    }
-    if (out.volumeUsd != null && out.formatUsd) {
-      lines.push(`Volume: ${out.formatUsd(out.volumeUsd) ?? out.volumeUsd}`);
-    }
-    if (out.hookFees && (Number(out.hookFees.beneficiaryFees0) > 0 || Number(out.hookFees.beneficiaryFees1) > 0)) {
-      lines.push("Has unclaimed fees — use /fees-token or mention me with this address for details.");
-    }
-    if (!out.launch && out.error) {
-      lines.push(`_${out.error}_`);
-    }
-    await message.reply(lines.join("\n")).catch(() => {});
+    const embed = buildTokenDetailEmbed(out, tokenAddress);
+    await message.reply({ embeds: [embed] }).catch(() => {});
   } catch (e) {
     await message.reply(`Token lookup failed: ${e.message}`).catch(() => {});
   }

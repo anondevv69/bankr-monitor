@@ -337,6 +337,88 @@ function bankrLaunchUrl(tokenAddress) {
   return `https://bankr.bot/launches/${tokenAddress}`;
 }
 
+/** Trade links for a Base token (GMGN, BB, FCW). Used in token detail embed. */
+function buildTradeLinks(tokenAddress) {
+  const addr = (tokenAddress || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
+  const gmgnUrl = `https://gmgn.ai/token/base/${addr}`;
+  const bbUrl = `https://t.me/based_eth_bot?start=r_bankr_b_${addr}`;
+  const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
+  return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
+}
+
+/**
+ * Build rich embed for a single Bankr token (when user pastes address or uses /fees-token style reply).
+ * @param {object} out - Result from getTokenFees(tokenAddress): { name, symbol, launch, volumeUsd, formatUsd }
+ * @param {string} tokenAddress - Normalized token address.
+ * @returns {object} Discord embed object.
+ */
+export function buildTokenDetailEmbed(out, tokenAddress) {
+  const launchUrl = bankrLaunchUrl(tokenAddress);
+  const basescanTokenUrl = `${BASESCAN}/token/${tokenAddress}`;
+  const name = out.name ?? "—";
+  const symbol = out.symbol ?? "—";
+  const launch = out.launch ?? null;
+  const img = (launch?.imageUri || launch?.image) ? imageUrl(launch.imageUri || launch.image) : null;
+
+  const tokenLines = [
+    `**Chain:** Base`,
+    `**CA:** [\`${tokenAddress.slice(0, 10)}...${tokenAddress.slice(-8)}\`](${basescanTokenUrl})`,
+    `**Bankr:** [View Launch](${launchUrl})`,
+  ];
+  if (out.volumeUsd != null && out.formatUsd) {
+    const vol = out.formatUsd(out.volumeUsd);
+    if (vol) tokenLines.push(`**Volume:** ${vol}`);
+  }
+
+  const fields = [
+    { name: "Token", value: tokenLines.join("\n"), inline: false },
+  ];
+
+  let deployerValue = "—";
+  if (launch?.deployer) {
+    const d = launch.deployer;
+    const wallet = d.walletAddress ?? d.wallet ?? null;
+    const parts = [];
+    if (wallet) parts.push(`**Wallet:** ${walletLink(wallet) ? `[${wallet}](${walletLink(wallet)})` : `\`${wallet}\``}`);
+    const xUser = d.xUsername ?? d.x ?? null;
+    if (xUser) parts.push(`**X:** [@${xUser.replace(/^@/, "")}](${xProfileUrl(xUser)})`);
+    const fc = d.farcasterUsername ?? d.farcaster ?? d.fcUsername ?? null;
+    if (fc) parts.push(`**Farcaster:** [${fc}](${farcasterProfileUrl(fc)})`);
+    if (parts.length) deployerValue = parts.join("\n");
+  }
+  fields.push({ name: "Deployer", value: deployerValue, inline: false });
+
+  let feeValue = "—";
+  if (launch?.feeRecipient) {
+    const f = launch.feeRecipient;
+    const wallet = f.walletAddress ?? f.wallet ?? null;
+    const parts = [];
+    if (wallet) parts.push(`**Wallet:** ${walletLink(wallet) ? `[${wallet}](${walletLink(wallet)})` : `\`${wallet}\``}`);
+    const xUser = f.xUsername ?? f.x ?? null;
+    if (xUser) parts.push(`**X:** [@${xUser.replace(/^@/, "")}](${xProfileUrl(xUser)})`);
+    const fc = f.farcasterUsername ?? f.farcaster ?? f.fcUsername ?? null;
+    if (fc) parts.push(`**Farcaster:** [${fc}](${farcasterProfileUrl(fc)})`);
+    if (parts.length) feeValue = parts.join("\n");
+  }
+  fields.push({ name: "Fee Recipient", value: feeValue, inline: false });
+
+  fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
+  if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
+  if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
+
+  const embed = {
+    color: 0x0052ff,
+    title: `Bankr • ${name} ($${symbol})`,
+    url: launchUrl,
+    fields,
+    timestamp: new Date().toISOString(),
+    footer: { text: "BankrMonitor • bankr.bot" },
+  };
+  if (img) embed.thumbnail = { url: img };
+  return embed;
+}
+
 /** Build launch embed (for webhook or bot). Exported for discord-bot. */
 export function buildLaunchEmbed(launch) {
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
