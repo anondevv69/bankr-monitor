@@ -305,14 +305,21 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) return { matches: [], totalCount: 0, query: query };
 
-  const matches = (l) => launchMatches(l, normalized, isWalletQuery, filter);
+  // When query is X/FC handle, resolve to wallet first so we always search by wallet (avoids "do resolve then lookup" manually)
+  let resolvedWallet = null;
+  if (!isWalletQuery && normalized) {
+    const resolved = await resolveHandleToWallet(query);
+    if (resolved.wallet) resolvedWallet = resolved.wallet;
+  }
+
+  const effectiveQuery = resolvedWallet ?? normalized;
+  const matches = (l) => launchMatches(l, effectiveQuery, !!resolvedWallet, filter);
   let launches = [];
   let totalCount = 0;
-  let resolvedWallet = null;
-  // Search using normalized form (username or wallet) so URLs like https://x.com/ayowtfchil become "ayowtfchil"
-  let searchResult = await fetchSearch(normalized);
+  // Search by wallet when we resolved X/FC; otherwise by normalized form
+  let searchResult = await fetchSearch(effectiveQuery);
   // If handle (no wallet), also try @ prefix — Bankr search may index X as "@gork"; try when no results or after filter we'd have 0
-  if (!isWalletQuery && normalized && !normalized.startsWith("@")) {
+  if (!resolvedWallet && normalized && !normalized.startsWith("@")) {
     const filteredFromFirst = searchResult ? searchResult.launches.filter(matches) : [];
     if (filteredFromFirst.length === 0) {
       const withAt = await fetchSearch("@" + normalized);
@@ -354,15 +361,15 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       }
     }
     totalCount = Math.max(launches.length, totalCount);
-    // Resolve X/FC handle -> wallet (from list, overrides, or deploy-simulate), then search by that wallet so we get all tokens
+    // Merge any extra tokens from wallet search (we may have resolved at start; use that or resolve again)
     if (!isWalletQuery && normalized) {
-      let wallet = handleToWallet.get(normalized) ?? null;
+      let wallet = resolvedWallet ?? handleToWallet.get(normalized) ?? null;
       if (!wallet) {
         const resolved = await resolveHandleToWallet(query);
         wallet = resolved.wallet ?? null;
       }
       if (wallet) {
-        resolvedWallet = wallet;
+        if (!resolvedWallet) resolvedWallet = wallet;
         const byWallet = await fetchSearch(wallet);
         if (byWallet && byWallet.launches.length > 0) {
           const walletMatchesFn = (l) => launchMatches(l, wallet, true, filter);

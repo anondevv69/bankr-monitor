@@ -188,8 +188,8 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("resolve")
-      .setDescription("Get the wallet address for an X or Farcaster account")
+      .setName("wallet-lookup")
+      .setDescription("Wallet lookup: get the wallet address for an X or Farcaster account")
       .addStringOption((o) =>
         o
           .setName("query")
@@ -351,7 +351,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("Show how to use BankrMonitor (watch, lookup, resolve, deploy)")
+      .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup, deploy)")
       .toJSON(),
   ];
 
@@ -513,46 +513,85 @@ function formatFeesTokenReply(out, tokenAddress) {
 }
 
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.mentions.has(client.user?.id)) return;
-  const addrMatch = message.content.match(/0x[a-fA-F0-9]{40}/);
-  const tokenAddress = addrMatch ? addrMatch[0].toLowerCase() : null;
-  if (!tokenAddress) {
-    await message.reply("To get fees: mention me and include a **token contract address** (0x...). Example: `@Bot 0x1234...`").catch(() => {});
+  if (message.author.bot) return;
+  const mentioned = message.mentions.has(client.user?.id);
+  const allAddrs = message.content.match(/0x[a-fA-F0-9]{40}/g);
+  const addresses = allAddrs ? [...new Set(allAddrs.map((a) => a.toLowerCase()))] : [];
+  const bankrTokens = addresses.filter((a) => a.endsWith("ba3")); // Bankr token CAs end in BA3
+
+  // Mention + address: fees flow (existing)
+  if (mentioned) {
+    const tokenAddress = addresses[0] ?? null;
+    if (!tokenAddress) {
+      await message.reply("To get fees: mention me and include a **token contract address** (0x...). Example: `@Bot 0x1234...`").catch(() => {});
+      return;
+    }
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const out = await getTokenFees(tokenAddress);
+      if (out.launch) {
+        await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
+        return;
+      }
+      const recipient = await getFeesSummaryOnChainOnly(tokenAddress);
+      if (recipient.tokens && recipient.tokens.length > 0) {
+        const DECIMALS = 18;
+        const lines = [
+          `**Fees for recipient** \`${recipient.feeWallet ?? tokenAddress}\` (on-chain claimable, no indexer)`,
+          `**Bankr tokens:** ${recipient.matchCount} (showing up to ${recipient.tokens.length})`,
+          "",
+        ];
+        for (const t of recipient.tokens) {
+          const h = t.hookFees;
+          const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
+          const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
+          lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
+          lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
+          lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
+        }
+        lines.push("");
+        lines.push("_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
+        await message.reply(lines.join("\n")).catch(() => {});
+        return;
+      }
+      await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
+    } catch (e) {
+      await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
+    }
     return;
   }
+
+  // No mention: in any channel, if message contains a Bankr token (0x...ba3), reply with token info
+  if (bankrTokens.length === 0) return;
+  const tokenAddress = bankrTokens[0];
   await message.channel.sendTyping().catch(() => {});
   try {
     const out = await getTokenFees(tokenAddress);
+    const name = out.name ?? "—";
+    const symbol = out.symbol ?? "—";
+    const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
+    const lines = [
+      `**${name}** ($${symbol})`,
+      `CA: \`${tokenAddress}\``,
+      `[View on Bankr](${launchUrl})`,
+    ];
     if (out.launch) {
-      const content = formatFeesTokenReply(out, tokenAddress);
-      await message.reply(content).catch(() => {});
-      return;
+      const fee = out.launch.feeRecipient;
+      const feeTo = fee?.xUsername ? `@${fee.xUsername}` : fee?.walletAddress ?? fee?.wallet ?? "—";
+      lines.push(`Fee recipient: ${feeTo}`);
     }
-    // No launch for this address — try as fee-recipient wallet (on-chain only, no indexer)
-    const recipient = await getFeesSummaryOnChainOnly(tokenAddress);
-    if (recipient.tokens && recipient.tokens.length > 0) {
-      const DECIMALS = 18;
-      const lines = [
-        `**Fees for recipient** \`${recipient.feeWallet ?? tokenAddress}\` (on-chain claimable, no indexer)`,
-        `**Bankr tokens:** ${recipient.matchCount} (showing up to ${recipient.tokens.length})`,
-        "",
-      ];
-      for (const t of recipient.tokens) {
-        const h = t.hookFees;
-        const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
-        const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
-        lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
-        lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
-        lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
-      }
-      lines.push("");
-      lines.push("_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
-      await message.reply(lines.join("\n")).catch(() => {});
-      return;
+    if (out.volumeUsd != null && out.formatUsd) {
+      lines.push(`Volume: ${out.formatUsd(out.volumeUsd) ?? out.volumeUsd}`);
     }
-    await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
+    if (out.hookFees && (Number(out.hookFees.beneficiaryFees0) > 0 || Number(out.hookFees.beneficiaryFees1) > 0)) {
+      lines.push("Has unclaimed fees — use /fees-token or mention me with this address for details.");
+    }
+    if (!out.launch && out.error) {
+      lines.push(`_${out.error}_`);
+    }
+    await message.reply(lines.join("\n")).catch(() => {});
   } catch (e) {
-    await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
+    await message.reply(`Token lookup failed: ${e.message}`).catch(() => {});
   }
 });
 
@@ -578,7 +617,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "resolve") {
+  if (interaction.commandName === "wallet-lookup") {
     const query = interaction.options.getString("query");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
@@ -615,11 +654,8 @@ client.on("interactionCreate", async (interaction) => {
         ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
         : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
-        const looksLikeHandle = !/^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
         await interaction.editReply({
-          content:
-            `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}` +
-            (looksLikeHandle ? "\n\nTry **/resolve** with the same handle to get the wallet, then **/lookup** with that wallet (0x...)." : ""),
+          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}`,
         });
         return;
       }
@@ -665,15 +701,15 @@ client.on("interactionCreate", async (interaction) => {
           name: "🔍 /lookup",
           value:
             "**Deployment info:** Search Bankr tokens by **deployer** or **fee recipient**.\n" +
-            "**query:** wallet (`0x...`), X handle (`@user` or x.com/user/...), or Farcaster (handle or farcaster.xyz/...).\n" +
+            "**query:** wallet (`0x...`), X handle (`@user` or x.com/user/...), or Farcaster (handle or farcaster.xyz/...). X/FC are resolved to wallet first, then tokens are shown.\n" +
             "**by:** Deployer / Fee recipient / Both (default).\n" +
             "Shows tokens + link to [full list on Bankr](https://bankr.bot/launches/search). Pagination when there are more than 5.",
           inline: false,
         },
         {
-          name: "🔗 /resolve",
+          name: "🔗 /wallet-lookup",
           value:
-            "**Get wallet for X or Farcaster.** Resolves a handle (or profile URL) to its wallet address from Bankr launch data.\n" +
+            "**Wallet lookup:** Get the wallet address for an X or Farcaster account (from Bankr launch data).\n" +
             "**query:** X handle, Farcaster handle, or profile URL. Use **/lookup** with the same handle to see their token deployments.",
           inline: false,
         },
@@ -694,9 +730,10 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
         {
-          name: "📌 Channels",
+          name: "📌 Channels & paste",
           value:
-            "**Alert channel** – all new Bankr launches.\n**Watch channel** – only launches that match your watch list.",
+            "**Alert channel** – all new Bankr launches.\n**Watch channel** – only launches that match your watch list.\n" +
+            "**Paste a Bankr token** (any channel): if someone pastes a token address ending in **BA3**, the bot replies with name, symbol, link, and what it knows (volume, fees).",
           inline: false,
         },
       ],
