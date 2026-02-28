@@ -365,7 +365,7 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
 
   const tokenLines = [
     `**Chain:** Base`,
-    `**CA:** [\`${tokenAddress}\`](${basescanTokenUrl})`,
+    `**CA:** \`${tokenAddress}\` • [Basescan](${basescanTokenUrl})`,
     `**Bankr:** [View Launch](${launchUrl})`,
   ];
   if (out.dexMetrics?.marketCap != null && out.formatUsd) {
@@ -448,7 +448,7 @@ export function buildLaunchEmbed(launch) {
 
   const fields = [
     { name: "Token", value: `${launch.name} ($${launch.symbol})`, inline: true },
-    { name: "CA", value: `[\`${launch.tokenAddress.slice(0, 10)}...\`](${basescanTokenUrl})`, inline: true },
+    { name: "CA", value: `\`${launch.tokenAddress}\` • [Basescan](${basescanTokenUrl})`, inline: true },
     { name: "Launcher", value: launcherValue, inline: false },
   ];
 
