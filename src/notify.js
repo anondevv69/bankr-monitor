@@ -363,12 +363,20 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
 
   const tokenLines = [
     `**Chain:** Base`,
-    `**CA:** [\`${tokenAddress}\`](${basescanTokenUrl})`,
+    `**CA:** [\`${tokenAddress.slice(0, 10)}...${tokenAddress.slice(-8)}\`](${basescanTokenUrl})`,
     `**Bankr:** [View Launch](${launchUrl})`,
   ];
+  if (out.dexMetrics?.marketCap != null && out.formatUsd) {
+    const mc = out.formatUsd(out.dexMetrics.marketCap);
+    if (mc) tokenLines.push(`**Market Cap:** ${mc}`);
+  }
   if (out.volumeUsd != null && out.formatUsd) {
     const vol = out.formatUsd(out.volumeUsd);
     if (vol) tokenLines.push(`**Volume:** ${vol}`);
+  }
+  const trades = out.dexMetrics?.trades24h;
+  if (trades && (trades.buys > 0 || trades.sells > 0)) {
+    tokenLines.push(`**24H:** 🟢 ${trades.buys} buys • 🔴 ${trades.sells} sells`);
   }
 
   const fields = [
@@ -403,9 +411,9 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
   }
   fields.push({ name: "Fee Recipient", value: feeValue, inline: false });
 
+  fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
-  fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
 
   const embed = {
     color: 0x0052ff,

@@ -22,6 +22,40 @@ const DOPPLER_INDEXER_URL =
   (CHAIN_ID === 8453 ? "https://indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
+const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
+
+/**
+ * Fetch Base token metrics from DexScreener (market cap, 24h buys/sells). No API key required.
+ * @returns {{ marketCap: number, trades24h: { buys: number, sells: number } } | null}
+ */
+async function fetchDexScreenerBaseToken(tokenAddress) {
+  try {
+    const url = `${DEXSCREENER_API_BASE}/tokens/${tokenAddress}`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const pairs = data.pairs ?? [];
+    const basePairs = pairs.filter(
+      (p) => p.chainId === "base" || p.chainId === "8453"
+    );
+    if (basePairs.length === 0) return null;
+    const best = basePairs.reduce((a, b) => {
+      const aLiq = a.liquidity?.usd ?? 0;
+      const bLiq = b.liquidity?.usd ?? 0;
+      return bLiq > aLiq ? b : a;
+    }, basePairs[0]);
+    const marketCap = best.fdv ?? best.liquidity?.usd ?? null;
+    const h24 = best.txns?.h24;
+    const buys = h24?.buys ?? 0;
+    const sells = h24?.sells ?? 0;
+    return {
+      marketCap: marketCap != null ? Number(marketCap) : null,
+      trades24h: { buys: Number(buys), sells: Number(sells) },
+    };
+  } catch {
+    return null;
+  }
+}
 
 function normalizeAddress(addr) {
   if (!addr || typeof addr !== "string") return null;
@@ -405,10 +439,11 @@ export async function getTokenFees(tokenAddress) {
   const addr = normalizeAddress(tokenAddress);
   if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
 
-  const [launch, doppler, poolState] = await Promise.all([
+  const [launch, doppler, poolState, dexMetrics] = await Promise.all([
     fetchBankrLaunch(addr),
     fetchDopplerTokenVolume(addr),
     fetchDopplerPoolState(addr),
+    fetchDexScreenerBaseToken(addr),
   ]);
 
   const name = launch?.tokenName ?? doppler?.name ?? "—";
@@ -420,7 +455,7 @@ export async function getTokenFees(tokenAddress) {
     : null;
 
   if (!launch) {
-    return { tokenAddress: addr, name, symbol, launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd, estimatedCreatorFeesUsd, formatUsd, error: "No Bankr launch found for this address." };
+    return { tokenAddress: addr, name, symbol, launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd, estimatedCreatorFeesUsd, formatUsd, dexMetrics, error: "No Bankr launch found for this address." };
   }
 
   const fee = launch.feeRecipient;
@@ -452,6 +487,7 @@ export async function getTokenFees(tokenAddress) {
     estimatedCreatorFeesUsd,
     formatUsd,
     poolState,
+    dexMetrics: dexMetrics ?? null,
   };
 }
 
