@@ -476,6 +476,7 @@ export function buildLaunchEmbed(launch) {
   if (launch.x && !launch.launcherX && !launch.beneficiaries?.some((b) => b.xUsername === launch.x)) {
     fields.push({ name: "X", value: `[@${launch.x}](${xProfileUrl(launch.x)})`, inline: true });
   }
+  fields.push({ name: "\u200b", value: buildTradeLinks(launch.tokenAddress), inline: false });
 
   const embed = {
     title: `New launch: ${launch.name} ($${launch.symbol})`,
