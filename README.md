@@ -278,7 +278,7 @@ This project focuses on three fee views (no leaderboards, charts, or OHLC):
 
 **Indexer “last updated”:** The production indexer’s public GraphQL schema does not expose a block number or timestamp for “indexer data as of.” If you self-host the indexer, you can add a custom field or query that returns the latest synced block.
 
-**Monitoring when fees are claimed:** The bot shows **Already claimed** when it has both indexer (accrued) and on-chain (claimable) data: claimed ≈ accrued − claimable. To actively *notify* when someone claims (e.g. “Fees were claimed for Rucks”), you’d need to store the last-known claimable per token and compare on a schedule; that is not implemented yet.
+**Monitoring when fees are claimed:** The bot can notify when a specific token’s fees are claimed. Use **/claim-watch add** with a token address (0x…); the bot stores the last-known claimable and, on each poll, if claimable drops it posts to your server’s watch/alert channel. **/claim-watch list** and **/claim-watch remove** manage the list. Requires **/setup** (per-server config) and runs in the same poll loop as launch alerts.
 
 ## Fees: claimed vs unclaimed ETH (Bankr app)
 
@@ -350,6 +350,7 @@ Notify on new launches via Discord bot channel (recommended) or webhook, and/or 
 When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
 
 - **/watch** — Manage the launch watch list (add/remove X, Farcaster, wallet, keyword).
+- **/claim-watch** — Get notified when a token’s fees are claimed: add/remove/list token addresses; alerts post to your watch or alert channel when claimable drops.
 - **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.
 
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
@@ -420,6 +421,7 @@ Railway containers use an **ephemeral filesystem** by default. To persist the se
 2. Set variables:
    - `WATCH_FILE=/data/bankr-watch.json` — watch list (X, Farcaster, wallet, keywords)
    - `SEEN_FILE=/data/bankr-seen.json` — path on a **volume** so the seen list persists across deploys (stops "50 pings then 0 new" on every restart).
+   - `CLAIM_STATE_FILE=/data/bankr-claim-state.json` — optional; last-known claimable per (server, token) for claim-watch alerts.
 3. Optional: `SEEN_MAX_KEYS` — cap the seen list (e.g. `3000`) to limit file size; if unset, the list is unbounded and each token is only ever notified once.
 
 ## Output Fields

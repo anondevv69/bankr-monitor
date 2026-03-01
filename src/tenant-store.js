@@ -50,6 +50,7 @@ export async function getTenant(guildId) {
     telegramChatId: t.telegramChatId ?? null,
     rules: { ...DEFAULT_RULES, ...t.rules },
     watchlist: { ...DEFAULT_WATCHLIST, ...t.watchlist },
+    claimWatchTokens: Array.isArray(t.claimWatchTokens) ? t.claimWatchTokens : [],
     dopplerIndexerUrl: t.dopplerIndexerUrl ?? null,
     rpcUrl: t.rpcUrl ?? null,
     createdAt: t.createdAt ?? null,
@@ -60,7 +61,7 @@ export async function getTenant(guildId) {
 /**
  * Set (create or update) tenant config for a guild.
  * @param {string} guildId
- * @param {Partial<{ bankrApiKey: string, alertChannelId: string, watchAlertChannelId: string, telegramChatId: string, rules: object, watchlist: object, dopplerIndexerUrl: string, rpcUrl: string }>} updates
+ * @param {Partial<{ bankrApiKey: string, alertChannelId: string, watchAlertChannelId: string, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
  */
 export async function setTenant(guildId, updates) {
   if (!guildId || typeof guildId !== "string") return null;
@@ -80,6 +81,9 @@ export async function setTenant(guildId, updates) {
   }
   if (updates.watchlist && typeof updates.watchlist === "object") {
     next.watchlist = { ...DEFAULT_WATCHLIST, ...existing.watchlist, ...updates.watchlist };
+  }
+  if (Array.isArray(updates.claimWatchTokens)) {
+    next.claimWatchTokens = updates.claimWatchTokens;
   }
   tenants[key] = next;
   await saveAll(tenants);
@@ -135,5 +139,44 @@ export async function updateWatchListForGuild(guildId, type, value, add) {
     list.splice(i, 1);
   }
   await setTenant(guildId, { watchlist: { ...w, [type]: list } });
+  return true;
+}
+
+function parseTokenAddress(s) {
+  if (!s || typeof s !== "string") return null;
+  const t = s.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(t)) return null;
+  return t.toLowerCase();
+}
+
+/** Get claim-watch token list for a guild. */
+export async function getClaimWatchTokens(guildId) {
+  const tenant = await getTenant(guildId);
+  const list = tenant?.claimWatchTokens;
+  return Array.isArray(list) ? list.filter((a) => parseTokenAddress(a)) : [];
+}
+
+/** Add a token address to this server's claim watch list. Returns true if added, false if invalid or already present. */
+export async function addClaimWatchToken(guildId, tokenAddress) {
+  const addr = parseTokenAddress(tokenAddress);
+  if (!addr || !guildId || typeof guildId !== "string") return false;
+  const tenant = await getTenant(guildId);
+  const list = Array.isArray(tenant?.claimWatchTokens) ? [...tenant.claimWatchTokens] : [];
+  if (list.includes(addr)) return true;
+  list.push(addr);
+  list.sort();
+  await setTenant(guildId, { claimWatchTokens: list });
+  return true;
+}
+
+/** Remove a token address from this server's claim watch list. */
+export async function removeClaimWatchToken(guildId, tokenAddress) {
+  const addr = parseTokenAddress(tokenAddress);
+  if (!addr || !guildId || typeof guildId !== "string") return false;
+  const tenant = await getTenant(guildId);
+  const list = Array.isArray(tenant?.claimWatchTokens) ? [...tenant.claimWatchTokens] : [];
+  const next = list.filter((a) => parseTokenAddress(a) !== addr);
+  if (next.length === list.length) return false;
+  await setTenant(guildId, { claimWatchTokens: next });
   return true;
 }

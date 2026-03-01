@@ -32,12 +32,16 @@ import {
   listActiveTenantGuildIds,
   getWatchListForGuild,
   updateWatchListForGuild,
+  getClaimWatchTokens,
+  addClaimWatchToken,
+  removeClaimWatchToken,
 } from "./tenant-store.js";
 import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
+import { getClaimState, setClaimState } from "./claim-watch-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -356,6 +360,27 @@ async function registerCommands(appId) {
       .setName("help")
       .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup, deploy)")
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("claim-watch")
+      .setDescription("Get notified when a token's fees are claimed")
+      .addSubcommand((s) =>
+        s
+          .setName("add")
+          .setDescription("Add a token to the claim watch list")
+          .addStringOption((o) =>
+            o.setName("token_address").setDescription("Token contract address (0x...)").setRequired(true)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("remove")
+          .setDescription("Remove a token from the claim watch list")
+          .addStringOption((o) =>
+            o.setName("token_address").setDescription("Token address to stop watching").setRequired(true)
+          )
+      )
+      .addSubcommand((s) => s.setName("list").setDescription("List tokens on the claim watch list"))
+      .toJSON(),
   ];
 
   try {
@@ -417,6 +442,58 @@ async function runNotify() {
       );
       child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
     });
+  }
+  await runClaimWatchCycle().catch((e) => console.error("Claim watch cycle failed:", e.message));
+}
+
+const CLAIM_WATCH_DECIMALS = 18;
+const CLAIM_DROP_TOLERANCE = 1e-12;
+
+async function runClaimWatchCycle() {
+  const guildIds = await listActiveTenantGuildIds();
+  for (const guildId of guildIds) {
+    const tenant = await getTenant(guildId);
+    const tokens = await getClaimWatchTokens(guildId);
+    if (tokens.length === 0) continue;
+    const channelId = tenant?.watchAlertChannelId || tenant?.alertChannelId;
+    if (!channelId) continue;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) continue;
+
+    for (const tokenAddress of tokens) {
+      try {
+        const out = await getTokenFees(tokenAddress);
+        const hookFees = out.hookFees;
+        const currentToken = hookFees ? Number(hookFees.beneficiaryFees0) / 10 ** CLAIM_WATCH_DECIMALS : 0;
+        const currentWeth = hookFees ? Number(hookFees.beneficiaryFees1) / 10 ** CLAIM_WATCH_DECIMALS : 0;
+        const symbol = out.symbol ?? "—";
+        const name = out.name ?? "—";
+
+        const prev = await getClaimState(guildId, tokenAddress);
+        if (!prev) {
+          await setClaimState(guildId, tokenAddress, { lastClaimableToken: currentToken, lastClaimableWeth: currentWeth, symbol });
+          continue;
+        }
+
+        const tokenDropped = currentToken < prev.lastClaimableToken - CLAIM_DROP_TOLERANCE;
+        const wethDropped = currentWeth < prev.lastClaimableWeth - CLAIM_DROP_TOLERANCE;
+        if (tokenDropped || wethDropped) {
+          const lines = [];
+          if (tokenDropped) lines.push(`Token: ${prev.lastClaimableToken.toFixed(6)} → ${currentToken.toFixed(6)}`);
+          if (wethDropped) lines.push(`WETH: ${prev.lastClaimableWeth.toFixed(6)} → ${currentWeth.toFixed(6)}`);
+          const embed = {
+            color: 0x00_80_00,
+            title: "Fees claimed",
+            description: `**${name}** ($${symbol})\n\`${tokenAddress}\`\n\n${lines.join("\n")}\n\n[View on Bankr](https://bankr.bot/launches/${tokenAddress})`,
+          };
+          await channel.send({ embeds: [embed] }).catch((e) => console.error("Claim alert send failed:", e.message));
+        }
+
+        await setClaimState(guildId, tokenAddress, { lastClaimableToken: currentToken, lastClaimableWeth: currentWeth, symbol });
+      } catch (e) {
+        console.error(`Claim watch ${tokenAddress} failed:`, e.message);
+      }
+    }
   }
 }
 
@@ -578,6 +655,12 @@ function formatFeesTokenReply(out, tokenAddress) {
     lines.push("");
   }
 
+  if (hasHookData || hasIndexerFees) {
+    const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
+    lines.push(`_Data retrieved: ${retrievedAt} UTC_`);
+    lines.push("");
+  }
+
   // Removed: estimated $0, "no volume", and RPC hint when we have historical or claimable data
   if (!hasHookData && !hasIndexerFees) {
     if (estimatedCreatorFeesUsd != null && estimatedCreatorFeesUsd > 0) {
@@ -632,6 +715,10 @@ client.on("messageCreate", async (message) => {
           feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
         }
       }
+    }
+    if (feeParts.length > 0) {
+      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
+      feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
     }
     if (feeParts.length > 0 && embed.fields) {
       embed.fields.splice(3, 0, { name: "Fees", value: feeParts.join("\n"), inline: false });
@@ -1004,6 +1091,59 @@ client.on("interactionCreate", async (interaction) => {
       }
     } catch (e) {
       await interaction.editReply({ content: `Settings failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "claim-watch") {
+    const guildId = interaction.guildId ?? null;
+    const tenant = guildId ? await getTenant(guildId) : null;
+    const sub = interaction.options.getSubcommand();
+
+    if (!guildId || !tenant || (!tenant.alertChannelId && !tenant.watchAlertChannelId)) {
+      await interaction.reply({
+        content: "Claim watch is available per server. Run **/setup** first (API key + alert channel), then use **/claim-watch add** with a token address.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    try {
+      if (sub === "add") {
+        const tokenAddress = interaction.options.getString("token_address");
+        const addr = tokenAddress && /^0x[a-fA-F0-9]{40}$/.test(tokenAddress.trim()) ? tokenAddress.trim().toLowerCase() : null;
+        if (!addr) {
+          await interaction.reply({ content: "Invalid token address. Use 0x followed by 40 hex characters.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const added = await addClaimWatchToken(guildId, addr);
+        await interaction.reply({
+          content: added
+            ? `Added \`${addr}\` to the claim watch list. You'll be notified in this server's watch/alert channel when its fees are claimed.`
+            : "That token is already on the claim watch list.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else if (sub === "remove") {
+        const tokenAddress = interaction.options.getString("token_address");
+        const ok = await removeClaimWatchToken(guildId, tokenAddress);
+        await interaction.reply({
+          content: ok ? "Removed that token from the claim watch list." : "Token not found or invalid address.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else if (sub === "list") {
+        const list = await getClaimWatchTokens(guildId);
+        if (list.length === 0) {
+          await interaction.reply({ content: "Claim watch list is empty. Use **/claim-watch add** with a token address.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const lines = list.map((a) => `• \`${a}\``);
+        await interaction.reply({
+          content: `**Claim watch list** (${list.length} token${list.length === 1 ? "" : "s"}):\n\n${lines.join("\n")}\n\nYou'll be notified when fees are claimed for any of these tokens.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    } catch (e) {
+      await interaction.reply({ content: `Claim watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return;
   }

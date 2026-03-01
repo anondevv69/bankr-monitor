@@ -5,3 +5,4 @@ node_modules/
 .bankr-last-block.json
 .bankr-deploy-counts.json
 .bankr-tenants.json
+.bankr-claim-state.json
