@@ -38,12 +38,13 @@ The [Doppler Indexer](https://docs.doppler.lol/indexer/overview) indexes Doppler
 | Endpoint | Chain |
 |----------|-------|
 | https://testnet-indexer.doppler.lol | Base Sepolia (testnet) |
-| https://indexer.doppler.lol | Base (mainnet) — **often unavailable** (502); use your own indexer for production |
+| https://indexer-prod.doppler.lol | Base (mainnet) — **default** in BankrMonitor; set `DOPPLER_INDEXER_URL` to your DM'd endpoint if you have one |
+| https://indexer.doppler.lol | Base (mainnet) — legacy public endpoint, often 502 |
 
-The public Base mainnet endpoint (`indexer.doppler.lol`) is frequently down. For **/fees** and volume on Base mainnet, run your own [doppler-indexer on Railway](https://github.com/whetstoneresearch/doppler-indexer) and set `DOPPLER_INDEXER_URL` to your deployment URL (e.g. `https://your-indexer.up.railway.app`).
+BankrMonitor defaults to **https://indexer-prod.doppler.lol** for Base mainnet. To only show Bankr tokens from the indexer, it filters by **integration address** `0xF60633D02690e2A15A54AB919925F3d038Df163e` (configurable via `BANKR_INTEGRATION_ADDRESS`). For **/fees** and volume you can override `DOPPLER_INDEXER_URL` with your own indexer (e.g. [doppler-indexer on Railway](https://github.com/whetstoneresearch/doppler-indexer)).
 
-**Pros:** Token metadata, launcher address (`creatorAddress`), volume, holder count, `cumulatedFees` (for /fees).  
-**Cons:** Public Base endpoint (`indexer.doppler.lol`) is often down; for production use your own indexer. No Bankr-specific launcher X handles (those come from Bankr’s own mapping).
+**Pros:** Token metadata, launcher address (`creatorAddress`), volume, holder count, `cumulatedFees` (for /fees). Filter by integration/beneficiary so only Bankr tokens appear in the feed.  
+**Cons:** No Bankr-specific launcher X handles (those come from Bankr’s own mapping).
 
 #### Indexer API Reference
 

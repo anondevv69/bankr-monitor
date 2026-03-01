@@ -48,14 +48,19 @@ const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
+
+function getLookupPagination(matches, page) {
+  const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = currentPage * LOOKUP_PAGE_SIZE;
+  return { totalPages, currentPage, start, pageMatches: matches.slice(start, start + LOOKUP_PAGE_SIZE) };
+}
+
 function buildLookupEmbed(data, page) {
   const { matches, query, by, searchUrl, totalCount, possiblyCapped, resolvedWallet } = data;
   const total = totalCount > 0 ? totalCount : matches.length;
   const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
-  const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
-  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
-  const start = currentPage * LOOKUP_PAGE_SIZE;
-  const pageMatches = matches.slice(start, start + LOOKUP_PAGE_SIZE);
+  const { totalPages, currentPage, start, pageMatches } = getLookupPagination(matches, page);
   const walletLine = resolvedWallet ? `**Wallet:** \`${resolvedWallet}\`\n\n` : "";
   let description;
   let footer;
@@ -95,9 +100,7 @@ function buildLookupEmbed(data, page) {
   };
 }
 function buildLookupButtons(data, page) {
-  const { matches } = data;
-  const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
-  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const { totalPages, currentPage } = getLookupPagination(data.matches, page);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("lookup:prev")
@@ -444,6 +447,41 @@ function pruneLookupCache() {
   }
 }
 
+/** Reply to a message with fees for a token (mention + address flow). Sends typing, then token fees or recipient fees. */
+async function replyFeesForMessage(message, tokenAddress) {
+  await message.channel.sendTyping().catch(() => {});
+  try {
+    const out = await getTokenFees(tokenAddress);
+    if (out.launch) {
+      await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
+      return;
+    }
+    const recipient = await getFeesSummaryOnChainOnly(tokenAddress);
+    if (recipient.tokens?.length > 0) {
+      const DECIMALS = 18;
+      const lines = [
+        `**Fees for recipient** \`${recipient.feeWallet ?? tokenAddress}\` (on-chain claimable, no indexer)`,
+        `**Bankr tokens:** ${recipient.matchCount} (showing up to ${recipient.tokens.length})`,
+        "",
+      ];
+      for (const t of recipient.tokens) {
+        const h = t.hookFees;
+        const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
+        const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
+        lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
+        lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
+        lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
+      }
+      lines.push("", "_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
+      await message.reply(lines.join("\n")).catch(() => {});
+      return;
+    }
+    await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
+  } catch (e) {
+    await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
+  }
+}
+
 /** Build fee reply text for a token (used by /fees-token and by mention + address). */
 function formatFeesTokenReply(out, tokenAddress) {
   const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
@@ -502,6 +540,10 @@ function formatFeesTokenReply(out, tokenAddress) {
   if (!hasHookData) {
     if (estimatedCreatorFeesUsd != null) {
       lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
+      const noVolume = out.volumeUsd == null || out.volumeUsd === "" || Number(out.volumeUsd) === 0;
+      if (noVolume && (estimatedCreatorFeesUsd === 0 || estimatedCreatorFeesUsd == null)) {
+        lines.push("_Indexer has no volume for this token yet (new or not yet indexed)._");
+      }
     } else {
       lines.push("_Claimable: set RPC_URL (Base) and ensure token has a Bankr launch with poolId. Then claimable comes from chain._");
     }
@@ -519,45 +561,13 @@ client.on("messageCreate", async (message) => {
   const addresses = allAddrs ? [...new Set(allAddrs.map((a) => a.toLowerCase()))] : [];
   const bankrTokens = addresses.filter((a) => a.endsWith("ba3")); // Bankr token CAs end in BA3
 
-  // Mention + address: fees flow (existing)
   if (mentioned) {
     const tokenAddress = addresses[0] ?? null;
     if (!tokenAddress) {
       await message.reply("To get fees: mention me and include a **token contract address** (0x...). Example: `@Bot 0x1234...`").catch(() => {});
       return;
     }
-    await message.channel.sendTyping().catch(() => {});
-    try {
-      const out = await getTokenFees(tokenAddress);
-      if (out.launch) {
-        await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
-        return;
-      }
-      const recipient = await getFeesSummaryOnChainOnly(tokenAddress);
-      if (recipient.tokens && recipient.tokens.length > 0) {
-        const DECIMALS = 18;
-        const lines = [
-          `**Fees for recipient** \`${recipient.feeWallet ?? tokenAddress}\` (on-chain claimable, no indexer)`,
-          `**Bankr tokens:** ${recipient.matchCount} (showing up to ${recipient.tokens.length})`,
-          "",
-        ];
-        for (const t of recipient.tokens) {
-          const h = t.hookFees;
-          const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
-          const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
-          lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
-          lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
-          lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
-        }
-        lines.push("");
-        lines.push("_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
-        await message.reply(lines.join("\n")).catch(() => {});
-        return;
-      }
-      await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
-    } catch (e) {
-      await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
-    }
+    await replyFeesForMessage(message, tokenAddress);
     return;
   }
 
@@ -633,8 +643,11 @@ client.on("interactionCreate", async (interaction) => {
         ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
         : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
+        const hint = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim())
+          ? "\n\nIf the link above shows results on Bankr, set **BANKR_API_KEY** (from [bankr.bot/api](https://bankr.bot/api)) in this bot's env so lookup can use the list API."
+          : "";
         await interaction.editReply({
-          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}`,
+          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}${hint}`,
         });
         return;
       }

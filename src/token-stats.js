@@ -9,17 +9,21 @@
  * Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
  *
  * Env: BANKR_API_KEY (recommended; single-token launch endpoint may return 403 without it)
- *      DOPPLER_INDEXER_URL (optional; for Base mainnet /fees the public indexer.doppler.lol is often down — use your own e.g. Railway)
+ *      DOPPLER_INDEXER_URL (optional; default https://indexer-prod.doppler.lol for Base mainnet — set to your endpoint if different)
  *      CHAIN_ID (default 8453)
  */
 
 import "dotenv/config";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
-// Public Base mainnet indexer (indexer.doppler.lol) is often 502; for production set DOPPLER_INDEXER_URL to your own (e.g. Railway).
+// Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL ||
-  (CHAIN_ID === 8453 ? "https://indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
+  (CHAIN_ID === 8453 ? "https://indexer-prod.doppler.lol" : "https://testnet-indexer.doppler.lol");
+// When indexer keys cumulatedFees by integration (not per-creator), we try this beneficiary after the creator's wallet.
+const BANKR_INTEGRATION_ADDRESS = (
+  process.env.BANKR_INTEGRATION_ADDRESS || "0xF60633D02690e2A15A54AB919925F3d038Df163e"
+).trim().toLowerCase();
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
@@ -461,10 +465,17 @@ export async function getTokenFees(tokenAddress) {
   const fee = launch.feeRecipient;
   const feeWallet = fee?.walletAddress ? normalizeAddress(fee.walletAddress) : (fee?.wallet ?? fee?.address ? normalizeAddress(fee.wallet ?? fee.address) : null);
   let cumulatedFees = null;
-  if (feeWallet) {
-    const pool = await fetchPoolByBaseToken(addr);
-    if (pool) {
-      cumulatedFees = await fetchCumulatedFees(pool.id ?? pool.address, feeWallet);
+  // Prefer launch.poolId (bytes32) when available — indexer expects this format for cumulatedFees.
+  const poolIdForFees = (typeof launch.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.poolId.trim())) ? launch.poolId.trim() : null;
+  const poolFromIndexer = poolIdForFees ? { id: poolIdForFees, address: poolIdForFees } : await fetchPoolByBaseToken(addr);
+  const effectivePoolId = poolIdForFees ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
+  if (effectivePoolId) {
+    // Try creator wallet first; then Bankr integration address (indexer may key fees by integration).
+    const beneficiariesToTry = feeWallet ? [feeWallet, BANKR_INTEGRATION_ADDRESS] : [BANKR_INTEGRATION_ADDRESS];
+    for (const beneficiary of beneficiariesToTry) {
+      if (!beneficiary) continue;
+      cumulatedFees = await fetchCumulatedFees(effectivePoolId, beneficiary);
+      if (cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null)) break;
     }
   }
 
@@ -544,6 +555,9 @@ async function main() {
     console.log("  Trading volume (indexer):", fmt(volumeUsd) ?? "—");
     if (estimatedCreatorFeesUsd != null) {
       console.log("  Estimated creator fees (57% of 1.2% of volume):", fmt(estimatedCreatorFeesUsd));
+    }
+    if (Number(volumeUsd) === 0) {
+      console.log("  (Indexer has no volume for this token yet — new or not yet indexed.)");
     }
     console.log("");
   } else {

@@ -11,7 +11,8 @@
  *   TELEGRAM_BOT_TOKEN   - Telegram bot token (optional)
  *   TELEGRAM_CHAT_ID     - Telegram chat/channel ID (optional)
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
- *   DOPPLER_INDEXER_URL  - Indexer URL (fallback when no Bankr API key)
+ *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://indexer-prod.doppler.lol; set to your DM'd endpoint if different)
+ *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
  *   SEEN_FILE            - Path to store seen tokens (default: .bankr-seen.json)
  */
 
@@ -32,7 +33,10 @@ const BANKR_LAUNCHES_LIMIT = Math.min(
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
 const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
 const DOPPLER_INDEXER_URL =
-  process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
+  process.env.DOPPLER_INDEXER_URL || "https://indexer-prod.doppler.lol";
+const BANKR_INTEGRATION_ADDRESS = (
+  process.env.BANKR_INTEGRATION_ADDRESS || "0xF60633D02690e2A15A54AB919925F3d038Df163e"
+).trim().toLowerCase();
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const SEEN_FILE = process.env.SEEN_FILE || join(process.cwd(), ".bankr-seen.json");
 const SEEN_MAX_KEYS = process.env.SEEN_MAX_KEYS != null ? parseInt(process.env.SEEN_MAX_KEYS, 10) : null;
@@ -195,7 +199,57 @@ async function fetchLaunches() {
     if (bankrLaunches?.length > 0) return bankrLaunches;
   }
 
-  const query = `
+  // Production indexer (indexer-prod.doppler.lol): filter tokens by Bankr integration address
+  // so we only get tokens that have this address as fee beneficiary. Try beneficiary first, then integrationAddress, then no filter.
+  const queryWithBeneficiary = `
+    query TokensByBeneficiary($chainId: Int!, $beneficiary: String!) {
+      tokens(
+        where: { chainId: $chainId, beneficiary: $beneficiary }
+        orderBy: "firstSeenAt"
+        orderDirection: "desc"
+        limit: 50
+      ) {
+        items {
+          address
+          chainId
+          name
+          symbol
+          decimals
+          image
+          creatorAddress
+          tokenUriData
+          pool { address }
+          volumeUsd
+          holderCount
+        }
+      }
+    }
+  `;
+  const queryWithIntegration = `
+    query TokensByIntegration($chainId: Int!, $integrationAddress: String!) {
+      tokens(
+        where: { chainId: $chainId, integrationAddress: $integrationAddress }
+        orderBy: "firstSeenAt"
+        orderDirection: "desc"
+        limit: 50
+      ) {
+        items {
+          address
+          chainId
+          name
+          symbol
+          decimals
+          image
+          creatorAddress
+          tokenUriData
+          pool { address }
+          volumeUsd
+          holderCount
+        }
+      }
+    }
+  `;
+  const queryLegacy = `
     query Tokens($chainId: Int!) {
       tokens(
         where: { chainId: $chainId }
@@ -219,26 +273,37 @@ async function fetchLaunches() {
       }
     }
   `;
-  const res = await fetch(
-    `${DOPPLER_INDEXER_URL.replace(/\/$/, "")}/graphql`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, variables: { chainId: CHAIN_ID } }),
-    }
-  );
-  if (!res.ok) {
-    console.error(`Indexer HTTP ${res.status} from ${DOPPLER_INDEXER_URL}`);
-  } else {
-    const json = await res.json();
-    if (json.errors) {
-      console.error("Indexer GraphQL errors:", JSON.stringify(json.errors));
-    } else {
-      const items = json.data?.tokens?.items ?? [];
-      if (items.length > 0) return items.map(formatLaunch);
+
+  const baseUrl = `${DOPPLER_INDEXER_URL.replace(/\/$/, "")}/graphql`;
+  let items = [];
+
+  for (const { query, variables } of [
+    { query: queryWithBeneficiary, variables: { chainId: CHAIN_ID, beneficiary: BANKR_INTEGRATION_ADDRESS } },
+    { query: queryWithIntegration, variables: { chainId: CHAIN_ID, integrationAddress: BANKR_INTEGRATION_ADDRESS } },
+    { query: queryLegacy, variables: { chainId: CHAIN_ID } },
+  ]) {
+    try {
+      const res = await fetch(baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const next = json.data?.tokens?.items ?? [];
+      if (next.length > 0) {
+        items = next;
+        break;
+      }
+    } catch {
+      /* try next query shape */
     }
   }
-  console.error(`Indexer empty/failed for chainId ${CHAIN_ID}. Trying chain fallback...`);
+
+  if (items.length > 0) return items.map(formatLaunch);
+
+  console.error(`Indexer HTTP/GraphQL failed or returned no tokens for chainId ${CHAIN_ID}. Trying chain fallback...`);
   try {
     const chainLaunches = await fetchNewLaunches();
     return chainLaunches.map((l) => ({
@@ -349,6 +414,19 @@ function buildTradeLinks(tokenAddress) {
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
 }
 
+/** Format deployer or feeRecipient object for Discord embed value (wallet + X + Farcaster links). */
+function formatDeployerOrFeeForEmbed(obj) {
+  if (!obj) return "—";
+  const wallet = obj.walletAddress ?? obj.wallet ?? null;
+  const parts = [];
+  if (wallet) parts.push(`**Wallet:** ${walletLink(wallet) ? `[${wallet}](${walletLink(wallet)})` : `\`${wallet}\``}`);
+  const xUser = obj.xUsername ?? obj.x ?? null;
+  if (xUser) parts.push(`**X:** [@${String(xUser).replace(/^@/, "")}](${xProfileUrl(xUser)})`);
+  const fc = obj.farcasterUsername ?? obj.farcaster ?? obj.fcUsername ?? null;
+  if (fc) parts.push(`**Farcaster:** [${fc}](${farcasterProfileUrl(fc)})`);
+  return parts.length ? parts.join("\n") : "—";
+}
+
 /**
  * Build rich embed for a single Bankr token (when user pastes address or uses /fees-token style reply).
  * @param {object} out - Result from getTokenFees(tokenAddress): { name, symbol, launch, volumeUsd, formatUsd }
@@ -383,35 +461,9 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
 
   const fields = [
     { name: "Token", value: tokenLines.join("\n"), inline: false },
+    { name: "Deployer", value: formatDeployerOrFeeForEmbed(launch?.deployer), inline: false },
+    { name: "Fee Recipient", value: formatDeployerOrFeeForEmbed(launch?.feeRecipient), inline: false },
   ];
-
-  let deployerValue = "—";
-  if (launch?.deployer) {
-    const d = launch.deployer;
-    const wallet = d.walletAddress ?? d.wallet ?? null;
-    const parts = [];
-    if (wallet) parts.push(`**Wallet:** ${walletLink(wallet) ? `[${wallet}](${walletLink(wallet)})` : `\`${wallet}\``}`);
-    const xUser = d.xUsername ?? d.x ?? null;
-    if (xUser) parts.push(`**X:** [@${xUser.replace(/^@/, "")}](${xProfileUrl(xUser)})`);
-    const fc = d.farcasterUsername ?? d.farcaster ?? d.fcUsername ?? null;
-    if (fc) parts.push(`**Farcaster:** [${fc}](${farcasterProfileUrl(fc)})`);
-    if (parts.length) deployerValue = parts.join("\n");
-  }
-  fields.push({ name: "Deployer", value: deployerValue, inline: false });
-
-  let feeValue = "—";
-  if (launch?.feeRecipient) {
-    const f = launch.feeRecipient;
-    const wallet = f.walletAddress ?? f.wallet ?? null;
-    const parts = [];
-    if (wallet) parts.push(`**Wallet:** ${walletLink(wallet) ? `[${wallet}](${walletLink(wallet)})` : `\`${wallet}\``}`);
-    const xUser = f.xUsername ?? f.x ?? null;
-    if (xUser) parts.push(`**X:** [@${xUser.replace(/^@/, "")}](${xProfileUrl(xUser)})`);
-    const fc = f.farcasterUsername ?? f.farcaster ?? f.fcUsername ?? null;
-    if (fc) parts.push(`**Farcaster:** [${fc}](${farcasterProfileUrl(fc)})`);
-    if (parts.length) feeValue = parts.join("\n");
-  }
-  fields.push({ name: "Fee Recipient", value: feeValue, inline: false });
 
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
