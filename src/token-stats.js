@@ -482,11 +482,10 @@ export async function getTokenFees(tokenAddress) {
   }
 
   let hookFees = null;
-  const poolIdFromLaunch = typeof launch.poolId === "string" ? launch.poolId.trim() : null;
-  const poolIdFromIndexer = doppler?.pool?.address && /^0x[a-fA-F0-9]{64}$/.test(String(doppler.pool.address).trim()) ? String(doppler.pool.address).trim() : null;
-  const poolId = poolIdFromLaunch || poolIdFromIndexer;
-  if (poolId) {
-    hookFees = await fetchHookFeesOnChain(poolId);
+  // Use same poolId as for cumulatedFees (launch.poolId or indexer v4pools), so we get claimable when indexer has accrued.
+  const poolIdForHook = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
+  if (poolIdForHook) {
+    hookFees = await fetchHookFeesOnChain(poolIdForHook);
   }
 
   return {
