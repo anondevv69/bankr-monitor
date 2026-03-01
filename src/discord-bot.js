@@ -650,7 +650,11 @@ function formatFeesTokenReply(out, tokenAddress) {
         if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
         if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
         lines.push("_Some fees have been claimed for this token._");
+      } else {
+        lines.push("_None claimed yet (claimable = accrued)._");
       }
+    } else {
+      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** (Base RPC) in the bot env to enable._");
     }
     lines.push("");
   }
