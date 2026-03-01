@@ -508,13 +508,13 @@ function formatFeesTokenReply(out, tokenAddress) {
   const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
   const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
   if (error && !out.launch) {
-    return `**${name}** ($${symbol})\n\n${error}\n\n[View on Bankr](${launchUrl})`;
+    return `**${name}** ($${symbol})\n\n${error}`;
   }
   const DECIMALS = 18;
   const lines = [
     `**Token:** ${name} ($${symbol})`,
     `**CA:** \`${tokenAddress}\``,
-    `**Fee recipient:** ${feeLabel}${feeWallet ? ` (\`${feeWallet.slice(0, 6)}…${feeWallet.slice(-4)}\`)` : ""}`,
+    `**Fee recipient:** ${feeLabel}${feeWallet ? ` \`${feeWallet}\`` : ""}`,
     "",
   ];
 
@@ -572,6 +572,7 @@ function formatFeesTokenReply(out, tokenAddress) {
         lines.push("**Already claimed** ≈ Accrued − Claimable:");
         if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
         if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
+        lines.push("_Some fees have been claimed for this token._");
       }
     }
     lines.push("");
@@ -584,9 +585,7 @@ function formatFeesTokenReply(out, tokenAddress) {
       lines.push("");
     }
   }
-  lines.push("");
-  lines.push("_Bankr token — claim at [Bankr terminal](https://bankr.bot/terminal) or reply to **@bankrbot** with: `claim fees for " + tokenAddress + "` (from the fee recipient wallet)._");
-  return lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`;
+  return lines.join("\n").trim();
 }
 
 client.on("messageCreate", async (message) => {
@@ -613,11 +612,29 @@ client.on("messageCreate", async (message) => {
   try {
     const out = await getTokenFees(tokenAddress);
     const embed = buildTokenDetailEmbed(out, tokenAddress);
+    const feeParts = [];
     const claimableLine = out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
       ? formatClaimableOneLiner(out.hookFees, out.symbol)
       : null;
-    if (claimableLine && embed.fields) {
-      embed.fields.splice(3, 0, { name: "Claimable", value: claimableLine, inline: false });
+    if (claimableLine) feeParts.push(`**Claimable:** ${claimableLine}`);
+    if (out.cumulatedFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
+      const DEC = 18;
+      const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
+      const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
+      const fmtT = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
+      feeParts.push(`**Historical accrued:** WETH ${w.toFixed(4)} • ${out.symbol ?? "Token"} ${fmtT(t)}`);
+      if (out.hookFees && claimableLine) {
+        const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
+        const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
+        const claimedW = Math.max(0, w - cW);
+        const claimedT = Math.max(0, t - cT);
+        if (claimedW > 0 || claimedT > 0) {
+          feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+        }
+      }
+    }
+    if (feeParts.length > 0 && embed.fields) {
+      embed.fields.splice(3, 0, { name: "Fees", value: feeParts.join("\n"), inline: false });
     }
     await message.reply({ embeds: [embed] }).catch(() => {});
   } catch (e) {

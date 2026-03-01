@@ -20,6 +20,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 // How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000", 10);
+// Wallet-only lookups: fetch this many newest launches so /lookup by wallet is fast. Increase if tokens are missed.
+const BANKR_WALLET_LOOKUP_LIMIT = Math.min(parseInt(process.env.BANKR_WALLET_LOOKUP_LIMIT || "5000", 10), 50000);
 // When handle not found in newest launches, fetch this many oldest (order=asc) to resolve X/FC -> wallet
 const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMIT || "10000", 10), 50000);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
@@ -62,6 +64,40 @@ function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
 }
 
+/** Parse search API response into arrays of launches + totalCount. Handles multiple response shapes. */
+function getSearchResultArrays(json) {
+  const byDeployer = json.groups?.byDeployer?.results ?? [];
+  const byFee = json.groups?.byFeeRecipient?.results ?? [];
+  const byWallet = json.groups?.byWallet?.results ?? [];
+  const flat =
+    Array.isArray(json.results) ? json.results
+      : Array.isArray(json.launches) ? json.launches
+        : Array.isArray(json.data?.results) ? json.data.results
+          : Array.isArray(json.data?.launches) ? json.data.launches
+            : Array.isArray(json.hits) ? json.hits
+              : Array.isArray(json.items) ? json.items
+                : [];
+  const total =
+    json.groups?.byDeployer?.totalCount ??
+    json.groups?.byFeeRecipient?.totalCount ??
+    json.groups?.byWallet?.totalCount ??
+    json.totalCount ??
+    0;
+  return { arrays: [...byDeployer, ...byFee, ...byWallet, ...flat], total };
+}
+
+/** Merge toAdd into launches by tokenAddress (no duplicates). Mutates launches. */
+function mergeLaunchesWithoutDuplicates(launches, toAdd) {
+  const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
+  for (const l of toAdd) {
+    const key = l.tokenAddress?.toLowerCase();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      launches.push(l);
+    }
+  }
+}
+
 /** Fetch from Bankr search API (same as bankr.bot/launches/search).
  * Returns { launches, totalCount } or null on failure.
  * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
@@ -82,20 +118,11 @@ async function fetchSearch(query) {
       });
       if (!res.ok) break;
       const json = await res.json();
-      const byDeployer = json.groups?.byDeployer?.results ?? [];
-      const byFee = json.groups?.byFeeRecipient?.results ?? [];
-      const byWallet = json.groups?.byWallet?.results ?? [];
-      const flatResults = Array.isArray(json.results) ? json.results : Array.isArray(json.launches) ? json.launches : [];
-      const total =
-        json.groups?.byDeployer?.totalCount ??
-        json.groups?.byFeeRecipient?.totalCount ??
-        json.groups?.byWallet?.totalCount ??
-        json.totalCount ??
-        0;
+      const { arrays, total } = getSearchResultArrays(json);
       if (total > totalCount) totalCount = total;
 
       let added = 0;
-      for (const l of [...byDeployer, ...byFee, ...byWallet, ...flatResults]) {
+      for (const l of arrays) {
         if (l.status !== "deployed") continue;
         const key = l.tokenAddress?.toLowerCase();
         if (key && !seen.has(key)) {
@@ -105,8 +132,8 @@ async function fetchSearch(query) {
         }
       }
       if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
-      offset += Math.max(byDeployer.length, byFee.length, byWallet.length, flatResults.length, 1);
-      if (byDeployer.length === 0 && byFee.length === 0 && byWallet.length === 0 && flatResults.length === 0) break;
+      offset += Math.max(arrays.length, 1);
+      if (arrays.length === 0) break;
     }
     return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
   } catch {
@@ -165,43 +192,59 @@ async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order) {
 /** Build map of normalized X/FC handle -> wallet from launches (so we can resolve "gork" -> wallet and search by wallet). */
 function buildHandleToWalletMap(launches) {
   const map = new Map();
+  const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
+  const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
+  const add = (handle, wallet) => {
+    if (!handle || !wallet) return;
+    const h = norm(String(handle).replace(/^@/, ""));
+    if (h) map.set(h, wallet);
+  };
   for (const l of launches) {
     const d = l.deployer;
     const f = l.feeRecipient;
-    const add = (handle, wallet) => {
-      if (!handle || !wallet) return;
-      const h = norm(String(handle).replace(/^@/, ""));
-      if (h) map.set(h, (map.get(h) || wallet).toLowerCase());
-    };
-    const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
-    const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
-    if (d?.walletAddress) {
-      if (xFrom(d)) add(xFrom(d), d.walletAddress);
+    const dw = walletFrom(d);
+    const fw = walletFrom(f);
+    if (dw) {
+      if (xFrom(d)) add(xFrom(d), dw);
       const fc = fcFrom(d);
-      if (fc) add(fc, d.walletAddress);
+      if (fc) add(fc, dw);
     }
-    if (f?.walletAddress) {
-      if (xFrom(f)) add(xFrom(f), f.walletAddress);
+    if (fw) {
+      if (xFrom(f)) add(xFrom(f), fw);
       const fc = fcFrom(f);
-      if (fc) add(fc, f.walletAddress);
+      if (fc) add(fc, fw);
     }
   }
   return map;
 }
 
-/** Get wallet from deployer or fee object (API may use walletAddress, wallet, or address). */
+/** Get wallet from deployer or fee object (API may use walletAddress, wallet, address, or raw string). */
 function walletFrom(obj) {
-  if (!obj) return null;
+  if (obj == null) return null;
+  if (typeof obj === "string" && /^0x[a-fA-F0-9]{40}$/.test(obj.trim())) return obj.trim().toLowerCase();
   const w = obj.walletAddress ?? obj.wallet ?? obj.address;
   return w && /^0x[a-fA-F0-9]{40}$/.test(String(w).trim()) ? String(w).trim().toLowerCase() : null;
+}
+
+/** Get wallet from launch (nested deployer/fee or top-level deployerWallet/feeRecipientWallet). */
+function launchWallet(launch, role) {
+  if (role === "deployer") {
+    const w = walletFrom(launch.deployer) ?? (launch.deployerWallet && /^0x[a-fA-F0-9]{40}$/.test(String(launch.deployerWallet).trim()) ? String(launch.deployerWallet).trim().toLowerCase() : null);
+    return w;
+  }
+  if (role === "fee") {
+    const w = walletFrom(launch.feeRecipient) ?? (launch.feeRecipientWallet && /^0x[a-fA-F0-9]{40}$/.test(String(launch.feeRecipientWallet).trim()) ? String(launch.feeRecipientWallet).trim().toLowerCase() : null);
+    return w ?? (launch.creatorWallet && /^0x[a-fA-F0-9]{40}$/.test(String(launch.creatorWallet).trim()) ? String(launch.creatorWallet).trim().toLowerCase() : null);
+  }
+  return null;
 }
 
 /** Check if a launch matches the query. filter: "deployer" | "fee" | "both". */
 function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   const deployer = launch.deployer;
   const fee = launch.feeRecipient;
-  const deployerWallet = walletFrom(deployer);
-  const feeWallet = walletFrom(fee);
+  const deployerWallet = launchWallet(launch, "deployer");
+  const feeWallet = launchWallet(launch, "fee");
 
   const matchDeployer = () => {
     if (isWalletQuery) return deployerWallet === queryNorm;
@@ -350,9 +393,11 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     launches = searchResult.launches.filter(matches);
     totalCount = searchResult.totalCount;
   }
-  // Search API often caps at 5 results; with API key fetch full list and merge so we return all matches
+  // Search API often caps or fails for wallet; with API key fetch list and filter by wallet. Wallet-only: smaller limit for speed.
   if (BANKR_API_KEY) {
-    let all = await fetchAllLaunches();
+    const isWalletOnly = isWalletQuery || !!resolvedWallet;
+    const listLimit = isWalletOnly ? BANKR_WALLET_LOOKUP_LIMIT : BANKR_LAUNCHES_LIMIT;
+    let all = await fetchAllLaunches(listLimit);
     let handleToWallet = buildHandleToWalletMap(all);
     for (const [h, w] of getHandleOverrides()) handleToWallet.set(h, w);
     if (!handleToWallet.has(normalized) && OLDEST_FETCH_LIMIT > 0) {
@@ -367,17 +412,8 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
         return true;
       })];
     }
-    const matched = all.filter(matches);
-    const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
-    for (const l of matched) {
-      const key = l.tokenAddress?.toLowerCase();
-      if (key && !seen.has(key)) {
-        seen.add(key);
-        launches.push(l);
-      }
-    }
+    mergeLaunchesWithoutDuplicates(launches, all.filter(matches));
     totalCount = Math.max(launches.length, totalCount);
-    // Merge any extra tokens from wallet search (we may have resolved at start; use that or resolve again)
     if (!isWalletQuery && normalized) {
       let wallet = resolvedWallet ?? handleToWallet.get(normalized) ?? null;
       if (!wallet) {
@@ -387,17 +423,9 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       if (wallet) {
         if (!resolvedWallet) resolvedWallet = wallet;
         const byWallet = await fetchSearch(wallet);
-        if (byWallet && byWallet.launches.length > 0) {
+        if (byWallet?.launches?.length > 0) {
           const walletMatchesFn = (l) => launchMatches(l, wallet, true, filter);
-          const fromWallet = byWallet.launches.filter(walletMatchesFn);
-          const seenAddr = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
-          for (const l of fromWallet) {
-            const key = l.tokenAddress?.toLowerCase();
-            if (key && !seenAddr.has(key)) {
-              seenAddr.add(key);
-              launches.push(l);
-            }
-          }
+          mergeLaunchesWithoutDuplicates(launches, byWallet.launches.filter(walletMatchesFn));
           totalCount = Math.max(byWallet.totalCount ?? totalCount, launches.length);
         }
       }
@@ -415,10 +443,10 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       tokenAddress: l.tokenAddress,
       tokenName: l.tokenName ?? "—",
       tokenSymbol: l.tokenSymbol ?? "—",
-      deployerWallet: l.deployer?.walletAddress ?? null,
+      deployerWallet: launchWallet(l, "deployer"),
       deployerX: l.deployer?.xUsername ?? null,
       deployerFc: l.deployer?.farcasterUsername ?? l.deployer?.farcaster ?? l.deployer?.fcUsername ?? null,
-      feeRecipientWallet: l.feeRecipient?.walletAddress ?? null,
+      feeRecipientWallet: launchWallet(l, "fee"),
       feeRecipientX: l.feeRecipient?.xUsername ?? null,
       feeRecipientFc: l.feeRecipient?.farcasterUsername ?? l.feeRecipient?.fcUsername ?? null,
       bankrUrl: `https://bankr.bot/launches/${l.tokenAddress}`,

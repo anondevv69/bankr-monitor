@@ -276,6 +276,10 @@ This project focuses on three fee views (no leaderboards, charts, or OHLC):
 
 **Requirements:** `RPC_URL` (or `RPC_URL_BASE`) for Base to read claimable. Bankr launch must have `poolId` (from Bankr API). For historical + claimed you need `DOPPLER_INDEXER_URL` and an indexer that exposes `cumulatedFees`.
 
+**Indexer “last updated”:** The production indexer’s public GraphQL schema does not expose a block number or timestamp for “indexer data as of.” If you self-host the indexer, you can add a custom field or query that returns the latest synced block.
+
+**Monitoring when fees are claimed:** The bot shows **Already claimed** when it has both indexer (accrued) and on-chain (claimable) data: claimed ≈ accrued − claimable. To actively *notify* when someone claims (e.g. “Fees were claimed for Rucks”), you’d need to store the last-known claimable per token and compare on a schedule; that is not implemented yet.
+
 ## Fees: claimed vs unclaimed ETH (Bankr app)
 
 **Whether a token’s fees have been claimed** and **how much ETH is claimable** are not exposed by the Bankr REST API. Use Bankr’s own tools:
