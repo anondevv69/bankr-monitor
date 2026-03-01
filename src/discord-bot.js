@@ -485,11 +485,12 @@ async function replyFeesForMessage(message, tokenAddress) {
 /** Build fee reply text for a token (used by /fees-token and by mention + address). */
 function formatClaimableOneLiner(hookFees, symbol) {
   const DECIMALS = 18;
-  const t0 = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
-  const t1 = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
-  const hasT0 = hookFees.beneficiaryFees0 > 0n;
-  const hasT1 = hookFees.beneficiaryFees1 > 0n;
-  if (!hasT0 && !hasT1) return null;
+  // Pool order: token0 = WETH, token1 = asset (same as indexer)
+  const wethAmount = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
+  const tokenAmount = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
+  const hasWeth = hookFees.beneficiaryFees0 > 0n;
+  const hasToken = hookFees.beneficiaryFees1 > 0n;
+  if (!hasWeth && !hasToken) return null;
   function fmtToken(n) {
     if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
     if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
@@ -497,8 +498,8 @@ function formatClaimableOneLiner(hookFees, symbol) {
     return n.toFixed(4);
   }
   const parts = [];
-  if (hasT1) parts.push(`${t1.toFixed(3)} WETH`);
-  if (hasT0) parts.push(`${fmtToken(t0)} ${symbol || "token"}`);
+  if (hasWeth) parts.push(`${wethAmount.toFixed(3)} WETH`);
+  if (hasToken) parts.push(`${fmtToken(tokenAmount)} ${symbol || "token"}`);
   return parts.length ? `${parts.join(" + ")} (57% creator share)` : null;
 }
 
@@ -517,10 +518,10 @@ function formatFeesTokenReply(out, tokenAddress) {
     "",
   ];
 
-  // Claimable right now — always from chain (getHookFees). Same with or without indexer.
+  // Claimable right now — pool order: token0 = WETH, token1 = asset
   const hasHookData = hookFees != null;
-  const claimableToken = hasHookData ? Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS : null;
-  const claimableWeth = hasHookData ? Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS : null;
+  const claimableWeth = hasHookData ? Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS : null;
+  const claimableToken = hasHookData ? Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS : null;
 
   if (hasHookData) {
     const oneLiner = formatClaimableOneLiner(hookFees, symbol);
@@ -530,49 +531,58 @@ function formatFeesTokenReply(out, tokenAddress) {
     }
     lines.push("**Claimable right now** (on-chain `getHookFees`) — what the recipient can claim:");
     if (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n) {
-      if (hookFees.beneficiaryFees0 > 0n) lines.push(`• Token: ${claimableToken.toFixed(4)}`);
-      if (hookFees.beneficiaryFees1 > 0n) lines.push(`• WETH: ${claimableWeth.toFixed(6)}`);
+      if (hookFees.beneficiaryFees0 > 0n) lines.push(`• WETH: ${claimableWeth.toFixed(4)}`);
+      if (hookFees.beneficiaryFees1 > 0n) {
+        const n = claimableToken;
+        const tokStr = n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
+        lines.push(`• Token: ${tokStr}`);
+      }
     } else {
       lines.push("• No unclaimed fees yet.");
     }
     lines.push("");
   }
 
-  // Historical accrued (indexer) and "already claimed" when we have both indexer + chain
-  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
+  // Historical accrued (indexer): indexer uses token0 = WETH, token1 = asset (token)
+  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null);
   if (hasIndexerFees) {
     const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
     const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
-    const accruedToken = Number(raw0) / 10 ** DECIMALS;
-    const accruedWeth = Number(raw1) / 10 ** DECIMALS;
+    const accruedWeth = Number(raw0) / 10 ** DECIMALS;
+    const accruedToken = Number(raw1) / 10 ** DECIMALS;
+    function fmtTokenAmount(n) {
+      if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
+      if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+      if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+      return n.toFixed(4);
+    }
     lines.push("**Historical accrued** (indexer) — all-time fees for this beneficiary:");
-    if (cumulatedFees.token0Fees != null) lines.push(`• Token: ${accruedToken.toFixed(4)}`);
-    if (cumulatedFees.token1Fees != null) lines.push(`• WETH: ${accruedWeth.toFixed(6)}`);
-    if (cumulatedFees.totalFeesUsd != null) lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
+    if (cumulatedFees.token0Fees != null) lines.push(`• WETH: ${accruedWeth.toFixed(4)}`);
+    if (cumulatedFees.token1Fees != null) lines.push(`• Token (${symbol}): ${fmtTokenAmount(accruedToken)}`);
+    const totalUsd = cumulatedFees.totalFeesUsd != null ? Number(cumulatedFees.totalFeesUsd) : NaN;
+    if (cumulatedFees.totalFeesUsd != null && !Number.isNaN(totalUsd) && totalUsd < 1e9 && totalUsd >= 0) {
+      lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
+    }
     if (hasHookData) {
-      const claimedT = Math.max(0, accruedToken - (claimableToken ?? 0));
-      const claimedW = Math.max(0, accruedWeth - (claimableWeth ?? 0));
+      const claimableT = claimableToken ?? 0;
+      const claimableW = claimableWeth ?? 0;
+      const claimedT = Math.max(0, accruedToken - claimableT);
+      const claimedW = Math.max(0, accruedWeth - claimableW);
       if (claimedT > 0 || claimedW > 0) {
         lines.push("**Already claimed** ≈ Accrued − Claimable:");
-        if (claimedT > 0) lines.push(`• Token: ${claimedT.toFixed(4)}`);
-        if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(6)}`);
+        if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
+        if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
       }
     }
     lines.push("");
   }
 
-  if (!hasHookData) {
-    if (estimatedCreatorFeesUsd != null) {
+  // Removed: estimated $0, "no volume", and RPC hint when we have historical or claimable data
+  if (!hasHookData && !hasIndexerFees) {
+    if (estimatedCreatorFeesUsd != null && estimatedCreatorFeesUsd > 0) {
       lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
-      const noVolume = out.volumeUsd == null || out.volumeUsd === "" || Number(out.volumeUsd) === 0;
-      if (noVolume && (estimatedCreatorFeesUsd === 0 || estimatedCreatorFeesUsd == null)) {
-        lines.push("_Indexer has no volume for this token yet (new or not yet indexed)._");
-      }
-    } else {
-      lines.push("_Claimable: set RPC_URL (Base) and ensure token has a Bankr launch with poolId. Then claimable comes from chain._");
+      lines.push("");
     }
-    lines.push("_To see **claimable** fees (what the recipient can claim now), set **RPC_URL_BASE** to a Base RPC in the bot env._");
-    lines.push("");
   }
   lines.push("");
   lines.push("_Bankr token — claim at [Bankr terminal](https://bankr.bot/terminal) or reply to **@bankrbot** with: `claim fees for " + tokenAddress + "` (from the fee recipient wallet)._");
