@@ -20,10 +20,6 @@ const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL ||
   (CHAIN_ID === 8453 ? "https://indexer-prod.doppler.lol" : "https://testnet-indexer.doppler.lol");
-// When indexer keys cumulatedFees by integration (not per-creator), we try this beneficiary after the creator's wallet.
-const BANKR_INTEGRATION_ADDRESS = (
-  process.env.BANKR_INTEGRATION_ADDRESS || "0xF60633D02690e2A15A54AB919925F3d038Df163e"
-).trim().toLowerCase();
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
@@ -122,7 +118,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
   // 2) GraphQL list with filter (Ponder/Doppler: tokens where address + chainId)
   // Inline values: some indexers don't support variables inside where
   const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd } } }`;
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount pool { address } } } }`;
   try {
     const res = await fetch(`${base}/graphql`, {
       method: "POST",
@@ -262,8 +258,8 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
     chainId: CHAIN_ID,
     beneficiary: beneficiaryAddress,
   };
-  // Plural or custom resolver: cumulatedFees(poolId, chainId, beneficiary)
-  const queryPlural = `
+  // Try Int first, then Float (indexer-prod.doppler.lol uses Float! for chainId)
+  const queryInt = `
     query GetFees($poolId: String!, $chainId: Int!, $beneficiary: String!) {
       cumulatedFees(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
         token0Fees
@@ -272,19 +268,30 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       }
     }
   `;
-  try {
-    const res = await fetch(`${base}/graphql`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: queryPlural, variables: vars }),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.errors?.length) return null;
-    const fromPlural = json.data?.cumulatedFees ?? null;
-    if (fromPlural != null) return fromPlural;
-  } catch {
-    /* try singular */
+  const queryFloat = `
+    query GetFees($poolId: String!, $chainId: Float!, $beneficiary: String!) {
+      cumulatedFees(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
+        token0Fees
+        token1Fees
+        totalFeesUsd
+      }
+    }
+  `;
+  for (const query of [queryInt, queryFloat]) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables: vars }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const out = json.data?.cumulatedFees ?? null;
+      if (out && (out.token0Fees != null || out.token1Fees != null || out.totalFeesUsd != null)) return out;
+    } catch {
+      /* try next */
+    }
   }
   // Ponder singular find-by-primary-key: cumulatedFee(poolId, chainId, beneficiary)
   const querySingular = `
@@ -469,18 +476,15 @@ export async function getTokenFees(tokenAddress) {
   const poolIdForFees = (typeof launch.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.poolId.trim())) ? launch.poolId.trim() : null;
   const poolFromIndexer = poolIdForFees ? { id: poolIdForFees, address: poolIdForFees } : await fetchPoolByBaseToken(addr);
   const effectivePoolId = poolIdForFees ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
-  if (effectivePoolId) {
-    // Try creator wallet first; then Bankr integration address (indexer may key fees by integration).
-    const beneficiariesToTry = feeWallet ? [feeWallet, BANKR_INTEGRATION_ADDRESS] : [BANKR_INTEGRATION_ADDRESS];
-    for (const beneficiary of beneficiariesToTry) {
-      if (!beneficiary) continue;
-      cumulatedFees = await fetchCumulatedFees(effectivePoolId, beneficiary);
-      if (cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null)) break;
-    }
+  if (effectivePoolId && feeWallet) {
+    // Only query fees for the fee recipient (creator). We show what they could claim or have accrued.
+    cumulatedFees = await fetchCumulatedFees(effectivePoolId, feeWallet);
   }
 
   let hookFees = null;
-  const poolId = typeof launch.poolId === "string" ? launch.poolId.trim() : null;
+  const poolIdFromLaunch = typeof launch.poolId === "string" ? launch.poolId.trim() : null;
+  const poolIdFromIndexer = doppler?.pool?.address && /^0x[a-fA-F0-9]{64}$/.test(String(doppler.pool.address).trim()) ? String(doppler.pool.address).trim() : null;
+  const poolId = poolIdFromLaunch || poolIdFromIndexer;
   if (poolId) {
     hookFees = await fetchHookFeesOnChain(poolId);
   }

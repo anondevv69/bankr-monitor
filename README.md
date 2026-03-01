@@ -88,6 +88,27 @@ curl "https://testnet-indexer.doppler.lol/search/0x123...abc?chain_ids=8453,5707
 
 **Direct SQL (self-hosted indexer only)** — `pnpm db shell` for psql; use the connection string from `.env.local`.
 
+**Why fees show $0.00 / “no volume”**
+
+- **Estimated creator fees** = indexer’s `volumeUsd` × 1.2% × 57%. If the indexer has no volume (or `0`) for that token, the estimate is $0. New or not-yet-indexed tokens often have no volume.
+- **Historical accrued** = indexer’s `cumulatedFees(poolId, chainId, beneficiary)`. If the indexer has no row for that pool/beneficiary yet, nothing is shown.
+- **Claimable right now** = on-chain `RehypeDopplerHook.getHookFees(poolId)`. This is **not** from the indexer. Set **RPC_URL_BASE** (Base RPC) in the bot’s environment so the bot can read the hook; then claimable token/WETH for the fee recipient will appear when you use `/fees-token`.
+
+**What tokens does the indexer have?**
+
+The indexer has a token once it has seen that token’s pool (e.g. from a create/migrate event) and may add volume when swaps are indexed. To list tokens that have data on Base:
+
+```bash
+# Optional: use your indexer URL
+export DOPPLER_INDEXER_URL=https://indexer-prod.doppler.lol
+
+# List tokens with volume (GraphQL)
+curl -s -X POST "${DOPPLER_INDEXER_URL%/}/graphql" -H "Content-Type: application/json" \
+  -d '{"query":"query { tokens(where: { chainId: 8453, volumeUsd_gt: \"0\" }, orderBy: \"volumeUsd\", orderDirection: \"desc\", limit: 20) { items { address name symbol volumeUsd } } }"}' | jq .
+```
+
+If your indexer schema uses different field names (e.g. `volumeUsd_gt` vs `volumeUsdGt`), check its GraphQL schema or docs. The bot uses `tokens(where: { chainId, address })` to fetch one token; when the indexer has that token, volume and pool are used for estimates and for resolving the pool id when the Bankr API doesn’t return it.
+
 **Indexer events** (what Ponder indexes): `UniswapV3Initializer.Create`, `UniswapV4Initializer.Create`, `Airlock.Migrate`, `UniswapV2Pair.Swap`, pool `Mint`/`Burn`/`Swap`, `DERC20.Transfer`. Supported chains: Base (8453), Base Sepolia (84532), Unichain (130), Ink (57073).
 
 #### Self-hosting the Doppler indexer on Railway

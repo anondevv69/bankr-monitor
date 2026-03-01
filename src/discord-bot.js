@@ -483,6 +483,25 @@ async function replyFeesForMessage(message, tokenAddress) {
 }
 
 /** Build fee reply text for a token (used by /fees-token and by mention + address). */
+function formatClaimableOneLiner(hookFees, symbol) {
+  const DECIMALS = 18;
+  const t0 = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
+  const t1 = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
+  const hasT0 = hookFees.beneficiaryFees0 > 0n;
+  const hasT1 = hookFees.beneficiaryFees1 > 0n;
+  if (!hasT0 && !hasT1) return null;
+  function fmtToken(n) {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return n.toFixed(4);
+  }
+  const parts = [];
+  if (hasT1) parts.push(`${t1.toFixed(3)} WETH`);
+  if (hasT0) parts.push(`${fmtToken(t0)} ${symbol || "token"}`);
+  return parts.length ? `${parts.join(" + ")} (57% creator share)` : null;
+}
+
 function formatFeesTokenReply(out, tokenAddress) {
   const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
   const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
@@ -504,6 +523,11 @@ function formatFeesTokenReply(out, tokenAddress) {
   const claimableWeth = hasHookData ? Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS : null;
 
   if (hasHookData) {
+    const oneLiner = formatClaimableOneLiner(hookFees, symbol);
+    if (oneLiner) {
+      lines.push(`**Claimable:** ${oneLiner}`);
+      lines.push("");
+    }
     lines.push("**Claimable right now** (on-chain `getHookFees`) — what the recipient can claim:");
     if (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n) {
       if (hookFees.beneficiaryFees0 > 0n) lines.push(`• Token: ${claimableToken.toFixed(4)}`);
@@ -547,10 +571,11 @@ function formatFeesTokenReply(out, tokenAddress) {
     } else {
       lines.push("_Claimable: set RPC_URL (Base) and ensure token has a Bankr launch with poolId. Then claimable comes from chain._");
     }
+    lines.push("_To see **claimable** fees (what the recipient can claim now), set **RPC_URL_BASE** to a Base RPC in the bot env._");
     lines.push("");
   }
   lines.push("");
-  lines.push("_Bankr token — claim at [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token " + tokenAddress + "`._");
+  lines.push("_Bankr token — claim at [Bankr terminal](https://bankr.bot/terminal) or reply to **@bankrbot** with: `claim fees for " + tokenAddress + "` (from the fee recipient wallet)._");
   return lines.join("\n") + `\n\n[View on Bankr](${launchUrl})`;
 }
 
@@ -578,6 +603,12 @@ client.on("messageCreate", async (message) => {
   try {
     const out = await getTokenFees(tokenAddress);
     const embed = buildTokenDetailEmbed(out, tokenAddress);
+    const claimableLine = out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
+      ? formatClaimableOneLiner(out.hookFees, out.symbol)
+      : null;
+    if (claimableLine && embed.fields) {
+      embed.fields.splice(3, 0, { name: "Claimable", value: claimableLine, inline: false });
+    }
     await message.reply({ embeds: [embed] }).catch(() => {});
   } catch (e) {
     await message.reply(`Token lookup failed: ${e.message}`).catch(() => {});

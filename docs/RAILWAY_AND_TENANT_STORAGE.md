@@ -71,8 +71,8 @@ Railway project (e.g. "BankrMonitor Prod")
 └── bankr-monitor     (Discord bot)
     Variables:
     - DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID
-    - DOPPLER_INDEXER_URL = https://<indexer-service>.up.railway.app  (indexer’s generated domain)
-    - RPC_URL (Base)
+    - DOPPLER_INDEXER_URL = https://indexer-prod.doppler.lol (or your indexer domain)
+    - RPC_URL_BASE (Base mainnet RPC — required for claimable fees in /fees-token)
     - BANKR_API_KEY (optional but recommended)
     - TENANTS_FILE=/data/bankr-tenants.json   (if you added a volume at /data)
     Volumes:
@@ -80,3 +80,20 @@ Railway project (e.g. "BankrMonitor Prod")
 ```
 
 The indexer and the bot are **separate services** in the same project; they don’t run in the same process. The bot talks to the indexer over HTTP (GraphQL) using `DOPPLER_INDEXER_URL`.
+
+---
+
+## 5. Bot service: what to set for fees and indexer
+
+In Railway, open your **BankrMonitor (bot)** service → **Variables**, and ensure:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `DISCORD_BOT_TOKEN` | Yes | From Discord Developer Portal. |
+| `DISCORD_ALERT_CHANNEL_ID` or `DISCORD_WATCH_ALERT_CHANNEL_ID` | At least one | Where the bot posts launch alerts. |
+| **`RPC_URL_BASE`** | **For claimable fees** | Base mainnet RPC URL (e.g. `https://mainnet.base.org` or Alchemy/QuickNode). Without this, `/fees-token` cannot show "Claimable right now" (on-chain hook data). |
+| `DOPPLER_INDEXER_URL` | Optional | Defaults to `https://indexer-prod.doppler.lol`. Override only if you use a different indexer. |
+| `BANKR_API_KEY` | Optional | From bankr.bot/api. Improves /lookup and single-token launch resolution. |
+| `BANKR_INTEGRATION_ADDRESS` | Optional | Only for the **notify feed** (which tokens appear in the feed). Not used for /fees-token; fee recipient fees use the launch's actual fee recipient wallet. |
+
+**To fix "everything $0" / no claimable fees:** Add **`RPC_URL_BASE`** with a Base mainnet RPC URL (e.g. Alchemy or QuickNode), save variables, then redeploy the bot. The bot uses it to read `getHookFees(poolId)` on-chain and show what the fee recipient can claim.
