@@ -349,6 +349,8 @@ Notify on new launches via Discord bot channel (recommended) or webhook, and/or 
 
 When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
 
+**Optional env when using /setup:** You can leave **DISCORD_ALERT_CHANNEL_ID**, **DISCORD_WATCH_ALERT_CHANNEL_ID**, **BANKR_API_KEY**, **FILTER_X_MATCH**, and **DISCORD_WEBHOOK_URL** unset (or blank). Each server configures API key, alert channel, watch channel, and rules via **/setup** in Discord. When those env vars are not set, launch alerts are sent to **each server’s /setup channels** (every server that has run /setup with an alert channel gets the feed). So you only need **DISCORD_BOT_TOKEN** (and **DISCORD_CLIENT_ID** for register) in env; the rest can be configured per server. If you do set the env channels, they take precedence (single global feed to those channels).
+
 - **/watch** — Manage the launch watch list (add/remove X, Farcaster, wallet, keyword).
 - **/claim-watch** — Get notified when a token’s fees are claimed: add/remove/list token addresses; alerts post to your watch or alert channel when claimable drops.
 - **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.

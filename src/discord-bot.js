@@ -400,8 +400,8 @@ async function registerCommands(appId) {
 }
 
 async function runNotify() {
-  const hasChannel = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
-  if (hasChannel) {
+  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  if (hasEnvChannels) {
     try {
       const { newLaunches } = await runNotifyCycle();
       const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
@@ -442,14 +442,40 @@ async function runNotify() {
       console.error("Notify failed:", e.message);
     }
   } else {
-    return new Promise((resolve, reject) => {
-      const child = spawn(
-        process.execPath,
-        [join(__dirname, "notify.js")],
-        { stdio: "inherit", env: process.env }
-      );
-      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
-    });
+    const guildIds = await listActiveTenantGuildIds();
+    const tenantsWithChannels = [];
+    for (const gid of guildIds) {
+      const t = await getTenant(gid);
+      if (t && (t.alertChannelId || t.watchAlertChannelId)) tenantsWithChannels.push({ guildId: gid, ...t });
+    }
+    if (tenantsWithChannels.length > 0) {
+      try {
+        const { newLaunches } = await runNotifyCycle();
+        for (const launch of newLaunches) {
+          const embed = buildLaunchEmbed(launch);
+          const showInAlert = launch.passedFilters !== false;
+          const showInWatch = launch.isWatchMatch;
+          for (const tenant of tenantsWithChannels) {
+            const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
+            const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
+            if (alertCh && showInAlert) await alertCh.send({ embeds: [embed] }).catch(() => {});
+            if (watchCh && showInWatch && watchCh?.id !== alertCh?.id) await watchCh.send({ embeds: [embed] }).catch(() => {});
+          }
+          await sendTelegram(launch);
+        }
+      } catch (e) {
+        console.error("Notify failed:", e.message);
+      }
+    } else {
+      return new Promise((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [join(__dirname, "notify.js")],
+          { stdio: "inherit", env: process.env }
+        );
+        child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+      });
+    }
   }
   await runClaimWatchCycle().catch((e) => console.error("Claim watch cycle failed:", e.message));
 }
