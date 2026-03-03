@@ -353,6 +353,8 @@ When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and *
 - **/claim-watch** — Get notified when a token’s fees are claimed: add/remove/list token addresses; alerts post to your watch or alert channel when claimable drops.
 - **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.
 
+**Who can do what:** Only server admins (Discord **Manage Server** permission) can run **/setup**, **/settings**, **/watch add**, **/watch remove**, **/claim-watch add**, **/claim-watch remove**, and **/deploy**. Everyone can use **/lookup**, **/wallet-lookup**, **/fees-token**, **/watch list**, **/claim-watch list**, **/help**, and the token paste/mention fee replies (read-only).
+
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 
 **Two feeds:**
@@ -373,6 +375,7 @@ Use two different channels so you get every deployment in one place and your wat
 2. **Telegram bot**
    - Message [@BotFather](https://t.me/BotFather) → `/newbot` → get token
    - For your chat ID: message [@userinfobot](https://t.me/userinfobot) or use [getUpdates](https://api.telegram.org/bot<TOKEN>/getUpdates) after sending the bot a message
+   - Telegram is **receive-only**: the app sends launch alerts to the configured chat. It does not accept commands from Telegram users (no settings or watchlist in Telegram).
 
 3. **Environment variables**
    ```bash

@@ -18,6 +18,7 @@ import {
   ComponentType,
   GatewayIntentBits,
   MessageFlags,
+  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -52,6 +53,13 @@ const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
+
+/** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
+function canManageServer(interaction) {
+  if (!interaction.guildId || !interaction.member) return false;
+  const perms = interaction.member.permissions;
+  return perms?.has(PermissionFlagsBits.ManageGuild) || perms?.has(PermissionFlagsBits.Administrator);
+}
 
 function getLookupPagination(matches, page) {
   const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
@@ -720,7 +728,14 @@ client.on("messageCreate", async (message) => {
         }
       }
     }
+    if (out.hookFees && !claimableLine) {
+      feeParts.push("**Claimable:** 0 WETH · 0 token (no unclaimed fees yet).");
+    }
     if (feeParts.length > 0) {
+      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
+      feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
+    } else if (out.launch) {
+      feeParts.push("_No fee data yet — indexer may not have this pool, or set RPC_URL_BASE for on-chain claimable._");
       const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
       feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
     }
@@ -885,6 +900,13 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "deploy") {
+    if (interaction.guildId && !canManageServer(interaction)) {
+      await interaction.reply({
+        content: "Only server admins (Manage Server permission) can run **/deploy**.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     const name = interaction.options.getString("name");
     const symbol = interaction.options.getString("symbol");
     const description = interaction.options.getString("description");
@@ -979,6 +1001,13 @@ client.on("interactionCreate", async (interaction) => {
       });
       return;
     }
+    if (!canManageServer(interaction)) {
+      await interaction.reply({
+        content: "Only server admins (Manage Server permission) can run **/setup**.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const apiKey = interaction.options.getString("api_key")?.trim();
@@ -1026,6 +1055,13 @@ client.on("interactionCreate", async (interaction) => {
     if (!guildId) {
       await interaction.reply({
         content: "Settings are only available in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (!canManageServer(interaction)) {
+      await interaction.reply({
+        content: "Only server admins (Manage Server permission) can run **/settings**.",
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -1112,6 +1148,14 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if ((sub === "add" || sub === "remove") && !canManageServer(interaction)) {
+      await interaction.reply({
+        content: "Only server admins (Manage Server permission) can **add** or **remove** tokens from the claim watch list. Use **/claim-watch list** to view.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     try {
       if (sub === "add") {
         const tokenAddress = interaction.options.getString("token_address");
@@ -1159,6 +1203,14 @@ client.on("interactionCreate", async (interaction) => {
   const value = interaction.options.getString("value");
   const guildId = interaction.guildId ?? null;
   const useTenant = guildId && (await getTenant(guildId));
+
+  if ((sub === "add" || sub === "remove") && guildId && !canManageServer(interaction)) {
+    await interaction.reply({
+      content: "Only server admins (Manage Server permission) can **add** or **remove** watch list entries. Use **/watch list** to view.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
 
   try {
     if (sub === "add") {
