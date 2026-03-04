@@ -359,6 +359,8 @@ When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and *
 
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 
+**Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, `/fees-token`, paste token, mention fees, `/deploy`, `/watch list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
+
 **Two feeds:**
 
 | Variable | Purpose |

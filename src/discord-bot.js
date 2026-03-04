@@ -36,6 +36,7 @@ import {
   getClaimWatchTokens,
   addClaimWatchToken,
   removeClaimWatchToken,
+  getTenantStats,
 } from "./tenant-store.js";
 import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
@@ -49,6 +50,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
+const DEBUG_WEBHOOK_URL = process.env.DISCORD_DEBUG_WEBHOOK_URL;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
@@ -59,6 +61,28 @@ function canManageServer(interaction) {
   if (!interaction.guildId || !interaction.member) return false;
   const perms = interaction.member.permissions;
   return perms?.has(PermissionFlagsBits.ManageGuild) || perms?.has(PermissionFlagsBits.Administrator);
+}
+
+/** Send a line to the debug webhook (activity log). No-op if DISCORD_DEBUG_WEBHOOK_URL not set. */
+function debugLogActivity(serverNameOrId, userTag, action, detail) {
+  if (!DEBUG_WEBHOOK_URL) return;
+  const server = serverNameOrId || "DM";
+  const detailStr = detail != null ? String(detail).slice(0, 200) : "";
+  const body = JSON.stringify({
+    content: `\`[${server}]\` **${userTag}** · ${action}${detailStr ? ` · ${detailStr}` : ""}`,
+  });
+  fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
+}
+
+/** Send an error to the debug webhook. No-op if DISCORD_DEBUG_WEBHOOK_URL not set. */
+function debugLogError(err, context) {
+  if (!DEBUG_WEBHOOK_URL) return;
+  const message = err?.message ?? String(err);
+  const stack = err?.stack?.slice(0, 800);
+  const body = JSON.stringify({
+    content: `**Error** ${context ? `(${context})` : ""}\n\`\`\`\n${message}${stack ? `\n${stack}` : ""}\n\`\`\``,
+  });
+  fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
 }
 
 function getLookupPagination(matches, page) {
@@ -145,8 +169,50 @@ async function registerCommands(appId) {
   const rest = new REST().setToken(TOKEN);
   const commands = [
     new SlashCommandBuilder()
+      .setName("lookup")
+      .setDescription("Search Bankr tokens by deployer or fee recipient (wallet, X, or Farcaster)")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
+          .setRequired(true)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("by")
+          .setDescription("Limit to deployer, fee recipient, or both")
+          .setRequired(false)
+          .addChoices(
+            { name: "Deployer", value: "deployer" },
+            { name: "Fee recipient", value: "fee" },
+            { name: "Both (default)", value: "both" }
+          )
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("wallet-lookup")
+      .setDescription("Wallet lookup: get the wallet address for an X or Farcaster account")
+      .addStringOption((o) =>
+        o
+          .setName("query")
+          .setDescription("X handle (@user), Farcaster handle, or profile URL (e.g. x.com/gork)")
+          .setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("fees-token")
+      .setDescription("Show accrued/claimable fees for a Bankr token (by address or launch URL)")
+      .addStringOption((o) =>
+        o
+          .setName("token")
+          .setDescription("Token address (0x...) or Bankr launch URL (e.g. bankr.bot/launches/0x...)")
+          .setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
       .setName("watch")
       .setDescription("Manage Bankr launch watch list")
+      .addSubcommand((s) => s.setName("list").setDescription("Show current watch list"))
       .addSubcommand((s) =>
         s
           .setName("add")
@@ -179,37 +245,26 @@ async function registerCommands(appId) {
             o.setName("value").setDescription("Handle, address, or keyword to remove").setRequired(true)
           )
       )
-      .addSubcommand((s) => s.setName("list").setDescription("Show current watch list"))
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("lookup")
-      .setDescription("Search Bankr tokens by deployer or fee recipient (wallet, X, or Farcaster)")
-      .addStringOption((o) =>
-        o
-          .setName("query")
-          .setDescription("Wallet (0x...), X handle (@user or link), or Farcaster (user or link)")
-          .setRequired(true)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("by")
-          .setDescription("Limit to deployer, fee recipient, or both")
-          .setRequired(false)
-          .addChoices(
-            { name: "Deployer", value: "deployer" },
-            { name: "Fee recipient", value: "fee" },
-            { name: "Both (default)", value: "both" }
+      .setName("claim-watch")
+      .setDescription("Get notified when a token's fees are claimed")
+      .addSubcommand((s) => s.setName("list").setDescription("List tokens on the claim watch list"))
+      .addSubcommand((s) =>
+        s
+          .setName("add")
+          .setDescription("Add a token to the claim watch list")
+          .addStringOption((o) =>
+            o.setName("token_address").setDescription("Token contract address (0x...)").setRequired(true)
           )
       )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("wallet-lookup")
-      .setDescription("Wallet lookup: get the wallet address for an X or Farcaster account")
-      .addStringOption((o) =>
-        o
-          .setName("query")
-          .setDescription("X handle (@user), Farcaster handle, or profile URL (e.g. x.com/gork)")
-          .setRequired(true)
+      .addSubcommand((s) =>
+        s
+          .setName("remove")
+          .setDescription("Remove a token from the claim watch list")
+          .addStringOption((o) =>
+            o.setName("token_address").setDescription("Token address to stop watching").setRequired(true)
+          )
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -277,16 +332,6 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("fees-token")
-      .setDescription("Show accrued/claimable fees for a Bankr token (by address or launch URL)")
-      .addStringOption((o) =>
-        o
-          .setName("token")
-          .setDescription("Token address (0x...) or Bankr launch URL (e.g. bankr.bot/launches/0x...)")
-          .setRequired(true)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
       .setName("setup")
       .setDescription("Configure Bankr monitor for this server (API key, channels, rules)")
       .addStringOption((o) =>
@@ -329,13 +374,18 @@ async function registerCommands(appId) {
     new SlashCommandBuilder()
       .setName("settings")
       .setDescription("View or edit this server's Bankr monitor config")
-      .addSubcommand((s) => s.setName("show").setDescription("Show current config (channels, rules; API key hidden)"))
       .addSubcommand((s) =>
         s
-          .setName("api_key")
-          .setDescription("Update your Bankr API key")
-          .addStringOption((o) =>
-            o.setName("key").setDescription("New Bankr API key").setRequired(true)
+          .setName("rules")
+          .setDescription("Update monitoring rules")
+          .addBooleanOption((o) =>
+            o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
+          )
+          .addIntegerOption((o) =>
+            o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
+          )
+          .addNumberOption((o) =>
+            o.setName("poll_interval_min").setDescription("Minutes between checks").setRequired(false)
           )
       )
       .addSubcommand((s) =>
@@ -351,43 +401,17 @@ async function registerCommands(appId) {
       )
       .addSubcommand((s) =>
         s
-          .setName("rules")
-          .setDescription("Update monitoring rules")
-          .addBooleanOption((o) =>
-            o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
-          )
-          .addIntegerOption((o) =>
-            o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
-          )
-          .addNumberOption((o) =>
-            o.setName("poll_interval_min").setDescription("Minutes between checks").setRequired(false)
+          .setName("api_key")
+          .setDescription("Update your Bankr API key")
+          .addStringOption((o) =>
+            o.setName("key").setDescription("New Bankr API key").setRequired(true)
           )
       )
+      .addSubcommand((s) => s.setName("show").setDescription("Show current config (channels, rules; API key hidden)"))
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
       .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup, deploy)")
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("claim-watch")
-      .setDescription("Get notified when a token's fees are claimed")
-      .addSubcommand((s) =>
-        s
-          .setName("add")
-          .setDescription("Add a token to the claim watch list")
-          .addStringOption((o) =>
-            o.setName("token_address").setDescription("Token contract address (0x...)").setRequired(true)
-          )
-      )
-      .addSubcommand((s) =>
-        s
-          .setName("remove")
-          .setDescription("Remove a token from the claim watch list")
-          .addStringOption((o) =>
-            o.setName("token_address").setDescription("Token address to stop watching").setRequired(true)
-          )
-      )
-      .addSubcommand((s) => s.setName("list").setDescription("List tokens on the claim watch list"))
       .toJSON(),
   ];
 
@@ -465,6 +489,7 @@ async function runNotify() {
         }
       } catch (e) {
         console.error("Notify failed:", e.message);
+        debugLogError(e, "runNotify (tenant channels)");
       }
     } else {
       return new Promise((resolve, reject) => {
@@ -477,7 +502,10 @@ async function runNotify() {
       });
     }
   }
-  await runClaimWatchCycle().catch((e) => console.error("Claim watch cycle failed:", e.message));
+  await runClaimWatchCycle().catch((e) => {
+    console.error("Claim watch cycle failed:", e.message);
+    debugLogError(e, "runClaimWatchCycle");
+  });
 }
 
 const CLAIM_WATCH_DECIMALS = 18;
@@ -541,13 +569,32 @@ client.once("ready", async () => {
     console.log(`Launch alerts will post to channel ${ALERT_CHANNEL_ID}`);
   }
   if (!ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
-    console.log("DISCORD_ALERT_CHANNEL_ID and DISCORD_WATCH_ALERT_CHANNEL_ID not set; falling back to webhook (notify.js)");
+    console.log("DISCORD_ALERT_CHANNEL_ID and DISCORD_WATCH_ALERT_CHANNEL_ID not set; alerts go to each server's /setup channels or notify.js webhook.");
+  }
+
+  if (DEBUG_WEBHOOK_URL) {
+    try {
+      const guildCount = client.guilds.cache.size;
+      const stats = await getTenantStats();
+      const body = JSON.stringify({
+        content: `**BankrMonitor** · In **${guildCount}** Discord server(s) · **${stats.configuredGuilds}** with /setup · **${stats.guildsWithTelegram}** with Telegram`,
+      });
+      await fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    } catch (e) {
+      console.error("Debug webhook stats failed:", e.message);
+    }
   }
 
   setInterval(() => {
-    runNotify().catch((e) => console.error("Notify failed:", e.message));
+    runNotify().catch((e) => {
+      console.error("Notify failed:", e.message);
+      debugLogError(e, "runNotify");
+    });
   }, INTERVAL);
-  runNotify().catch((e) => console.error("Notify failed:", e.message));
+  runNotify().catch((e) => {
+    console.error("Notify failed:", e.message);
+    debugLogError(e, "runNotify");
+  });
 });
 
 // Prune stale lookup cache entries
@@ -723,6 +770,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
     await replyFeesForMessage(message, tokenAddress);
+    debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "mention fees", tokenAddress);
     return;
   }
 
@@ -769,7 +817,10 @@ client.on("messageCreate", async (message) => {
       embed.fields.splice(3, 0, { name: "Fees", value: feeParts.join("\n"), inline: false });
     }
     await message.reply({ embeds: [embed] }).catch(() => {});
+    debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste token", tokenAddress);
   } catch (e) {
+    console.error("Token paste failed:", e.message);
+    debugLogError(e, "messageCreate paste");
     await message.reply(`Token lookup failed: ${e.message}`).catch(() => {});
   }
 });
@@ -816,7 +867,10 @@ client.on("interactionCreate", async (interaction) => {
             "Otherwise use the wallet address (0x...) directly.",
         });
       }
+      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/wallet-lookup", query);
     } catch (e) {
+      console.error("Wallet lookup failed:", e.message);
+      debugLogError(e, "wallet-lookup");
       await interaction.editReply({ content: `Resolve failed: ${e.message}` }).catch(() => {});
     }
     return;
@@ -839,6 +893,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}${hint}`,
         });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/lookup", `${searchQ} (0 results)`);
         return;
       }
       const data = {
@@ -859,7 +914,10 @@ client.on("interactionCreate", async (interaction) => {
       }
       const msg = await interaction.editReply(payload);
       if (msg && matches.length > LOOKUP_PAGE_SIZE) lookupCache.set(msg.id, data);
+      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/lookup", `${searchQ} (${totalCount} tokens)`);
     } catch (e) {
+      console.error("Lookup failed:", e.message);
+      debugLogError(e, "lookup");
       await interaction.editReply({ content: `Lookup failed: ${e.message}` }).catch(() => {});
     }
     return;
@@ -965,6 +1023,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `**Simulated deploy** (no tx broadcast).\nPredicted token address: \`${result.tokenAddress ?? "—"}\``,
         });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/deploy", "simulate");
         return;
       }
       const tokenAddr = result.tokenAddress ?? "";
@@ -990,7 +1049,10 @@ client.on("interactionCreate", async (interaction) => {
         footer: { text: footerParts.join("") },
       };
       await interaction.editReply({ embeds: [embed] });
+      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/deploy", result.tokenAddress ?? "ok");
     } catch (e) {
+      console.error("Deploy failed:", e.message);
+      debugLogError(e, "deploy");
       await interaction.editReply({ content: `Deploy failed: ${e.message}` }).catch(() => {});
     }
     return;
@@ -1012,7 +1074,10 @@ client.on("interactionCreate", async (interaction) => {
       const out = await getTokenFees(tokenAddress);
       const content = formatFeesTokenReply(out, tokenAddress);
       await interaction.editReply({ content });
+      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/fees-token", tokenAddress);
     } catch (e) {
+      console.error("Fees-token failed:", e.message);
+      debugLogError(e, "fees-token");
       await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
     }
     return;
@@ -1215,6 +1280,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `**Claim watch list** (${list.length} token${list.length === 1 ? "" : "s"}):\n\n${lines.join("\n")}\n\nYou'll be notified when fees are claimed for any of these tokens.`,
           flags: MessageFlags.Ephemeral,
         });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/claim-watch list", `${list.length} tokens`);
       }
     } catch (e) {
       await interaction.reply({ content: `Claim watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1355,6 +1421,7 @@ client.on("interactionCreate", async (interaction) => {
           "**Keywords:** " + (keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_"),
         ];
         await interaction.reply({ content: lines.join("\n"), flags: MessageFlags.Ephemeral });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/watch list", "");
       } else {
         const { wallet, keywords } = await list();
         const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
@@ -1363,11 +1430,25 @@ client.on("interactionCreate", async (interaction) => {
           content: `**Watch list** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup** to use a per-server watchlist.`,
           flags: MessageFlags.Ephemeral,
         });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/watch list", "global");
       }
     }
   } catch (e) {
+    console.error("Watch command failed:", e.message);
+    debugLogError(e, "watch");
     await interaction.reply({ content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 });
+
+if (DEBUG_WEBHOOK_URL) {
+  process.on("uncaughtException", (err) => {
+    console.error("Uncaught exception:", err);
+    debugLogError(err, "uncaughtException");
+  });
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("Unhandled rejection:", reason);
+    debugLogError(reason instanceof Error ? reason : new Error(String(reason)), "unhandledRejection");
+  });
+}
 
 client.login(TOKEN);

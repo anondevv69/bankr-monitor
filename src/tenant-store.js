@@ -101,6 +101,19 @@ export async function listActiveTenantGuildIds() {
   });
 }
 
+/** Stats for debug webhook: configured servers and Telegram chats. */
+export async function getTenantStats() {
+  const tenants = await loadAll();
+  let guildsWithTelegram = 0;
+  for (const t of Object.values(tenants)) {
+    if (t && t.telegramChatId) guildsWithTelegram++;
+  }
+  return {
+    configuredGuilds: Object.keys(tenants).length,
+    guildsWithTelegram,
+  };
+}
+
 /**
  * Get watchlist for a guild from tenant config (or default).
  */
