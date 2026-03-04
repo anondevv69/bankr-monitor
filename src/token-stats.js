@@ -408,7 +408,7 @@ async function fetchHookFeesOnChain(poolId) {
     const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
     const publicClient = viem.createPublicClient({
       chain,
-      transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org"),
+      transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL || "https://mainnet.base.org"),
     });
     const { getAddresses } = await import("@whetstone-research/doppler-sdk");
     const { rehypeDopplerHookAbi } = await import("@whetstone-research/doppler-sdk");

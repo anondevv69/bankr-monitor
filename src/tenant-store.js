@@ -47,6 +47,7 @@ export async function getTenant(guildId) {
     bankrApiKey: t.bankrApiKey ?? null,
     alertChannelId: t.alertChannelId ?? null,
     watchAlertChannelId: t.watchAlertChannelId ?? null,
+    agentAlertChannelId: t.agentAlertChannelId ?? null,
     telegramChatId: t.telegramChatId ?? null,
     rules: { ...DEFAULT_RULES, ...t.rules },
     watchlist: { ...DEFAULT_WATCHLIST, ...t.watchlist },
@@ -61,7 +62,7 @@ export async function getTenant(guildId) {
 /**
  * Set (create or update) tenant config for a guild.
  * @param {string} guildId
- * @param {Partial<{ bankrApiKey: string, alertChannelId: string, watchAlertChannelId: string, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
+ * @param {Partial<{ bankrApiKey: string, alertChannelId: string, watchAlertChannelId: string, agentAlertChannelId: string, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
  */
 export async function setTenant(guildId, updates) {
   if (!guildId || typeof guildId !== "string") return null;
@@ -97,7 +98,7 @@ export async function listActiveTenantGuildIds() {
   const tenants = await loadAll();
   return Object.keys(tenants).filter((id) => {
     const t = tenants[id];
-    return t && (t.alertChannelId || t.watchAlertChannelId || t.telegramChatId);
+    return t && (t.alertChannelId || t.watchAlertChannelId || t.telegramChatId || t.agentAlertChannelId);
   });
 }
 

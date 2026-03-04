@@ -128,8 +128,9 @@ function formatBankrLaunch(l) {
   };
 }
 
-async function fetchFromBankrApi() {
-  if (!BANKR_API_KEY) return null;
+async function fetchFromBankrApi(apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key) return null;
   try {
     const seen = new Set();
     const allLaunches = [];
@@ -141,7 +142,7 @@ async function fetchFromBankrApi() {
       const url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}${orderParam}`;
       const res = await fetch(url, {
         headers: {
-          "X-API-Key": BANKR_API_KEY,
+          "X-API-Key": key,
           Accept: "application/json",
         },
       });
@@ -176,12 +177,13 @@ async function fetchFromBankrApi() {
 }
 
 /** Fetch one launch by token address (Bankr GET token-launches/:address). Returns full launch with deployer/feeRecipient or null. */
-async function fetchSingleBankrLaunch(tokenAddress) {
-  if (!BANKR_API_KEY || !tokenAddress) return null;
+async function fetchSingleBankrLaunch(tokenAddress, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key || !tokenAddress) return null;
   try {
     const url = `https://api.bankr.bot/token-launches/${encodeURIComponent(tokenAddress)}`;
     const res = await fetch(url, {
-      headers: { Accept: "application/json", "X-API-Key": BANKR_API_KEY },
+      headers: { Accept: "application/json", "X-API-Key": key },
     });
     if (!res.ok) return null;
     const json = await res.json();
@@ -193,9 +195,10 @@ async function fetchSingleBankrLaunch(tokenAddress) {
   return null;
 }
 
-async function fetchLaunches() {
-  if (BANKR_API_KEY && CHAIN_ID === 8453) {
-    const bankrLaunches = await fetchFromBankrApi();
+async function fetchLaunches(apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (key && CHAIN_ID === 8453) {
+    const bankrLaunches = await fetchFromBankrApi(key);
     if (bankrLaunches?.length > 0) return bankrLaunches;
   }
 
@@ -610,14 +613,17 @@ export async function sendTelegram(launch, options = {}) {
   }
 }
 
-/** Run one notify cycle: fetch, filter, update seen. Returns new launches (enriched) and whether they are watch-list matches. */
-export async function runNotifyCycle() {
+/** Run one notify cycle: fetch, filter, update seen. Returns new launches (enriched) and totalCount.
+ * @param {{ bankrApiKey?: string }} [options] - When provided (e.g. from Discord tenant), use this key for Bankr API so cycle works without env key.
+ */
+export async function runNotifyCycle(options = {}) {
+  const cycleApiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const seenArr = await loadSeen();
   const deployCounts = await loadDeployCounts();
 
-  const source = BANKR_API_KEY && CHAIN_ID === 8453 ? "Bankr API" : `indexer=${DOPPLER_INDEXER_URL}`;
+  const source = cycleApiKey && CHAIN_ID === 8453 ? "Bankr API" : `indexer=${DOPPLER_INDEXER_URL}`;
   console.log(`Fetching launches (chainId=${CHAIN_ID}, ${source})...`);
-  const launches = await fetchLaunches();
+  const launches = await fetchLaunches(cycleApiKey);
   if (!launches?.length) {
     console.log("No launches found. Check: CHAIN_ID matches your indexer (84532=testnet, 8453=mainnet). For Base mainnet add RPC_URL_BASE as fallback.");
     return { newLaunches: [], totalCount: 0 };
@@ -668,13 +674,13 @@ export async function runNotifyCycle() {
 
   // When list API omits deployer/feeRecipient, fetch single-launch for watch matching (Bankr GET token-launches/:address)
   const SINGLE_LAUNCH_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_SINGLE_LAUNCH_FETCH_LIMIT || "15", 10), 25);
-  if (hasWatchList && watchWallet.size > 0 && newLaunches.length > 0 && BANKR_API_KEY && CHAIN_ID === 8453) {
+  if (hasWatchList && watchWallet.size > 0 && newLaunches.length > 0 && cycleApiKey && CHAIN_ID === 8453) {
     let fetched = 0;
     for (const launch of newLaunches) {
       if (fetched >= SINGLE_LAUNCH_FETCH_LIMIT) break;
       const hasWallet = launch.launcher || (launch.beneficiaries?.length > 0);
       if (hasWallet) continue;
-      const raw = await fetchSingleBankrLaunch(launch.tokenAddress);
+      const raw = await fetchSingleBankrLaunch(launch.tokenAddress, cycleApiKey);
       if (!raw) continue;
       fetched++;
       const filled = formatBankrLaunch(raw);

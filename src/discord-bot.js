@@ -44,6 +44,7 @@ import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
+import { getNewAgentProfiles } from "./agent-profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -352,6 +353,12 @@ async function registerCommands(appId) {
           .setDescription("Channel for watch-list matches only (optional)")
           .setRequired(false)
       )
+      .addChannelOption((o) =>
+        o
+          .setName("agent_channel")
+          .setDescription("Channel for new Bankr agent profile alerts (optional)")
+          .setRequired(false)
+      )
       .addBooleanOption((o) =>
         o
           .setName("filter_x_match")
@@ -398,6 +405,9 @@ async function registerCommands(appId) {
           .addChannelOption((o) =>
             o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
           )
+          .addChannelOption((o) =>
+            o.setName("agent_channel").setDescription("Channel for new agent profile alerts").setRequired(false)
+          )
       )
       .addSubcommand((s) =>
         s
@@ -421,6 +431,50 @@ async function registerCommands(appId) {
   } catch (e) {
     console.error("Failed to register commands:", e.message);
   }
+}
+
+/** Per-tenant filter: same logic as notify.js passesFilters but using tenant rules. */
+function tenantPassesFilters(launch, rules) {
+  const filterXMatch = rules?.filterXMatch === true;
+  const filterMaxDeploys = rules?.filterMaxDeploys != null ? Number(rules.filterMaxDeploys) : null;
+  if (filterXMatch) {
+    const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
+    const normFc = (u) => (u && typeof u === "string" ? String(u).trim().toLowerCase() : null);
+    const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
+    const feeX = launch.beneficiaries?.[0]?.xUsername ? normX(String(launch.beneficiaries[0].xUsername)) : null;
+    const deployerFc = launch.launcherFarcaster ? normFc(String(launch.launcherFarcaster)) : null;
+    const feeFc = launch.beneficiaries?.[0]?.farcaster ? normFc(String(launch.beneficiaries[0].farcaster)) : null;
+    const xMatch = deployerX && feeX && deployerX === feeX;
+    const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
+    if (!xMatch && !fcMatch) return false;
+  }
+  if (filterMaxDeploys != null && filterMaxDeploys > 0 && launch.deployCount != null && launch.deployCount > filterMaxDeploys) return false;
+  return true;
+}
+
+/** Per-tenant watch match: same logic as notify.js isWatchMatch but using tenant watch list. */
+function isWatchMatchForTenant(launch, watchList) {
+  const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
+  const normFc = (u) => (u && typeof u === "string" ? String(u).trim().toLowerCase() : null);
+  const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
+  const deployerFc = launch.launcherFarcaster ? normFc(String(launch.launcherFarcaster)) : null;
+  const normAddr = (a) => (a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null);
+  const launcherAddr = normAddr(launch.launcher);
+  const feeAddrs = (launch.beneficiaries || [])
+    .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
+    .map(normAddr)
+    .filter(Boolean);
+  const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
+  const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
+  const watchX = watchList?.x ?? new Set();
+  const watchFc = watchList?.fc ?? new Set();
+  const watchWallet = watchList?.wallet ?? new Set();
+  const watchKeywords = watchList?.keywords ?? new Set();
+  const inWatchX = deployerX && watchX.has(deployerX);
+  const inWatchFc = deployerFc && watchFc.has(deployerFc);
+  const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
+  const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some((kw) => searchText.includes(String(kw).toLowerCase().trim()));
+  return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
 }
 
 async function runNotify() {
@@ -474,17 +528,19 @@ async function runNotify() {
     }
     if (tenantsWithChannels.length > 0) {
       try {
-        const { newLaunches } = await runNotifyCycle();
+        const firstApiKey = tenantsWithChannels[0]?.bankrApiKey ?? process.env.BANKR_API_KEY;
+        const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
         for (const launch of newLaunches) {
           const embed = buildLaunchEmbed(launch);
-          const showInAlert = launch.passedFilters !== false;
-          const showInWatch = launch.isWatchMatch;
           for (const tenant of tenantsWithChannels) {
+            const showInAlert = tenantPassesFilters(launch, tenant.rules);
+            const watchList = await getWatchListForGuild(tenant.guildId);
+            const showInWatch = isWatchMatchForTenant(launch, watchList);
             const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
             if (alertCh && showInAlert) await alertCh.send({ embeds: [embed] }).catch(() => {});
             if (watchCh && showInWatch && watchCh?.id !== alertCh?.id) await watchCh.send({ embeds: [embed] }).catch(() => {});
-            if (tenant.telegramChatId) await sendTelegram(launch, { chatId: tenant.telegramChatId }).catch(() => {});
+            if (tenant.telegramChatId && (showInAlert || showInWatch)) await sendTelegram(launch, { chatId: tenant.telegramChatId }).catch(() => {});
           }
         }
       } catch (e) {
@@ -506,6 +562,65 @@ async function runNotify() {
     console.error("Claim watch cycle failed:", e.message);
     debugLogError(e, "runClaimWatchCycle");
   });
+  await runAgentProfilesCycle().catch((e) => {
+    console.error("Agent profiles cycle failed:", e.message);
+    debugLogError(e, "runAgentProfilesCycle");
+  });
+}
+
+/** Build a Discord embed for a new Bankr Agent Profile. */
+function buildAgentProfileEmbed(profile) {
+  const slug = profile.slug || profile.id || "";
+  const url = slug ? `https://bankr.bot/agent-profiles/${encodeURIComponent(slug)}` : "https://bankr.bot/agents";
+  const title = profile.projectName || "New Agent";
+  const symbol = profile.tokenSymbol ? ` ($${profile.tokenSymbol})` : "";
+  const embed = {
+    title: `🆕 New Agent Profile · ${title}${symbol}`,
+    url,
+    color: 0x5865f2,
+    description: profile.description ? String(profile.description).slice(0, 500) : null,
+    fields: [],
+    footer: { text: "Bankr Agent Profiles · bankr.bot/agents" },
+    timestamp: profile.createdAt ? new Date(profile.createdAt).toISOString() : undefined,
+  };
+  if (profile.marketCapUsd != null && profile.marketCapUsd > 0) {
+    const fmt = profile.marketCapUsd >= 1e6 ? `${(profile.marketCapUsd / 1e6).toFixed(2)}M` : profile.marketCapUsd >= 1e3 ? `${(profile.marketCapUsd / 1e3).toFixed(2)}K` : String(profile.marketCapUsd);
+    embed.fields.push({ name: "Market cap", value: `$${fmt}`, inline: true });
+  }
+  if (profile.weeklyRevenueWeth != null && profile.weeklyRevenueWeth !== "" && Number(profile.weeklyRevenueWeth) > 0) {
+    embed.fields.push({ name: "Weekly revenue (WETH)", value: String(profile.weeklyRevenueWeth), inline: true });
+  }
+  if (profile.tokenAddress) {
+    embed.fields.push({ name: "Token", value: `\`${profile.tokenAddress}\``, inline: false });
+  }
+  embed.fields.push({ name: "View", value: `[Open on Bankr](${url})`, inline: false });
+  return embed;
+}
+
+async function runAgentProfilesCycle() {
+  const newProfiles = await getNewAgentProfiles({ limit: 30 });
+  if (newProfiles.length === 0) return;
+  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  if (hasEnvChannels) {
+    const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
+    for (const profile of newProfiles) {
+      const embed = buildAgentProfileEmbed(profile);
+      if (alertChannel) await alertChannel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
+    }
+  } else {
+    const guildIds = await listActiveTenantGuildIds();
+    for (const gid of guildIds) {
+      const tenant = await getTenant(gid);
+      const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId;
+      if (!channelId) continue;
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (!channel) continue;
+      for (const profile of newProfiles) {
+        const embed = buildAgentProfileEmbed(profile);
+        await channel.send({ embeds: [embed] }).catch(() => {});
+      }
+    }
+  }
 }
 
 const CLAIM_WATCH_DECIMALS = 18;
@@ -736,7 +851,7 @@ function formatFeesTokenReply(out, tokenAddress) {
         lines.push("_None claimed yet (claimable = accrued)._");
       }
     } else {
-      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** (Base RPC) in the bot env to enable._");
+      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env to enable._");
     }
     lines.push("");
   }
@@ -820,7 +935,7 @@ client.on("messageCreate", async (message) => {
       if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
         feeParts.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
       }
-      feeParts.push("_No fee data yet — indexer may not have this pool, or set RPC_URL_BASE for on-chain claimable._");
+      feeParts.push("_No fee data yet — indexer may not have this pool, or set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env for on-chain claimable._");
       const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
       feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
     }
@@ -1127,6 +1242,7 @@ client.on("interactionCreate", async (interaction) => {
       const apiKey = interaction.options.getString("api_key")?.trim();
       const alertChannel = interaction.options.getChannel("alert_channel");
       const watchChannel = interaction.options.getChannel("watch_channel");
+      const agentChannel = interaction.options.getChannel("agent_channel");
       const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
       const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
       const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
@@ -1140,6 +1256,7 @@ client.on("interactionCreate", async (interaction) => {
         bankrApiKey: apiKey,
         alertChannelId: alertChannel.id,
         watchAlertChannelId: watchChannel?.id ?? null,
+        agentAlertChannelId: agentChannel?.id ?? null,
         rules: {
           filterXMatch,
           filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
@@ -1151,6 +1268,7 @@ client.on("interactionCreate", async (interaction) => {
         "**Server config saved.**",
         `• Alert channel: ${alertChannel.name}`,
         watchChannel ? `• Watch channel: ${watchChannel.name}` : "• Watch channel: (none)",
+        agentChannel ? `• Agent alerts channel: ${agentChannel.name}` : "• Agent alerts channel: (none)",
         `• Filter X match: ${filterXMatch}`,
         filterMaxDeploys != null ? `• Max deploys/day: ${filterMaxDeploys}` : "",
         `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
@@ -1196,6 +1314,7 @@ client.on("interactionCreate", async (interaction) => {
           "**Current config** (API key hidden)",
           `• Alert channel: ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
           `• Watch channel: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
+          `• Agent alerts channel: ${tenant.agentAlertChannelId ? `<#${tenant.agentAlertChannelId}>` : "—"}`,
           `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
           `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
           `• Poll interval: ${((tenant.rules?.pollIntervalMs ?? 60000) / 60_000)} min`,
@@ -1219,9 +1338,11 @@ client.on("interactionCreate", async (interaction) => {
       if (sub === "channels") {
         const alertChannel = interaction.options.getChannel("alert_channel");
         const watchChannel = interaction.options.getChannel("watch_channel");
+        const agentChannel = interaction.options.getChannel("agent_channel");
         const updates = {};
         if (alertChannel) updates.alertChannelId = alertChannel.id;
         if (watchChannel !== null) updates.watchAlertChannelId = watchChannel?.id ?? null;
+        if (agentChannel !== null) updates.agentAlertChannelId = agentChannel?.id ?? null;
         if (Object.keys(updates).length === 0) {
           await interaction.editReply({ content: "Provide at least one channel to update." });
           return;

@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_BASE_RPC = "https://mainnet.base.org";
 
 function getRpcUrl() {
-  return process.env.RPC_URL_BASE || process.env.RPC_URL || PUBLIC_BASE_RPC;
+  return process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL || PUBLIC_BASE_RPC;
 }
 
 const AIRLOCK = DOPPLER_CONTRACTS_BASE.Airlock;
