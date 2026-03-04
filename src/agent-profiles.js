@@ -10,14 +10,19 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENT_PROFILES_API = "https://api.bankr.bot/agent-profiles";
+const AGENT_PROFILES_API = process.env.AGENT_PROFILES_API_URL || "https://api.bankr.bot/agent-profiles";
 const SEEN_AGENTS_FILE = process.env.SEEN_AGENTS_FILE || join(process.cwd(), ".bankr-seen-agents.json");
 const SEEN_AGENTS_MAX = Math.min(parseInt(process.env.SEEN_AGENTS_MAX || "500", 10), 2000);
+
+const FETCH_HEADERS = {
+  Accept: "application/json",
+  "User-Agent": "BankrMonitor/1.0 (Discord bot; https://github.com/anondevv69/bankr-monitor)",
+};
 
 /**
  * Fetch approved agent profiles (newest first). No auth required.
  * @param {{ limit?: number, offset?: number, sort?: 'marketCap'|'newest' }} [opts]
- * @returns {Promise<{ profiles: Array<{ id: string, slug: string, projectName: string, tokenSymbol?: string, tokenAddress?: string, marketCapUsd?: number, weeklyRevenueWeth?: string, createdAt?: string }>, total: number }>}
+ * @returns {Promise<{ profiles: Array<...>, total: number }>}
  */
 export async function fetchAgentProfiles(opts = {}) {
   const limit = opts.limit ?? 50;
@@ -25,7 +30,7 @@ export async function fetchAgentProfiles(opts = {}) {
   const sort = opts.sort ?? "newest";
   const url = `${AGENT_PROFILES_API}?sort=${sort}&limit=${limit}&offset=${offset}`;
   try {
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const res = await fetch(url, { headers: FETCH_HEADERS });
     if (!res.ok) {
       console.error(`[Agent profiles] API ${res.status} ${res.statusText}: ${url}`);
       return { profiles: [], total: 0 };
@@ -33,6 +38,9 @@ export async function fetchAgentProfiles(opts = {}) {
     const data = await res.json();
     const profiles = Array.isArray(data.profiles) ? data.profiles : [];
     const total = typeof data.total === "number" ? data.total : profiles.length;
+    if (profiles.length === 0 && res.ok) {
+      console.warn("[Agent profiles] API 200 but no profiles in response (check response shape)");
+    }
     return { profiles, total };
   } catch (e) {
     console.error("[Agent profiles] fetch failed:", e?.message);
