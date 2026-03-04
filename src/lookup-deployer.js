@@ -100,8 +100,10 @@ function mergeLaunchesWithoutDuplicates(launches, toAdd) {
 
 /** Fetch from Bankr search API (same as bankr.bot/launches/search).
  * Returns { launches, totalCount } or null on failure.
+ * apiKey: optional override (e.g. tenant's key); else uses env BANKR_API_KEY.
  * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
-async function fetchSearch(query) {
+async function fetchSearch(query, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;
   const seen = new Set();
@@ -114,7 +116,7 @@ async function fetchSearch(query) {
     while (true) {
       const url = `${SEARCH_API}?q=${q}&limit=${pageSize}&offset=${offset}`;
       const res = await fetch(url, {
-        headers: { Accept: "application/json", ...(BANKR_API_KEY && { "X-API-Key": BANKR_API_KEY }) },
+        headers: { Accept: "application/json", ...(key && { "X-API-Key": key }) },
       });
       if (!res.ok) break;
       const json = await res.json();
@@ -141,12 +143,14 @@ async function fetchSearch(query) {
   }
 }
 
-/** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. */
-async function fetchLaunchesPage(offset, pageSize = 50, order) {
+/** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. apiKey: optional override. */
+async function fetchLaunchesPage(offset, pageSize = 50, order, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key) return [];
   let url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
   if (order === "asc") url += "&order=asc";
   const res = await fetch(url, {
-    headers: { "X-API-Key": BANKR_API_KEY, Accept: "application/json" },
+    headers: { "X-API-Key": key, Accept: "application/json" },
   });
   if (!res.ok) return [];
   const json = await res.json();
@@ -155,9 +159,10 @@ async function fetchLaunchesPage(offset, pageSize = 50, order) {
 
 const FULL_LIST_CONCURRENCY = Math.min(parseInt(process.env.BANKR_FULL_LIST_CONCURRENCY || "10", 10), 20);
 
-/** Fetch launches from Bankr API (paginated, parallel). order: undefined (newest first) or "asc" (oldest first). */
-async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order) {
-  if (!BANKR_API_KEY) return [];
+/** Fetch launches from Bankr API (paginated, parallel). order: undefined (newest first) or "asc" (oldest first). apiKey: optional override. */
+async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key) return [];
   const out = [];
   const seen = new Set();
   const pageSize = 50;
@@ -171,7 +176,7 @@ async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order) {
       batchOffsets.push(o);
     }
     if (batchOffsets.length === 0) break;
-    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize, order)));
+    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize, order, key)));
     let hasLessThanFull = false;
     for (const batch of batches) {
       if (batch.length < pageSize) hasLessThanFull = true;
@@ -292,25 +297,28 @@ function parseQuery(query) {
 
 /**
  * Resolve an X or Farcaster handle (or URL) to a wallet address using Bankr launch data.
- * Requires BANKR_API_KEY. Returns the wallet if we have it in our launch list; otherwise null.
+ * Uses options.bankrApiKey when provided; otherwise env BANKR_API_KEY. Returns the wallet if we have it in our launch list; otherwise null.
+ * @param {string} query
+ * @param {{ bankrApiKey?: string }} [options]
  * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean }> }
  */
-export async function resolveHandleToWallet(query) {
+export async function resolveHandleToWallet(query, options = {}) {
+  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const { normalized, isWallet } = parseQuery(query);
   if (!normalized) return { wallet: null, normalized: null, isWallet: false };
   if (isWallet) return { wallet: normalized, normalized, isWallet: true };
   const overrides = getHandleOverrides();
   const overrideWallet = overrides.get(normalized);
   if (overrideWallet) return { wallet: overrideWallet, normalized, isWallet: false };
-  if (!BANKR_API_KEY) return { wallet: null, normalized, isWallet: false };
+  if (!apiKey) return { wallet: null, normalized, isWallet: false };
   // Try deploy-simulate first: one POST, no list fetches. Works even when list API is 429'd.
-  let wallet = await resolveHandleViaDeploySimulate(normalized) ?? null;
+  let wallet = await resolveHandleViaDeploySimulate(normalized, apiKey) ?? null;
   if (!wallet) {
-    const all = await fetchAllLaunches();
+    const all = await fetchAllLaunches(undefined, undefined, apiKey);
     let handleToWallet = buildHandleToWalletMap(all);
     wallet = handleToWallet.get(normalized) ?? null;
     if (!wallet && OLDEST_FETCH_LIMIT > 0) {
-      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
+      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
       const mapOld = buildHandleToWalletMap(oldest);
       for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
       wallet = handleToWallet.get(normalized) ?? null;
@@ -322,18 +330,20 @@ export async function resolveHandleToWallet(query) {
 /**
  * Resolve a handle to wallet by calling Bankr deploy API with simulateOnly: true.
  * Bankr resolves fee recipient (x/farcaster) server-side; the response includes feeDistribution.creator with the resolved address.
- * Requires BANKR_API_KEY with Agent API (write) access. Returns null if resolution fails or key missing.
+ * apiKey: required for the request (env or passed from caller).
  * @param {string} handle - Normalized handle (no @).
+ * @param {string} [apiKey] - Bankr API key (uses env if not provided).
  * @returns {Promise<string | null>} Resolved wallet (lowercase) or null.
  */
-async function resolveHandleViaDeploySimulate(handle) {
-  if (!BANKR_API_KEY || !handle) return null;
+async function resolveHandleViaDeploySimulate(handle, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key || !handle) return null;
   const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
   for (const type of typesToTry) {
     try {
       const res = await fetch(DEPLOY_API, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": BANKR_API_KEY.trim() },
+        headers: { "Content-Type": "application/json", "X-API-Key": key.trim() },
         body: JSON.stringify({
           tokenName: "ResolveCheck",
           simulateOnly: true,
@@ -359,15 +369,17 @@ async function resolveHandleViaDeploySimulate(handle) {
 }
 
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either
- *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first */
-export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest") {
+ *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first
+ *  @param options { bankrApiKey?: string } - optional; when provided (e.g. from Discord /setup), use this key instead of env */
+export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest", options = {}) {
+  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) return { matches: [], totalCount: 0, query: query };
 
   // When query is X/FC handle, resolve to wallet first so we always search by wallet (avoids "do resolve then lookup" manually)
   let resolvedWallet = null;
   if (!isWalletQuery && normalized) {
-    const resolved = await resolveHandleToWallet(query);
+    const resolved = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
     if (resolved.wallet) resolvedWallet = resolved.wallet;
   }
 
@@ -376,12 +388,12 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   let launches = [];
   let totalCount = 0;
   // Search by wallet when we resolved X/FC; otherwise by normalized form
-  let searchResult = await fetchSearch(effectiveQuery);
+  let searchResult = await fetchSearch(effectiveQuery, apiKey);
   // If handle (no wallet), also try @ prefix — Bankr search may index X as "@gork"; try when no results or after filter we'd have 0
   if (!resolvedWallet && normalized && !normalized.startsWith("@")) {
     const filteredFromFirst = searchResult ? searchResult.launches.filter(matches) : [];
     if (filteredFromFirst.length === 0) {
-      const withAt = await fetchSearch("@" + normalized);
+      const withAt = await fetchSearch("@" + normalized, apiKey);
       if (withAt && withAt.launches.length > 0) {
         searchResult = searchResult
           ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
@@ -394,14 +406,14 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     totalCount = searchResult.totalCount;
   }
   // Search API often caps or fails for wallet; with API key fetch list and filter by wallet. Wallet-only: smaller limit for speed.
-  if (BANKR_API_KEY) {
+  if (apiKey) {
     const isWalletOnly = isWalletQuery || !!resolvedWallet;
     const listLimit = isWalletOnly ? BANKR_WALLET_LOOKUP_LIMIT : BANKR_LAUNCHES_LIMIT;
-    let all = await fetchAllLaunches(listLimit);
+    let all = await fetchAllLaunches(listLimit, undefined, apiKey);
     let handleToWallet = buildHandleToWalletMap(all);
     for (const [h, w] of getHandleOverrides()) handleToWallet.set(h, w);
     if (!handleToWallet.has(normalized) && OLDEST_FETCH_LIMIT > 0) {
-      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc");
+      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
       const mapOld = buildHandleToWalletMap(oldest);
       for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
       const seenAddr = new Set(all.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
@@ -417,12 +429,12 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     if (!isWalletQuery && normalized) {
       let wallet = resolvedWallet ?? handleToWallet.get(normalized) ?? null;
       if (!wallet) {
-        const resolved = await resolveHandleToWallet(query);
+        const resolved = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
         wallet = resolved.wallet ?? null;
       }
       if (wallet) {
         if (!resolvedWallet) resolvedWallet = wallet;
-        const byWallet = await fetchSearch(wallet);
+        const byWallet = await fetchSearch(wallet, apiKey);
         if (byWallet?.launches?.length > 0) {
           const walletMatchesFn = (l) => launchMatches(l, wallet, true, filter);
           mergeLaunchesWithoutDuplicates(launches, byWallet.launches.filter(walletMatchesFn));

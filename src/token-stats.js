@@ -64,13 +64,13 @@ function normalizeAddress(addr) {
   return s.toLowerCase();
 }
 
-async function fetchBankrLaunch(tokenAddress) {
+async function fetchBankrLaunch(tokenAddress, apiKey = BANKR_API_KEY) {
   const urls = [
     `${BANKR_LAUNCH_URL}/${tokenAddress}`,
     `${BANKR_LAUNCH_URL}/${tokenAddress.slice(0, 2) + tokenAddress.slice(2).toUpperCase()}`,
   ];
   const headers = { Accept: "application/json" };
-  if (BANKR_API_KEY) headers["X-API-Key"] = BANKR_API_KEY;
+  if (apiKey) headers["X-API-Key"] = apiKey;
   for (const url of urls) {
     try {
       const res = await fetch(url, { headers });
@@ -444,14 +444,16 @@ const SWAP_FEE_BPS = 120;
 /**
  * Get fee-relevant data for one Bankr token (for Discord /fees-token or CLI).
  * @param {string} tokenAddress - Normalized 0x address.
+ * @param {{ bankrApiKey?: string }} [options] - Optional. bankrApiKey overrides env (e.g. from Discord /setup).
  * @returns {Promise<{ tokenAddress: string, name: string, symbol: string, launch: object|null, feeRecipient: object|null, feeWallet: string|null, cumulatedFees: object|null, volumeUsd: string|null, estimatedCreatorFeesUsd: number|null, formatUsd: function, error?: string }>}
  */
-export async function getTokenFees(tokenAddress) {
+export async function getTokenFees(tokenAddress, options = {}) {
   const addr = normalizeAddress(tokenAddress);
   if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
 
+  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const [launch, doppler, poolState, dexMetrics] = await Promise.all([
-    fetchBankrLaunch(addr),
+    fetchBankrLaunch(addr, apiKey),
     fetchDopplerTokenVolume(addr),
     fetchDopplerPoolState(addr),
     fetchDexScreenerBaseToken(addr),

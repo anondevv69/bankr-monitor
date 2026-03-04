@@ -484,8 +484,8 @@ async function runNotify() {
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
             if (alertCh && showInAlert) await alertCh.send({ embeds: [embed] }).catch(() => {});
             if (watchCh && showInWatch && watchCh?.id !== alertCh?.id) await watchCh.send({ embeds: [embed] }).catch(() => {});
+            if (tenant.telegramChatId) await sendTelegram(launch, { chatId: tenant.telegramChatId }).catch(() => {});
           }
-          await sendTelegram(launch);
         }
       } catch (e) {
         console.error("Notify failed:", e.message);
@@ -524,7 +524,7 @@ async function runClaimWatchCycle() {
 
     for (const tokenAddress of tokens) {
       try {
-        const out = await getTokenFees(tokenAddress);
+        const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
         const hookFees = out.hookFees;
         const currentToken = hookFees ? Number(hookFees.beneficiaryFees0) / 10 ** CLAIM_WATCH_DECIMALS : 0;
         const currentWeth = hookFees ? Number(hookFees.beneficiaryFees1) / 10 ** CLAIM_WATCH_DECIMALS : 0;
@@ -609,7 +609,8 @@ function pruneLookupCache() {
 async function replyFeesForMessage(message, tokenAddress) {
   await message.channel.sendTyping().catch(() => {});
   try {
-    const out = await getTokenFees(tokenAddress);
+    const tenant = message.guildId ? await getTenant(message.guildId) : null;
+    const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
     if (out.launch) {
       await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
       return;
@@ -779,7 +780,8 @@ client.on("messageCreate", async (message) => {
   const tokenAddress = bankrTokens[0];
   await message.channel.sendTyping().catch(() => {});
   try {
-    const out = await getTokenFees(tokenAddress);
+    const tenant = message.guildId ? await getTenant(message.guildId) : null;
+    const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
     const embed = buildTokenDetailEmbed(out, tokenAddress);
     const feeParts = [];
     const claimableLine = out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
@@ -851,7 +853,8 @@ client.on("interactionCreate", async (interaction) => {
     const query = interaction.options.getString("query");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query);
+      const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
+      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query, { bankrApiKey: tenant?.bankrApiKey });
       if (wallet) {
         await interaction.editReply({
           content:
@@ -881,7 +884,8 @@ client.on("interactionCreate", async (interaction) => {
     const by = interaction.options.getString("by") || "both";
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by);
+      const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
+      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by, "newest", { bankrApiKey: tenant?.bankrApiKey });
       const searchQ = normalized || String(query).trim();
       const searchUrl = resolvedWallet
         ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
@@ -1018,7 +1022,7 @@ client.on("interactionCreate", async (interaction) => {
         feeRecipient: feeType && feeValue ? { type: feeType, value: feeValue } : undefined,
         simulateOnly,
       });
-      const result = await callBankrDeploy(body);
+      const result = await callBankrDeploy(body, { bankrApiKey: interaction.guildId ? (await getTenant(interaction.guildId))?.bankrApiKey : undefined });
       if (result.simulated) {
         await interaction.editReply({
           content: `**Simulated deploy** (no tx broadcast).\nPredicted token address: \`${result.tokenAddress ?? "—"}\``,
@@ -1071,7 +1075,8 @@ client.on("interactionCreate", async (interaction) => {
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const out = await getTokenFees(tokenAddress);
+      const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
+      const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
       const content = formatFeesTokenReply(out, tokenAddress);
       await interaction.editReply({ content });
       debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/fees-token", tokenAddress);
@@ -1317,7 +1322,8 @@ client.on("interactionCreate", async (interaction) => {
               : `**${type === "x" ? "@" : ""}${normalized || value}** is already on the watch list.`,
           });
         } else {
-          const { wallet, normalized: norm } = await resolveHandleToWallet(value);
+          const tenant = guildId ? await getTenant(guildId) : null;
+          const { wallet, normalized: norm } = await resolveHandleToWallet(value, { bankrApiKey: tenant?.bankrApiKey });
           if (!wallet) {
             await interaction.editReply({
               content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. Add a wallet address (0x...) directly with type **wallet**. Run **/setup** to use a per-server watchlist.`,
@@ -1371,7 +1377,8 @@ client.on("interactionCreate", async (interaction) => {
             content: ok ? `Removed **${type === "x" ? "@" : ""}${value}** from this server's watch list.` : "That handle was not on the watch list.",
           });
         } else {
-          const { wallet, normalized: norm } = await resolveHandleToWallet(value);
+          const tenant = guildId ? await getTenant(guildId) : null;
+          const { wallet, normalized: norm } = await resolveHandleToWallet(value, { bankrApiKey: tenant?.bankrApiKey });
           if (!wallet) {
             await interaction.editReply({
               content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. If you added by wallet, remove with type **wallet** and the address.`,

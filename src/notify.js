@@ -556,8 +556,9 @@ function escapeMarkdown(s) {
   return s.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
 }
 
-export async function sendTelegram(launch) {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT) return;
+export async function sendTelegram(launch, options = {}) {
+  const chatId = options.chatId ?? TELEGRAM_CHAT;
+  if (!TELEGRAM_TOKEN || !chatId) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
   let text = `[New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n\n`;
@@ -588,7 +589,7 @@ export async function sendTelegram(launch) {
   if (launch.website) text += `*Website:* ${launch.website}\n`;
 
   const img = launch.image ? imageUrl(launch.image) : null;
-  const basePayload = { chat_id: TELEGRAM_CHAT, disable_web_page_preview: true };
+  const basePayload = { chat_id: chatId, disable_web_page_preview: true };
 
   try {
     if (img) {

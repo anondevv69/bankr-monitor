@@ -75,17 +75,19 @@ function parseRateLimitHeaders(res) {
 /**
  * Call Bankr deploy API.
  * @param {ReturnType<buildDeployBody>} body - From buildDeployBody().
+ * @param {{ bankrApiKey?: string }} [options] - Optional. bankrApiKey overrides env (e.g. from Discord /setup).
  * @returns {Promise<{ success: boolean, tokenAddress?: string, poolId?: string, txHash?: string, activityId?: string, chain?: string, simulated?: boolean, feeDistribution?: object, rateLimit?: { remaining: number | null, limit: number | null, retryAfterSec: number | null }, error?: string }>}
  */
-export async function callBankrDeploy(body) {
-  if (!BANKR_API_KEY || !BANKR_API_KEY.trim()) {
+export async function callBankrDeploy(body, options = {}) {
+  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
     throw new Error("BANKR_API_KEY is not set. Get a key with Agent API access at bankr.bot/api");
   }
   const res = await fetch(DEPLOY_API, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-API-Key": BANKR_API_KEY.trim(),
+      "X-API-Key": apiKey.trim(),
     },
     body: JSON.stringify(body),
   });
@@ -95,7 +97,7 @@ export async function callBankrDeploy(body) {
     return { ...data, rateLimit };
   }
   const msg = data?.message || data?.error || res.statusText || `HTTP ${res.status}`;
-  if (res.status === 401) throw new Error("Invalid API key. Check BANKR_API_KEY.");
+  if (res.status === 401) throw new Error("Invalid API key. Check BANKR_API_KEY or server's /setup API key.");
   if (res.status === 403) throw new Error("API key must have Agent API (write) access. Enable at bankr.bot/api");
   if (res.status === 429) {
     const parts = [
