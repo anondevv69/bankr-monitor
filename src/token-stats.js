@@ -172,7 +172,27 @@ async function fetchPoolByBaseToken(tokenAddress) {
   const addr = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const addrLower = tokenAddress.toLowerCase();
 
-  // 1) Try pools (generic shape)
+  // 1) Prefer v4pools first — returns poolId (bytes32), which cumulatedFees and on-chain hook expect
+  const v4Query = `query GetV4Pools { v4pools(where: { baseToken: "${addr}", chainId: ${CHAIN_ID} }, limit: 1) { items { poolId } } }`;
+  try {
+    const res = await fetch(`${base}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: v4Query }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (!json.errors?.length) {
+        const items = json.data?.v4pools?.items ?? [];
+        const pool = items[0];
+        if (pool?.poolId) return { address: pool.poolId, id: pool.poolId };
+      }
+    }
+  } catch {
+    /* fallback */
+  }
+
+  // 2) Try pools (generic shape) — may return 40-char address; cumulatedFees may still accept it on some indexers
   const exactQuery = `query GetPools { pools(where: { baseToken: "${addr}", chainId: ${CHAIN_ID} }) { address } }`;
   try {
     const res = await fetch(`${base}/graphql`, {
@@ -191,26 +211,6 @@ async function fetchPoolByBaseToken(tokenAddress) {
     }
   } catch {
     /* fallback */
-  }
-
-  // 2) Doppler indexer: v4pools(where: { baseToken, chainId }) { items { poolId } } — no "address", use poolId
-  const v4Query = `query GetV4Pools { v4pools(where: { baseToken: "${addr}", chainId: ${CHAIN_ID} }, limit: 1) { items { poolId } } }`;
-  try {
-    const res = await fetch(`${base}/graphql`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: v4Query }),
-    });
-    if (res.ok) {
-      const json = await res.json();
-      if (!json.errors?.length) {
-        const items = json.data?.v4pools?.items ?? [];
-        const pool = items[0];
-        if (pool?.poolId) return { address: pool.poolId, id: pool.poolId };
-      }
-    }
-  } catch {
-    /* next */
   }
 
   // 3) Other fallbacks (pools with items, or v4pools with baseToken filter)
@@ -253,14 +253,24 @@ async function fetchPoolByBaseToken(tokenAddress) {
  */
 async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
   const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
-  const beneficiary = beneficiaryAddress && typeof beneficiaryAddress === "string"
-    ? beneficiaryAddress.trim().toLowerCase()
-    : beneficiaryAddress;
-  const vars = {
-    poolId: poolIdOrAddress,
-    chainId: CHAIN_ID,
-    beneficiary: beneficiary ?? beneficiaryAddress,
-  };
+  // Try original beneficiary first (indexer may store EIP-55 checksum); then try lowercase.
+  const beneficiariesToTry = [];
+  if (beneficiaryAddress && typeof beneficiaryAddress === "string") {
+    const trimmed = beneficiaryAddress.trim();
+    if (trimmed) {
+      beneficiariesToTry.push(trimmed);
+      const lower = trimmed.toLowerCase();
+      if (lower !== trimmed) beneficiariesToTry.push(lower);
+    }
+  }
+  if (beneficiariesToTry.length === 0) return null;
+
+  for (const beneficiary of beneficiariesToTry) {
+    const vars = {
+      poolId: poolIdOrAddress,
+      chainId: CHAIN_ID,
+      beneficiary,
+    };
   // Try Int first, then Float (indexer-prod.doppler.lol uses Float! for chainId)
   const queryInt = `
     query GetFees($poolId: String!, $chainId: Int!, $beneficiary: String!) {
@@ -312,13 +322,13 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: querySingular, variables: vars }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) continue;
     const json = await res.json();
-    if (json.errors?.length) return null;
+    if (json.errors?.length) continue;
     const fromSingular = json.data?.cumulatedFee ?? null;
     if (fromSingular != null) return fromSingular;
   } catch {
-    /* try plural with where */
+    /* try next beneficiary */
   }
   // Ponder plural with where: cumulatedFees(where: { poolId, chainId, beneficiary }, limit: 1) { items { ... } }
   const queryWhere = `
@@ -334,14 +344,17 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: queryWhere, variables: vars }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) continue;
     const json = await res.json();
-    if (json.errors?.length) return null;
+    if (json.errors?.length) continue;
     const items = json.data?.cumulatedFees?.items ?? [];
-    return items[0] ?? null;
+    const item = items[0] ?? null;
+    if (item != null) return item;
   } catch {
-    return null;
+    /* try next beneficiary */
   }
+  }
+  return null;
 }
 
 const POOL_STATE_TIMEOUT_MS = 8_000;
@@ -515,6 +528,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     formatUsd,
     poolState,
     dexMetrics: dexMetrics ?? null,
+    /** True if we had a bytes32 poolId and could call the on-chain hook (even if hook returned zero). */
+    hasPoolIdForHook: !!poolIdForHook,
   };
 }
 

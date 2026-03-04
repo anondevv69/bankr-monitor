@@ -935,7 +935,14 @@ client.on("messageCreate", async (message) => {
       if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
         feeParts.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
       }
-      feeParts.push("_No fee data yet — indexer may not have this pool, or set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env for on-chain claimable._");
+      const rpcSet = !!(process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL);
+      if (rpcSet && !out.hasPoolIdForHook) {
+        feeParts.push("_RPC is set; this token's **pool ID** (bytes32) wasn't found in the Bankr API or indexer — claimable fees need it. It may appear after the pool is indexed._");
+      } else if (!rpcSet) {
+        feeParts.push("_No fee data yet — set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env for on-chain claimable._");
+      } else {
+        feeParts.push("_No fee data yet for this pool (indexer or on-chain)._");
+      }
       const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
       feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
     }

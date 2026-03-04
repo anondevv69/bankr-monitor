@@ -19,7 +19,13 @@ Once these are done, you can invite the bot to many servers and let each server 
 
 Verify the indexer: `DOPPLER_INDEXER_URL=https://your-indexer.up.railway.app npm run check:indexer` should show OK.
 
-For **one Railway project** (Postgres + indexer + bot) and **where per-server settings are stored** (file + volume), see [docs/RAILWAY_AND_TENANT_STORAGE.md](docs/RAILWAY_AND_TENANT_STORAGE.md).
+**Persist Discord /setup across redeploys (Railway):** By default the bot stores per-server config in `.bankr-tenants.json` in the app root. On Railway the filesystem is **ephemeral** — it’s wiped on every deploy, so you’d have to run **/setup** again after each deploy. To keep settings:
+
+1. In your **BankrMonitor (bot)** service on Railway, go to **Settings → Volumes → Add Volume**, set mount path **`/data`**.
+2. In **Variables**, add: **`TENANTS_FILE=/data/bankr-tenants.json`**
+3. Redeploy. The tenants file will live on the volume and survive future deploys. Optionally set **`SEEN_FILE=/data/bankr-seen.json`** and **`WATCH_FILE=/data/bankr-watch.json`** so the launch “seen” list and global watch list also persist.
+
+For full Railway + volume details see [docs/RAILWAY_AND_TENANT_STORAGE.md](docs/RAILWAY_AND_TENANT_STORAGE.md).
 
 ---
 
