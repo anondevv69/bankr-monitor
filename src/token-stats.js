@@ -192,6 +192,26 @@ async function fetchPoolByBaseToken(tokenAddress) {
     /* fallback */
   }
 
+  // 1b) v4pools with baseToken as relation (some indexers use baseToken: { address: "0x..." })
+  const v4QueryRel = `query GetV4PoolsRel { v4pools(where: { baseToken: { address: "${addr}" }, chainId: ${CHAIN_ID} }, limit: 1) { items { poolId } } }`;
+  try {
+    const res = await fetch(`${base}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: v4QueryRel }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (!json.errors?.length) {
+        const items = json.data?.v4pools?.items ?? [];
+        const pool = items[0];
+        if (pool?.poolId) return { address: pool.poolId, id: pool.poolId };
+      }
+    }
+  } catch {
+    /* fallback */
+  }
+
   // 2) Try pools (generic shape) — may return 40-char address; cumulatedFees may still accept it on some indexers
   const exactQuery = `query GetPools { pools(where: { baseToken: "${addr}", chainId: ${CHAIN_ID} }) { address } }`;
   try {
@@ -264,6 +284,9 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
     }
   }
   if (beneficiariesToTry.length === 0) return null;
+  if (process.env.DEBUG_FEES === "1") {
+    console.error("[DEBUG_FEES fetchCumulatedFees]", { poolIdOrAddress, beneficiaryAddress, beneficiariesToTry, base });
+  }
 
   for (const beneficiary of beneficiariesToTry) {
     const vars = {
@@ -297,12 +320,18 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, variables: vars }),
       });
+      const json = await res.json().catch(() => ({}));
+      if (process.env.DEBUG_FEES === "1" && (beneficiary === beneficiariesToTry[0] && query === queryInt)) {
+        console.error("[DEBUG_FEES cumulatedFees]", { status: res.status, ok: res.ok, errors: json.errors, data: json.data });
+      }
       if (!res.ok) continue;
-      const json = await res.json();
       if (json.errors?.length) continue;
       const out = json.data?.cumulatedFees ?? null;
       if (out && (out.token0Fees != null || out.token1Fees != null || out.totalFeesUsd != null)) return out;
-    } catch {
+    } catch (e) {
+      if (process.env.DEBUG_FEES === "1" && beneficiary === beneficiariesToTry[0] && query === queryInt) {
+        console.error("[DEBUG_FEES cumulatedFees catch]", e.message);
+      }
       /* try next */
     }
   }
@@ -505,6 +534,15 @@ export async function getTokenFees(tokenAddress, options = {}) {
   if (effectivePoolId && feeWallet) {
     // Only query fees for the fee recipient (creator). We show what they could claim or have accrued.
     cumulatedFees = await fetchCumulatedFees(effectivePoolId, feeWallet);
+  }
+  if (process.env.DEBUG_FEES === "1") {
+    console.error("[DEBUG_FEES]", addr, {
+      poolIdFromLaunch: poolIdFromLaunch ?? null,
+      poolFromIndexer: poolFromIndexer ? { id: poolFromIndexer.id, address: poolFromIndexer.address } : null,
+      effectivePoolId: effectivePoolId ?? null,
+      feeWallet: feeWallet ?? null,
+      hasCumulatedFees: !!cumulatedFees,
+    });
   }
 
   let hookFees = null;

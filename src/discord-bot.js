@@ -7,7 +7,9 @@ import "dotenv/config";
  *
  * Env: DISCORD_BOT_TOKEN (required)
  *   DISCORD_ALERT_CHANNEL_ID    - channel for all launch alerts (fallback)
- *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword); use this to separate watch alerts from webhook deployments
+ *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword)
+ *   DISCORD_AGENT_ALERT_CHANNEL_ID - optional; channel for new Bankr agent profile alerts (bankr.bot/agents). Use so you don't miss new agents.
+ * Channel IDs are usually set per server via /setup; env vars are optional fallbacks.
  */
 
 import {
@@ -51,6 +53,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
+const AGENT_ALERT_CHANNEL_ID = process.env.DISCORD_AGENT_ALERT_CHANNEL_ID;
 const DEBUG_WEBHOOK_URL = process.env.DISCORD_DEBUG_WEBHOOK_URL;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
@@ -548,16 +551,17 @@ async function runNotify() {
         debugLogError(e, "runNotify (tenant channels)");
       }
     } else {
-      return new Promise((resolve, reject) => {
-        const child = spawn(
-          process.execPath,
-          [join(__dirname, "notify.js")],
-          { stdio: "inherit", env: process.env }
-        );
+      const child = spawn(
+        process.execPath,
+        [join(__dirname, "notify.js")],
+        { stdio: "inherit", env: process.env }
+      );
+      await new Promise((resolve, reject) => {
         child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
       });
     }
   }
+  // Always run claim-watch and agent profiles so servers that only have those channels still get pings
   await runClaimWatchCycle().catch((e) => {
     console.error("Claim watch cycle failed:", e.message);
     debugLogError(e, "runClaimWatchCycle");
@@ -598,20 +602,23 @@ function buildAgentProfileEmbed(profile) {
 }
 
 async function runAgentProfilesCycle() {
-  const newProfiles = await getNewAgentProfiles({ limit: 30 });
+  const newProfiles = await getNewAgentProfiles({ limit: 50 });
   if (newProfiles.length === 0) return;
-  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
+    const agentChannel = AGENT_ALERT_CHANNEL_ID ? await client.channels.fetch(AGENT_ALERT_CHANNEL_ID).catch(() => null) : null;
     const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
+    const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
+    const channel = agentChannel || alertChannel || watchChannel;
     for (const profile of newProfiles) {
       const embed = buildAgentProfileEmbed(profile);
-      if (alertChannel) await alertChannel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
+      if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
     }
   } else {
     const guildIds = await listActiveTenantGuildIds();
     for (const gid of guildIds) {
       const tenant = await getTenant(gid);
-      const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId;
+      const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId || AGENT_ALERT_CHANNEL_ID;
       if (!channelId) continue;
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (!channel) continue;
@@ -680,11 +687,14 @@ client.once("ready", async () => {
   if (WATCH_ALERT_CHANNEL_ID) {
     console.log(`Watch-list alerts will post to channel ${WATCH_ALERT_CHANNEL_ID}`);
   }
+  if (AGENT_ALERT_CHANNEL_ID) {
+    console.log(`Agent profile alerts will post to channel ${AGENT_ALERT_CHANNEL_ID}`);
+  }
   if (ALERT_CHANNEL_ID) {
     console.log(`Launch alerts will post to channel ${ALERT_CHANNEL_ID}`);
   }
-  if (!ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
-    console.log("DISCORD_ALERT_CHANNEL_ID and DISCORD_WATCH_ALERT_CHANNEL_ID not set; alerts go to each server's /setup channels or notify.js webhook.");
+  if (!ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID && !AGENT_ALERT_CHANNEL_ID) {
+    console.log("No Discord channel IDs in env; alerts go to each server's /setup channels or notify.js webhook.");
   }
 
   if (DEBUG_WEBHOOK_URL) {
