@@ -28,6 +28,11 @@ const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const DEPLOY_API = "https://api.bankr.bot/token-launches/deploy";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
 
+const BANKR_FETCH_HEADERS = {
+  Accept: "application/json",
+  "User-Agent": "BankrMonitor/1.0 (https://github.com/anondevv69/bankr-monitor)",
+};
+
 /** Optional handle -> wallet overrides (e.g. BANKR_HANDLE_WALLET_OVERRIDES='{"gork":"0x23..."}') when API doesn't return them. */
 function getHandleOverrides() {
   const raw = process.env.BANKR_HANDLE_WALLET_OVERRIDES;
@@ -64,11 +69,13 @@ function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
 }
 
-/** Parse search API response into arrays of launches + totalCount. Handles multiple response shapes. */
+/** Parse search API response into arrays of launches + totalCount. Handles multiple response shapes.
+ * Bankr search can return a single match in exactMatch when the query matches one launch (e.g. by wallet). */
 function getSearchResultArrays(json) {
   const byDeployer = json.groups?.byDeployer?.results ?? [];
   const byFee = json.groups?.byFeeRecipient?.results ?? [];
   const byWallet = json.groups?.byWallet?.results ?? [];
+  const exactMatch = json.exactMatch && json.exactMatch.status === "deployed" ? [json.exactMatch] : [];
   const flat =
     Array.isArray(json.results) ? json.results
       : Array.isArray(json.launches) ? json.launches
@@ -83,7 +90,8 @@ function getSearchResultArrays(json) {
     json.groups?.byWallet?.totalCount ??
     json.totalCount ??
     0;
-  return { arrays: [...byDeployer, ...byFee, ...byWallet, ...flat], total };
+  const arrays = [...exactMatch, ...byDeployer, ...byFee, ...byWallet, ...flat];
+  return { arrays, total: total || (exactMatch.length > 0 ? 1 : 0) };
 }
 
 /** Merge toAdd into launches by tokenAddress (no duplicates). Mutates launches. */
@@ -116,7 +124,7 @@ async function fetchSearch(query, apiKey) {
     while (true) {
       const url = `${SEARCH_API}?q=${q}&limit=${pageSize}&offset=${offset}`;
       const res = await fetch(url, {
-        headers: { Accept: "application/json", ...(key && { "X-API-Key": key }) },
+        headers: { ...BANKR_FETCH_HEADERS, ...(key && { "X-API-Key": key }) },
       });
       if (!res.ok) break;
       const json = await res.json();
@@ -150,7 +158,7 @@ async function fetchLaunchesPage(offset, pageSize = 50, order, apiKey) {
   let url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
   if (order === "asc") url += "&order=asc";
   const res = await fetch(url, {
-    headers: { "X-API-Key": key, Accept: "application/json" },
+    headers: { ...BANKR_FETCH_HEADERS, "X-API-Key": key, Accept: "application/json" },
   });
   if (!res.ok) return [];
   const json = await res.json();
