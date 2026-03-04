@@ -437,6 +437,7 @@ Railway containers use an **ephemeral filesystem** by default. To persist the se
    - `WATCH_FILE=/data/bankr-watch.json` — watch list (X, Farcaster, wallet, keywords)
    - `SEEN_FILE=/data/bankr-seen.json` — path on a **volume** so the seen list persists across deploys (stops "50 pings then 0 new" on every restart).
    - `CLAIM_STATE_FILE=/data/bankr-claim-state.json` — optional; last-known claimable per (server, token) for claim-watch alerts.
+   - `SEEN_AGENTS_FILE=/data/bankr-seen-agents.json` — optional; seen agent profile IDs so new-agent pings only fire for newly added agents (otherwise every deploy can re-ping up to 50).
 3. Optional: `SEEN_MAX_KEYS` — cap the seen list (e.g. `3000`) to limit file size; if unset, the list is unbounded and each token is only ever notified once.
 
 ## Output Fields

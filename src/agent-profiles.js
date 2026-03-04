@@ -26,13 +26,16 @@ export async function fetchAgentProfiles(opts = {}) {
   const url = `${AGENT_PROFILES_API}?sort=${sort}&limit=${limit}&offset=${offset}`;
   try {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!res.ok) return { profiles: [], total: 0 };
+    if (!res.ok) {
+      console.error(`[Agent profiles] API ${res.status} ${res.statusText}: ${url}`);
+      return { profiles: [], total: 0 };
+    }
     const data = await res.json();
     const profiles = Array.isArray(data.profiles) ? data.profiles : [];
     const total = typeof data.total === "number" ? data.total : profiles.length;
     return { profiles, total };
   } catch (e) {
-    console.error("Agent profiles fetch failed:", e?.message);
+    console.error("[Agent profiles] fetch failed:", e?.message);
     return { profiles: [], total: 0 };
   }
 }
@@ -71,7 +74,10 @@ export async function saveSeenAgentIds(seen) {
  * @returns {Promise<Array<{ id: string, slug: string, projectName: string, tokenSymbol?: string, tokenAddress?: string, marketCapUsd?: number, weeklyRevenueWeth?: string, createdAt?: string }>>}
  */
 export async function getNewAgentProfiles(opts = {}) {
-  const [seen, { profiles }] = await Promise.all([getSeenAgentIds(), fetchAgentProfiles({ sort: "newest", limit: opts.limit ?? 50 })]);
+  const [seen, { profiles, total }] = await Promise.all([getSeenAgentIds(), fetchAgentProfiles({ sort: "newest", limit: opts.limit ?? 50 })]);
+  if (profiles.length === 0 && total === 0) {
+    console.warn("[Agent profiles] API returned no profiles (check network / api.bankr.bot)");
+  }
   const newProfiles = [];
   for (const p of profiles) {
     const id = p.id || p.slug || p.tokenAddress;
