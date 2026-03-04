@@ -703,7 +703,7 @@ function formatFeesTokenReply(out, tokenAddress) {
   }
 
   // Historical accrued (indexer): indexer uses token0 = WETH, token1 = asset (token)
-  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null);
+  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
   if (hasIndexerFees) {
     const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
     const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
@@ -788,12 +788,18 @@ client.on("messageCreate", async (message) => {
       ? formatClaimableOneLiner(out.hookFees, out.symbol)
       : null;
     if (claimableLine) feeParts.push(`**Claimable:** ${claimableLine}`);
-    if (out.cumulatedFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
+    if (out.cumulatedFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null || out.cumulatedFees.totalFeesUsd != null)) {
       const DEC = 18;
       const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
       const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
       const fmtT = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
-      feeParts.push(`**Historical accrued:** WETH ${w.toFixed(4)} • ${out.symbol ?? "Token"} ${fmtT(t)}`);
+      if (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null) {
+        feeParts.push(`**Historical accrued:** WETH ${w.toFixed(4)} • ${out.symbol ?? "Token"} ${fmtT(t)}`);
+      }
+      if (out.cumulatedFees.totalFeesUsd != null && out.formatUsd) {
+        const usd = Number(out.cumulatedFees.totalFeesUsd);
+        if (!Number.isNaN(usd) && usd >= 0 && usd < 1e12) feeParts.push(`**Total (USD):** ${out.formatUsd(out.cumulatedFees.totalFeesUsd) ?? out.cumulatedFees.totalFeesUsd}`);
+      }
       if (out.hookFees && claimableLine) {
         const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
         const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
@@ -811,6 +817,9 @@ client.on("messageCreate", async (message) => {
       const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
       feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
     } else if (out.launch) {
+      if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
+        feeParts.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
+      }
       feeParts.push("_No fee data yet — indexer may not have this pool, or set RPC_URL_BASE for on-chain claimable._");
       const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
       feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
@@ -854,7 +863,8 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
-      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query, { bankrApiKey: tenant?.bankrApiKey });
+      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
       if (wallet) {
         await interaction.editReply({
           content:
@@ -885,15 +895,23 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
-      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by, "newest", { bankrApiKey: tenant?.bankrApiKey });
+      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by, "newest", { bankrApiKey: apiKey });
       const searchQ = normalized || String(query).trim();
       const searchUrl = resolvedWallet
         ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
         : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
-        const hint = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim())
-          ? "\n\nIf the link above shows results on Bankr, set **BANKR_API_KEY** (from [bankr.bot/api](https://bankr.bot/api)) in this bot's env so lookup can use the list API."
-          : "";
+        const isWalletQuery = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
+        const inGuild = !!interaction.guildId;
+        let hint = "";
+        if (!isWalletQuery && !resolvedWallet) {
+          hint = "\n\nCouldn't resolve this handle to a wallet. Ask your server admin to set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster handles and search by wallet.";
+        } else if (isWalletQuery) {
+          hint = inGuild
+            ? "\n\nIf the link above shows results on Bankr, ask your server admin to set an API key in **/setup** so lookup can use the list API."
+            : "\n\nIf the link above shows results on Bankr, set **BANKR_API_KEY** (from [bankr.bot/api](https://bankr.bot/api)) in this bot's env so lookup can use the list API.";
+        }
         await interaction.editReply({
           content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}${hint}`,
         });

@@ -253,10 +253,13 @@ async function fetchPoolByBaseToken(tokenAddress) {
  */
 async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
   const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
+  const beneficiary = beneficiaryAddress && typeof beneficiaryAddress === "string"
+    ? beneficiaryAddress.trim().toLowerCase()
+    : beneficiaryAddress;
   const vars = {
     poolId: poolIdOrAddress,
     chainId: CHAIN_ID,
-    beneficiary: beneficiaryAddress,
+    beneficiary: beneficiary ?? beneficiaryAddress,
   };
   // Try Int first, then Float (indexer-prod.doppler.lol uses Float! for chainId)
   const queryInt = `
@@ -472,12 +475,20 @@ export async function getTokenFees(tokenAddress, options = {}) {
   }
 
   const fee = launch.feeRecipient;
-  const feeWallet = fee?.walletAddress ? normalizeAddress(fee.walletAddress) : (fee?.wallet ?? fee?.address ? normalizeAddress(fee.wallet ?? fee.address) : null);
+  const feeWallet =
+    (fee?.walletAddress ? normalizeAddress(fee.walletAddress) : null) ??
+    (fee?.wallet ?? fee?.address ? normalizeAddress(fee.wallet ?? fee.address) : null) ??
+    (typeof launch.feeRecipientWallet === "string" && /^0x[a-fA-F0-9]{40}$/.test(launch.feeRecipientWallet.trim()) ? normalizeAddress(launch.feeRecipientWallet) : null) ??
+    (typeof launch.creatorWallet === "string" && /^0x[a-fA-F0-9]{40}$/.test(launch.creatorWallet.trim()) ? normalizeAddress(launch.creatorWallet) : null) ??
+    (launch.creator?.walletAddress ?? launch.creator?.wallet ? normalizeAddress(launch.creator.walletAddress ?? launch.creator.wallet) : null);
   let cumulatedFees = null;
   // Prefer launch.poolId (bytes32) when available — indexer expects this format for cumulatedFees.
-  const poolIdForFees = (typeof launch.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.poolId.trim())) ? launch.poolId.trim() : null;
-  const poolFromIndexer = poolIdForFees ? { id: poolIdForFees, address: poolIdForFees } : await fetchPoolByBaseToken(addr);
-  const effectivePoolId = poolIdForFees ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
+  const poolIdFromLaunch =
+    (typeof launch.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.poolId.trim()) ? launch.poolId.trim() : null) ??
+    (launch.pool && typeof launch.pool === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.pool.trim()) ? launch.pool.trim() : null) ??
+    (launch.pool?.poolId && typeof launch.pool.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.pool.poolId.trim()) ? launch.pool.poolId.trim() : null);
+  const poolFromIndexer = poolIdFromLaunch ? null : await fetchPoolByBaseToken(addr);
+  const effectivePoolId = poolIdFromLaunch ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
   if (effectivePoolId && feeWallet) {
     // Only query fees for the fee recipient (creator). We show what they could claim or have accrued.
     cumulatedFees = await fetchCumulatedFees(effectivePoolId, feeWallet);
