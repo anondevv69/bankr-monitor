@@ -46,7 +46,7 @@ import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
-import { getNewAgentProfiles, subscribeAgentProfileUpdates } from "./agent-profiles.js";
+import { getNewAgentProfiles, subscribeAgentProfileUpdates, fetchAgentProfiles } from "./agent-profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -426,6 +426,10 @@ async function registerCommands(appId) {
       .setName("help")
       .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup, deploy)")
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("agents")
+      .setDescription("Show the latest 5 Bankr agent profiles (bankr.bot/agents)")
+      .toJSON(),
   ];
 
   try {
@@ -610,16 +614,34 @@ async function sendAgentProfileToChannels(profile) {
     const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
     const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
     const channel = agentChannel || alertChannel || watchChannel;
-    if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
+    if (channel) {
+      await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
+    } else {
+      console.warn("[Agent profiles] Env channels set but could not fetch any channel (check channel IDs)");
+    }
   } else {
     const guildIds = await listActiveTenantGuildIds();
+    if (guildIds.length === 0) {
+      console.warn("[Agent profiles] No guilds with /setup; run /setup and set Agent alerts channel (or alert/watch channel)");
+      return;
+    }
+    let sent = false;
     for (const gid of guildIds) {
       const tenant = await getTenant(gid);
       const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId || AGENT_ALERT_CHANNEL_ID;
-      if (!channelId) continue;
+      if (!channelId) {
+        console.warn(`[Agent profiles] Guild ${gid}: no agent/alert/watch channel set in /setup`);
+        continue;
+      }
       const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error(`[Agent profiles] Guild ${gid} send failed:`, e.message));
+      if (!channel) {
+        console.warn(`[Agent profiles] Guild ${gid}: channel ${channelId} not found or bot has no access`);
+        continue;
+      }
+      await channel.send({ embeds: [embed] }).catch((e) => console.error(`[Agent profiles] Guild ${gid} send failed:`, e.message));
+      sent = true;
     }
+    if (!sent) console.warn("[Agent profiles] No channel could be used (check /setup and bot permissions)");
   }
 }
 
@@ -628,8 +650,7 @@ async function runAgentProfilesCycle() {
   if (newProfiles.length === 0) return;
   console.log(`[Agent profiles] ${newProfiles.length} new profile(s) to send (poll)`);
   for (const profile of newProfiles) await sendAgentProfileToChannels(profile);
-  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
-  console.log(`[Agent profiles] Sent ${newProfiles.length} new agent alert(s)${hasEnvChannels ? " to env channel" : ""}`);
+  console.log(`[Agent profiles] Finished sending ${newProfiles.length} agent alert(s)`);
 }
 
 const CLAIM_WATCH_DECIMALS = 18;
@@ -1084,6 +1105,43 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === "agents") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
+    try {
+      const { profiles, total } = await fetchAgentProfiles({ sort: "newest", limit: 5, offset: 0 });
+      const listUrl = "https://bankr.bot/agents";
+      if (!profiles.length) {
+        await interaction.editReply({
+          content: `No agent profiles returned from Bankr. Check [bankr.bot/agents](${listUrl}) in a browser.`,
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
+        return;
+      }
+      const lines = profiles.map((p, i) => {
+        const slug = p.slug || p.id || "";
+        const url = slug ? `https://bankr.bot/agent-profiles/${encodeURIComponent(slug)}` : listUrl;
+        const name = p.projectName || "Agent";
+        const sym = p.tokenSymbol ? ` ($${p.tokenSymbol})` : "";
+        const cap = p.marketCapUsd != null && p.marketCapUsd > 0
+          ? ` · $${p.marketCapUsd >= 1e6 ? (p.marketCapUsd / 1e6).toFixed(2) + "M" : p.marketCapUsd >= 1e3 ? (p.marketCapUsd / 1e3).toFixed(2) + "K" : p.marketCapUsd}`
+          : "";
+        return `${i + 1}. [**${name}**${sym}](${url})${cap}`;
+      });
+      const embed = {
+        color: 0x5865f2,
+        title: "Latest 5 Bankr agents",
+        description: lines.join("\n") + `\n\n[View all agents](${listUrl})`,
+        footer: { text: `Total approved: ${total ?? profiles.length} · New agents are announced in your Agent alerts channel (see /settings)` },
+        timestamp: new Date().toISOString(),
+      };
+      await interaction.editReply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
+    } catch (e) {
+      console.error("Agents command failed:", e.message);
+      await interaction.editReply({ content: `Failed to fetch agents: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return;
+  }
+
   if (interaction.commandName === "help") {
     const embed = {
       color: 0x0052_ff,
@@ -1128,6 +1186,12 @@ client.on("interactionCreate", async (interaction) => {
           value:
             "**Accrued/claimable fees** for one Bankr token.\n" +
             "**token:** Token address (0x…) or Bankr launch URL (e.g. bankr.bot/launches/0x…). Shows fee recipient, indexer accrued fees (token + WETH + USD) when available, or estimated from volume. Claimed vs unclaimed is not in the API — use [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token <ca>` to see/claim.",
+          inline: false,
+        },
+        {
+          name: "🤖 /agents",
+          value:
+            "**Latest 5 Bankr agents** – approved agent profiles from [bankr.bot/agents](https://bankr.bot/agents). New agents are announced in your **Agent alerts channel** (set in /setup or /settings) when they’re added; same flow as launch alerts.",
           inline: false,
         },
         {

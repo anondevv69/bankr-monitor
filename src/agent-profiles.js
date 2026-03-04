@@ -76,7 +76,8 @@ export async function saveSeenAgentIds(seen) {
 export async function getNewAgentProfiles(opts = {}) {
   const limit = Math.min(opts.limit ?? 100, 100);
   const [seen, { profiles, total }] = await Promise.all([getSeenAgentIds(), fetchAgentProfiles({ sort: "newest", limit, offset: 0 })]);
-  if (profiles.length === 0 && total === 0) {
+  const fetchedCount = profiles.length;
+  if (fetchedCount === 0 && total === 0) {
     console.warn("[Agent profiles] API returned no profiles (check network / api.bankr.bot)");
   }
   const newProfiles = [];
@@ -88,6 +89,7 @@ export async function getNewAgentProfiles(opts = {}) {
     newProfiles.push(p);
     seen.add(key);
   }
+  console.log(`[Agent profiles] Poll: API returned ${fetchedCount} profile(s), ${newProfiles.length} new (not seen)`);
   if (newProfiles.length > 0) await saveSeenAgentIds(seen);
   return newProfiles;
 }
