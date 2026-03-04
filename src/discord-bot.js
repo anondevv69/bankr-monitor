@@ -46,7 +46,7 @@ import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
-import { getNewAgentProfiles } from "./agent-profiles.js";
+import { getNewAgentProfiles, subscribeAgentProfileUpdates } from "./agent-profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -601,41 +601,35 @@ function buildAgentProfileEmbed(profile) {
   return embed;
 }
 
-async function runAgentProfilesCycle() {
-  const newProfiles = await getNewAgentProfiles({ limit: 50 });
-  if (newProfiles.length === 0) return;
-  console.log(`[Agent profiles] ${newProfiles.length} new profile(s) to send`);
+/** Send one agent profile to all configured channels (env or per-guild). */
+async function sendAgentProfileToChannels(profile) {
+  const embed = buildAgentProfileEmbed(profile);
   const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
     const agentChannel = AGENT_ALERT_CHANNEL_ID ? await client.channels.fetch(AGENT_ALERT_CHANNEL_ID).catch(() => null) : null;
     const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
     const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
     const channel = agentChannel || alertChannel || watchChannel;
-    for (const profile of newProfiles) {
-      const embed = buildAgentProfileEmbed(profile);
-      if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
-    }
-    console.log(`[Agent profiles] Sent ${newProfiles.length} new agent alert(s) to env channel`);
+    if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
   } else {
     const guildIds = await listActiveTenantGuildIds();
-    let guildsSent = 0;
     for (const gid of guildIds) {
       const tenant = await getTenant(gid);
       const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId || AGENT_ALERT_CHANNEL_ID;
       if (!channelId) continue;
       const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (!channel) {
-        console.warn(`[Agent profiles] Guild ${gid}: channel ${channelId} not found or no access`);
-        continue;
-      }
-      guildsSent++;
-      for (const profile of newProfiles) {
-        const embed = buildAgentProfileEmbed(profile);
-        await channel.send({ embeds: [embed] }).catch((e) => console.error(`[Agent profiles] Guild ${gid} send failed:`, e.message));
-      }
+      if (channel) await channel.send({ embeds: [embed] }).catch((e) => console.error(`[Agent profiles] Guild ${gid} send failed:`, e.message));
     }
-    if (guildsSent > 0) console.log(`[Agent profiles] Sent ${newProfiles.length} new agent alert(s) to ${guildsSent} guild(s)`);
   }
+}
+
+async function runAgentProfilesCycle() {
+  const newProfiles = await getNewAgentProfiles({ limit: 100 });
+  if (newProfiles.length === 0) return;
+  console.log(`[Agent profiles] ${newProfiles.length} new profile(s) to send (poll)`);
+  for (const profile of newProfiles) await sendAgentProfileToChannels(profile);
+  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
+  console.log(`[Agent profiles] Sent ${newProfiles.length} new agent alert(s)${hasEnvChannels ? " to env channel" : ""}`);
 }
 
 const CLAIM_WATCH_DECIMALS = 18;
@@ -727,6 +721,11 @@ client.once("ready", async () => {
   runNotify().catch((e) => {
     console.error("Notify failed:", e.message);
     debugLogError(e, "runNotify");
+  });
+
+  subscribeAgentProfileUpdates((profile) => {
+    console.log("[Agent profiles] New agent (WebSocket):", profile.projectName || profile.slug || profile.id);
+    sendAgentProfileToChannels(profile).catch((e) => console.error("[Agent profiles] WebSocket ping failed:", e.message));
   });
 });
 

@@ -71,10 +71,11 @@ export async function saveSeenAgentIds(seen) {
 /**
  * Get profiles we haven't seen yet and mark them as seen.
  * @param {{ limit?: number }} [opts]
- * @returns {Promise<Array<{ id: string, slug: string, projectName: string, tokenSymbol?: string, tokenAddress?: string, marketCapUsd?: number, weeklyRevenueWeth?: string, createdAt?: string }>>}
+ * @returns {Promise<Array<...>>}
  */
 export async function getNewAgentProfiles(opts = {}) {
-  const [seen, { profiles, total }] = await Promise.all([getSeenAgentIds(), fetchAgentProfiles({ sort: "newest", limit: opts.limit ?? 50 })]);
+  const limit = Math.min(opts.limit ?? 100, 100);
+  const [seen, { profiles, total }] = await Promise.all([getSeenAgentIds(), fetchAgentProfiles({ sort: "newest", limit, offset: 0 })]);
   if (profiles.length === 0 && total === 0) {
     console.warn("[Agent profiles] API returned no profiles (check network / api.bankr.bot)");
   }
@@ -89,4 +90,52 @@ export async function getNewAgentProfiles(opts = {}) {
   }
   if (newProfiles.length > 0) await saveSeenAgentIds(seen);
   return newProfiles;
+}
+
+const AGENT_PROFILES_WS_URL = "https://api.bankr.bot";
+
+/**
+ * If this profile is not yet seen, mark it seen and return it; otherwise return null.
+ * Used for WebSocket AGENT_PROFILE_UPDATE so we only ping once per profile.
+ * @param {object} profile - Profile object from API/WebSocket (id, slug, projectName, tokenAddress, etc.)
+ * @returns {Promise<object|null>} The profile if new, null if already seen
+ */
+export async function markSeenAndReturnIfNew(profile) {
+  if (!profile || typeof profile !== "object") return null;
+  const id = profile.id || profile.slug || profile.tokenAddress;
+  if (!id) return null;
+  const key = String(id).trim().toLowerCase();
+  const seen = await getSeenAgentIds();
+  if (seen.has(key)) return null;
+  seen.add(key);
+  await saveSeenAgentIds(seen);
+  return profile;
+}
+
+/**
+ * Subscribe to Bankr agent-profiles WebSocket for real-time new/updated profile events.
+ * Calls onNew(profile) when we receive AGENT_PROFILE_UPDATE for a profile we haven't seen.
+ * @param {(profile: object) => void} onNew
+ * @returns {() => void} Unsubscribe function
+ */
+export function subscribeAgentProfileUpdates(onNew) {
+  let socket = null;
+  async function connect() {
+    try {
+      const { io } = await import("socket.io-client");
+      socket = io(AGENT_PROFILES_WS_URL + "/agent-profiles", { transports: ["websocket"], reconnection: true });
+      socket.on("connect", () => console.log("[Agent profiles] WebSocket connected for real-time new-agent pings"));
+      socket.on("connect_error", (e) => console.warn("[Agent profiles] WebSocket connect_error:", e.message));
+      socket.on("AGENT_PROFILE_UPDATE", async (profile) => {
+        const newProfile = await markSeenAndReturnIfNew(profile);
+        if (newProfile) onNew(newProfile);
+      });
+    } catch (e) {
+      console.warn("[Agent profiles] WebSocket unavailable:", e?.message);
+    }
+  }
+  connect();
+  return () => {
+    if (socket) socket.removeAllListeners(), socket.disconnect();
+  };
 }
