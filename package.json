@@ -15,7 +15,11 @@
     "start": "node src/discord-bot.js",
     "notify": "node src/notify.js",
     "notify:loop": "node src/notify-loop.js",
-    "bot": "node src/discord-bot.js"
+    "bot": "node src/discord-bot.js",
+    "build": "echo 'No build step'"
+  },
+  "engines": {
+    "node": ">=18 <22"
   },
   "dependencies": {
     "@whetstone-research/doppler-sdk": "^0.0.17",
