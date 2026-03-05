@@ -44,12 +44,13 @@ The [Doppler Indexer](https://docs.doppler.lol/indexer/overview) indexes Doppler
 | Endpoint | Chain |
 |----------|-------|
 | https://testnet-indexer.doppler.lol | Base Sepolia (testnet) |
-| https://indexer-prod.doppler.lol | Base (mainnet) — **default** in BankrMonitor; set `DOPPLER_INDEXER_URL` to your DM'd endpoint if you have one |
+| https://bankr.indexer.doppler.lol | Base (mainnet) — **default** in BankrMonitor (Bankr indexer) |
+| https://indexer-prod.doppler.lol | Base (mainnet) — alternate; set `DOPPLER_INDEXER_URL` if you use it |
 | https://indexer.doppler.lol | Base (mainnet) — legacy public endpoint, often 502 |
 
-If **fees** show “No fee data yet” but the token has a pool and fee recipient, ensure **DOPPLER_INDEXER_URL** is set to **indexer-prod.doppler.lol** (not `indexer.doppler.lol`). If the indexer returns 502, it’s down or overloaded; use a [self-hosted indexer](https://github.com/whetstoneresearch/doppler-indexer) if needed.
+If **fees** show “No fee data yet” but the token has a pool and fee recipient, ensure **DOPPLER_INDEXER_URL** is set (e.g. **https://bankr.indexer.doppler.lol**). If the indexer returns 502, it’s down or overloaded; use a [self-hosted indexer](https://github.com/whetstoneresearch/doppler-indexer) if needed.
 
-BankrMonitor defaults to **https://indexer-prod.doppler.lol** for Base mainnet. To only show Bankr tokens from the indexer, it filters by **integration address** `0xF60633D02690e2A15A54AB919925F3d038Df163e` (configurable via `BANKR_INTEGRATION_ADDRESS`). For **/fees** and volume you can override `DOPPLER_INDEXER_URL` with your own indexer (e.g. [doppler-indexer on Railway](https://github.com/whetstoneresearch/doppler-indexer)).
+BankrMonitor defaults to **https://bankr.indexer.doppler.lol** for Base mainnet. To only show Bankr tokens from the indexer, it filters by **integration address** `0xF60633D02690e2A15A54AB919925F3d038Df163e` (configurable via `BANKR_INTEGRATION_ADDRESS`). For **/fees** and volume you can override `DOPPLER_INDEXER_URL` with your own indexer (e.g. [doppler-indexer on Railway](https://github.com/whetstoneresearch/doppler-indexer)).
 
 **Pros:** Token metadata, launcher address (`creatorAddress`), volume, holder count, `cumulatedFees` (for /fees). Filter by integration/beneficiary so only Bankr tokens appear in the feed.  
 **Cons:** No Bankr-specific launcher X handles (those come from Bankr’s own mapping).
@@ -108,7 +109,7 @@ The indexer has a token once it has seen that token’s pool (e.g. from a create
 
 ```bash
 # Optional: use your indexer URL
-export DOPPLER_INDEXER_URL=https://indexer-prod.doppler.lol
+export DOPPLER_INDEXER_URL=https://bankr.indexer.doppler.lol
 
 # List tokens with volume (GraphQL)
 curl -s -X POST "${DOPPLER_INDEXER_URL%/}/graphql" -H "Content-Type: application/json" \
@@ -257,7 +258,7 @@ Bankr has a [Token Deploy API](https://docs.bankr.bot/token-launching/deploy-api
 npm run token-stats -- 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
 ```
 
-Uses the Bankr API (launch metadata: deployer, fee recipient) and optional Doppler indexer (trading volume). Set `BANKR_API_KEY` in `.env` so the single-token launch endpoint does not return 403. Shows **estimated** creator fees (57% of 1.2% of volume). Claimable balance is only visible to the fee beneficiary via `bankr fees --token`. For Base mainnet volume, set `DOPPLER_INDEXER_URL=https://indexer.doppler.lol` and `CHAIN_ID=8453`.
+Uses the Bankr API (launch metadata: deployer, fee recipient) and optional Doppler indexer (trading volume). Set `BANKR_API_KEY` in `.env` so the single-token launch endpoint does not return 403. Shows **estimated** creator fees (57% of 1.2% of volume). Claimable balance is only visible to the fee beneficiary via `bankr fees --token`. For Base mainnet volume, set `DOPPLER_INDEXER_URL=https://bankr.indexer.doppler.lol` and `CHAIN_ID=8453`.
 
 **Why volume comes from the indexer:** Trading volume is aggregated from swap events; there is no single onchain view that returns “total volume” for a pool. The Doppler indexer (Ponder) indexes those events and exposes `volumeUsd` via GraphQL/REST. Contract reads (e.g. viem `readContract`) and the Doppler SDK give pool *state* (fee tier, status), not cumulative volume. Optional: install `@whetstone-research/doppler-sdk` to show pool state (fee %, Locked/Exited) in token-stats.
 
@@ -321,7 +322,7 @@ Edit `.env`:
 - `WATCH_FC_USERS` — Comma-separated Farcaster handles; only notify when deployer's Farcaster is in this list (e.g. `dwr.eth,vitalik.eth`).
 - `POLL_INTERVAL_MS` — Ms between fetches (default 60000 = 1 min). Use 30000 for 30 sec to catch launches quickly.
 - `RPC_URL_BASE` — Base RPC URL (for chain fallback when indexer fails; only needed if not using Bankr API)
-- `DOPPLER_INDEXER_URL` — optional; defaults to testnet indexer
+- `DOPPLER_INDEXER_URL` — optional; defaults to https://bankr.indexer.doppler.lol for Base mainnet, testnet indexer for Sepolia
 
 ## Usage
 

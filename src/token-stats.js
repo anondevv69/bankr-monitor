@@ -9,7 +9,7 @@
  * Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
  *
  * Env: BANKR_API_KEY (recommended; single-token launch endpoint may return 403 without it)
- *      DOPPLER_INDEXER_URL (optional; default https://indexer-prod.doppler.lol for Base mainnet — set to your endpoint if different)
+ *      DOPPLER_INDEXER_URL (optional; default https://bankr.indexer.doppler.lol for Base mainnet — set to your endpoint if different)
  *      CHAIN_ID (default 8453)
  */
 
@@ -19,7 +19,7 @@ const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL ||
-  (CHAIN_ID === 8453 ? "https://indexer-prod.doppler.lol" : "https://testnet-indexer.doppler.lol");
+  (CHAIN_ID === 8453 ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";

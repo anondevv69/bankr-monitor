@@ -5,12 +5,13 @@
  *
  * Indexer URLs:
  * - Testnet (Base Sepolia): https://testnet-indexer.doppler.lol
- * - Production (Base): https://indexer.doppler.lol (check availability)
+ * - Production (Base): https://bankr.indexer.doppler.lol (Bankr indexer)
  */
 
-const DOPPLER_INDEXER_URL =
-  process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10); // 8453 = Base, 84532 = Base Sepolia
+const DOPPLER_INDEXER_URL =
+  process.env.DOPPLER_INDEXER_URL ||
+  (CHAIN_ID === 8453 ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 
 async function graphql(query, variables = {}) {
   const res = await fetch(`${DOPPLER_INDEXER_URL.replace(/\/$/, "")}/graphql`, {

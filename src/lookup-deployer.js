@@ -129,6 +129,10 @@ async function fetchSearch(query, apiKey) {
       if (!res.ok) break;
       const json = await res.json();
       const { arrays, total } = getSearchResultArrays(json);
+      if (arrays.length > 0 && offset === 0) {
+        const fromExact = json.exactMatch && json.exactMatch.status === "deployed" ? 1 : 0;
+        console.log(`[Lookup] Search API: ${arrays.length} item(s) (exactMatch: ${fromExact}, groups: ${arrays.length - fromExact})`);
+      }
       if (total > totalCount) totalCount = total;
 
       let added = 0;
@@ -142,7 +146,7 @@ async function fetchSearch(query, apiKey) {
         }
       }
       if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
-      offset += Math.max(arrays.length, 1);
+      offset += pageSize;
       if (arrays.length === 0) break;
     }
     return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
@@ -166,6 +170,26 @@ async function fetchLaunchesPage(offset, pageSize = 50, order, apiKey) {
 }
 
 const FULL_LIST_CONCURRENCY = Math.min(parseInt(process.env.BANKR_FULL_LIST_CONCURRENCY || "10", 10), 20);
+
+const LIST_CACHE_TTL_MS = 3 * 60 * 1000;
+let _listCache = null;
+let _listCacheKey = null;
+let _listCacheTime = 0;
+
+/** In-memory cache for list API to avoid hammering Bankr on every /lookup (Discord-safe). */
+async function getCachedLaunches(limit, order, apiKey) {
+  const key = apiKey ?? BANKR_API_KEY;
+  if (!key) return [];
+  const cacheKey = `${limit}:${order ?? "newest"}`;
+  const now = Date.now();
+  if (_listCache && _listCacheKey === cacheKey && now - _listCacheTime < LIST_CACHE_TTL_MS) {
+    return _listCache;
+  }
+  _listCache = await fetchAllLaunches(limit, order, key);
+  _listCacheKey = cacheKey;
+  _listCacheTime = now;
+  return _listCache;
+}
 
 /** Fetch launches from Bankr API (paginated, parallel). order: undefined (newest first) or "asc" (oldest first). apiKey: optional override. */
 async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order, apiKey) {
@@ -392,20 +416,24 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   }
 
   const effectiveQuery = resolvedWallet ?? normalized;
-  const matches = (l) => launchMatches(l, effectiveQuery, !!resolvedWallet, filter);
+  const matches = (l) => launchMatches(l, effectiveQuery, isWalletQuery || !!resolvedWallet, filter);
   let launches = [];
   let totalCount = 0;
-  // Search by wallet when we resolved X/FC; otherwise by normalized form
-  let searchResult = await fetchSearch(effectiveQuery, apiKey);
-  // If handle (no wallet), also try @ prefix — Bankr search may index X as "@gork"; try when no results or after filter we'd have 0
-  if (!resolvedWallet && normalized && !normalized.startsWith("@")) {
-    const filteredFromFirst = searchResult ? searchResult.launches.filter(matches) : [];
-    if (filteredFromFirst.length === 0) {
-      const withAt = await fetchSearch("@" + normalized, apiKey);
-      if (withAt && withAt.launches.length > 0) {
-        searchResult = searchResult
-          ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
-          : withAt;
+
+  // Wallet (or resolved wallet): skip search; use list + filter only when we have API key. Without key, one search call so exactMatch can return the single result.
+  const useWalletOnlyPath = (isWalletQuery || !!resolvedWallet) && !!apiKey;
+  let searchResult = null;
+  if (!useWalletOnlyPath) {
+    searchResult = await fetchSearch(effectiveQuery, apiKey);
+    if (!resolvedWallet && normalized && !normalized.startsWith("@")) {
+      const filteredFromFirst = searchResult ? searchResult.launches.filter(matches) : [];
+      if (filteredFromFirst.length === 0) {
+        const withAt = await fetchSearch("@" + normalized, apiKey);
+        if (withAt && withAt.launches.length > 0) {
+          searchResult = searchResult
+            ? { launches: [...new Map([...searchResult.launches, ...withAt.launches].map((l) => [l.tokenAddress?.toLowerCase(), l])).values()], totalCount: Math.max(searchResult.totalCount, withAt.totalCount) }
+            : withAt;
+        }
       }
     }
   }
@@ -413,11 +441,11 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     launches = searchResult.launches.filter(matches);
     totalCount = searchResult.totalCount;
   }
-  // Search API often caps or fails for wallet; with API key fetch list and filter by wallet. Wallet-only: smaller limit for speed.
+
   if (apiKey) {
     const isWalletOnly = isWalletQuery || !!resolvedWallet;
     const listLimit = isWalletOnly ? BANKR_WALLET_LOOKUP_LIMIT : BANKR_LAUNCHES_LIMIT;
-    let all = await fetchAllLaunches(listLimit, undefined, apiKey);
+    let all = await getCachedLaunches(listLimit, undefined, apiKey);
     let handleToWallet = buildHandleToWalletMap(all);
     for (const [h, w] of getHandleOverrides()) handleToWallet.set(h, w);
     if (!handleToWallet.has(normalized) && OLDEST_FETCH_LIMIT > 0) {
@@ -434,22 +462,6 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     }
     mergeLaunchesWithoutDuplicates(launches, all.filter(matches));
     totalCount = Math.max(launches.length, totalCount);
-    if (!isWalletQuery && normalized) {
-      let wallet = resolvedWallet ?? handleToWallet.get(normalized) ?? null;
-      if (!wallet) {
-        const resolved = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
-        wallet = resolved.wallet ?? null;
-      }
-      if (wallet) {
-        if (!resolvedWallet) resolvedWallet = wallet;
-        const byWallet = await fetchSearch(wallet, apiKey);
-        if (byWallet?.launches?.length > 0) {
-          const walletMatchesFn = (l) => launchMatches(l, wallet, true, filter);
-          mergeLaunchesWithoutDuplicates(launches, byWallet.launches.filter(walletMatchesFn));
-          totalCount = Math.max(byWallet.totalCount ?? totalCount, launches.length);
-        }
-      }
-    }
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 

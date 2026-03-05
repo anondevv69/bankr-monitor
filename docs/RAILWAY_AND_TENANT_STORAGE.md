@@ -71,7 +71,7 @@ Railway project (e.g. "BankrMonitor Prod")
 └── bankr-monitor     (Discord bot)
     Variables:
     - DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID
-    - DOPPLER_INDEXER_URL = https://indexer-prod.doppler.lol (or your indexer domain)
+    - DOPPLER_INDEXER_URL = https://bankr.indexer.doppler.lol (or your indexer domain)
     - RPC_URL_BASE (Base mainnet RPC — required for claimable fees in /fees-token)
     - BANKR_API_KEY (optional but recommended)
     - TENANTS_FILE=/data/bankr-tenants.json   (if you added a volume at /data)
@@ -92,7 +92,7 @@ In Railway, open your **BankrMonitor (bot)** service → **Variables**, and ensu
 | `DISCORD_BOT_TOKEN` | Yes | From Discord Developer Portal. |
 | `DISCORD_ALERT_CHANNEL_ID` or `DISCORD_WATCH_ALERT_CHANNEL_ID` | At least one | Where the bot posts launch alerts. |
 | **`RPC_URL_BASE`** | **For claimable fees** | Base mainnet RPC URL (e.g. `https://mainnet.base.org` or Alchemy/QuickNode). Without this, `/fees-token` cannot show "Claimable right now" (on-chain hook data). |
-| `DOPPLER_INDEXER_URL` | Optional | Defaults to `https://indexer-prod.doppler.lol`. Override only if you use a different indexer. |
+| `DOPPLER_INDEXER_URL` | Optional | Defaults to `https://bankr.indexer.doppler.lol`. Override only if you use a different indexer. |
 | `BANKR_API_KEY` | Optional | From bankr.bot/api. Improves /lookup and single-token launch resolution. |
 | `BANKR_INTEGRATION_ADDRESS` | Optional | Only for the **notify feed** (which tokens appear in the feed). Not used for /fees-token; fee recipient fees use the launch's actual fee recipient wallet. |
 

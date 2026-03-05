@@ -7,7 +7,7 @@
 
 import "dotenv/config";
 
-const base = (process.env.DOPPLER_INDEXER_URL || process.argv[2] || "https://indexer-prod.doppler.lol")
+const base = (process.env.DOPPLER_INDEXER_URL || process.argv[2] || "https://bankr.indexer.doppler.lol")
   .replace(/\/$/, "");
 
 async function check() {

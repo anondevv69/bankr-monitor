@@ -11,7 +11,7 @@
  *   TELEGRAM_BOT_TOKEN   - Telegram bot token (optional)
  *   TELEGRAM_CHAT_ID     - Telegram chat/channel ID (optional)
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
- *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://indexer-prod.doppler.lol; set to your DM'd endpoint if different)
+ *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
  *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
  *   SEEN_FILE            - Path to store seen tokens (default: .bankr-seen.json)
  */
@@ -33,7 +33,7 @@ const BANKR_LAUNCHES_LIMIT = Math.min(
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
 const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
 const DOPPLER_INDEXER_URL =
-  process.env.DOPPLER_INDEXER_URL || "https://indexer-prod.doppler.lol";
+  process.env.DOPPLER_INDEXER_URL || "https://bankr.indexer.doppler.lol";
 const BANKR_INTEGRATION_ADDRESS = (
   process.env.BANKR_INTEGRATION_ADDRESS || "0xF60633D02690e2A15A54AB919925F3d038Df163e"
 ).trim().toLowerCase();
@@ -202,7 +202,7 @@ async function fetchLaunches(apiKey) {
     if (bankrLaunches?.length > 0) return bankrLaunches;
   }
 
-  // Production indexer (indexer-prod.doppler.lol): filter tokens by Bankr integration address
+  // Production indexer (bankr.indexer.doppler.lol): filter tokens by Bankr integration address
   // so we only get tokens that have this address as fee beneficiary. Try beneficiary first, then integrationAddress, then no filter.
   const queryWithBeneficiary = `
     query TokensByBeneficiary($chainId: Int!, $beneficiary: String!) {

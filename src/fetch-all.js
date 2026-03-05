@@ -7,7 +7,8 @@
 import { fetchRecentLaunches } from "./fetch-from-chain.js";
 
 const DOPPLER_INDEXER_URL =
-  process.env.DOPPLER_INDEXER_URL || "https://testnet-indexer.doppler.lol";
+  process.env.DOPPLER_INDEXER_URL ||
+  (process.env.CHAIN_ID === "8453" ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const OUTPUT_JSON = process.env.OUTPUT_JSON === "1";
 
