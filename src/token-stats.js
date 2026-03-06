@@ -15,6 +15,8 @@
 
 import "dotenv/config";
 
+import { DOPPLER_CONTRACTS_BASE } from "./config.js";
+
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
 const DOPPLER_INDEXER_URL =
@@ -459,7 +461,7 @@ async function fetchHookFeesOnChain(poolId) {
     const { getAddresses } = await import("@whetstone-research/doppler-sdk");
     const { rehypeDopplerHookAbi } = await import("@whetstone-research/doppler-sdk");
     const addresses = getAddresses(CHAIN_ID);
-    const hookAddress = addresses?.rehypeDopplerHook;
+    const hookAddress = addresses?.rehypeDopplerHook ?? (CHAIN_ID === 8453 ? DOPPLER_CONTRACTS_BASE.RehypeDopplerHook : null);
     if (!hookAddress) return { hookFees: null, error: "no_hook_address" };
     const result = await publicClient.readContract({
       address: hookAddress,
