@@ -21,7 +21,7 @@ const BANKR_API_KEY = process.env.BANKR_API_KEY;
 // How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000", 10);
 // Wallet-only lookups: fetch this many newest launches so /lookup by wallet is fast. Increase if tokens are missed.
-const BANKR_WALLET_LOOKUP_LIMIT = Math.min(parseInt(process.env.BANKR_WALLET_LOOKUP_LIMIT || "5000", 10), 50000);
+const BANKR_WALLET_LOOKUP_LIMIT = Math.min(parseInt(process.env.BANKR_WALLET_LOOKUP_LIMIT || "10000", 10), 50000);
 // When handle not found in newest launches, fetch this many oldest (order=asc) to resolve X/FC -> wallet
 const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMIT || "10000", 10), 50000);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
@@ -462,6 +462,15 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     }
     mergeLaunchesWithoutDuplicates(launches, all.filter(matches));
     totalCount = Math.max(launches.length, totalCount);
+    // If wallet-only path returned 0, try search once (exactMatch can find tokens outside list window)
+    if (launches.length === 0 && useWalletOnlyPath && effectiveQuery) {
+      const fallbackSearch = await fetchSearch(effectiveQuery, apiKey);
+      if (fallbackSearch?.launches?.length > 0) {
+        const extra = fallbackSearch.launches.filter(matches);
+        mergeLaunchesWithoutDuplicates(launches, extra);
+        totalCount = Math.max(launches.length, fallbackSearch.totalCount ?? totalCount);
+      }
+    }
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
