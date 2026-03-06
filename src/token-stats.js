@@ -451,16 +451,27 @@ const CLAIMED_FEES_EVENT = parseAbiItem(
   "event ClaimedFees(address indexed recipient, address indexed asset, uint256 tokenAmount, uint256 wethAmount)"
 );
 
+/** Release(poolId, beneficiary, fees0, fees1) from DecayMulticurveInitializer — actual event used when fee recipient claims on Base. fees0 = WETH, fees1 = token. */
+const RELEASE_EVENT = parseAbiItem(
+  "event Release(bytes32 indexed poolId, address indexed beneficiary, uint256 fees0, uint256 fees1)"
+);
+
 /**
- * Get total claimed fees from on-chain ClaimedFees events (so status is not just accrued − claimable).
+ * Get total claimed fees from on-chain events so status is not just accrued − claimable.
+ * Queries (1) RehypeDopplerHook.ClaimedFees(recipient, asset) and (2) when poolId is provided,
+ * DecayMulticurveInitializer.Release(poolId, beneficiary) — which is what Base claim txns emit.
  * @param {string} feeWallet - Fee recipient address (0x...).
  * @param {string} tokenAddress - Pool asset / token address (0x...).
+ * @param {string} [poolId] - Optional bytes32 pool id (0x...64 hex). When provided, also queries Release events from DecayMulticurveInitializer.
  * @returns {Promise<{ claimedToken: number, claimedWeth: number, count: number }>}
  */
-export async function getClaimedFeesFromEvents(feeWallet, tokenAddress) {
+export async function getClaimedFeesFromEvents(feeWallet, tokenAddress, poolId) {
   const recipient = normalizeAddress(feeWallet);
   const asset = normalizeAddress(tokenAddress);
   if (!recipient || !asset || CHAIN_ID !== 8453) return { claimedToken: 0, claimedWeth: 0, count: 0 };
+  const poolIdTrimmed =
+    poolId && typeof poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(poolId.trim()) ? poolId.trim() : null;
+
   try {
     const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
     const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
@@ -468,26 +479,49 @@ export async function getClaimedFeesFromEvents(feeWallet, tokenAddress) {
       chain,
       transport: viem.http(getBaseRpcUrl()),
     });
-    const hookAddress = DOPPLER_CONTRACTS_BASE.RehypeDopplerHook;
     const DECIMALS = 18;
-    const logs = await publicClient.getLogs({
+    let claimedToken = 0n;
+    let claimedWeth = 0n;
+    let count = 0;
+
+    // (1) RehypeDopplerHook — ClaimedFees(recipient, asset, tokenAmount, wethAmount)
+    const hookAddress = DOPPLER_CONTRACTS_BASE.RehypeDopplerHook;
+    const logsRehype = await publicClient.getLogs({
       address: hookAddress,
       event: CLAIMED_FEES_EVENT,
       args: { recipient, asset },
       fromBlock: 0n,
       toBlock: "latest",
     });
-    let claimedToken = 0n;
-    let claimedWeth = 0n;
-    for (const log of logs) {
+    for (const log of logsRehype) {
       const args = log.args;
       if (args?.tokenAmount != null) claimedToken += BigInt(args.tokenAmount);
       if (args?.wethAmount != null) claimedWeth += BigInt(args.wethAmount);
+      count += 1;
     }
+
+    // (2) DecayMulticurveInitializer — Release(poolId, beneficiary, fees0, fees1); fees0 = WETH, fees1 = token
+    if (poolIdTrimmed) {
+      const decayAddress = DOPPLER_CONTRACTS_BASE.DecayMulticurveInitializer;
+      const logsRelease = await publicClient.getLogs({
+        address: decayAddress,
+        event: RELEASE_EVENT,
+        args: { poolId: poolIdTrimmed, beneficiary: recipient },
+        fromBlock: 0n,
+        toBlock: "latest",
+      });
+      for (const log of logsRelease) {
+        const args = log.args;
+        if (args?.fees0 != null) claimedWeth += BigInt(args.fees0);
+        if (args?.fees1 != null) claimedToken += BigInt(args.fees1);
+        count += 1;
+      }
+    }
+
     return {
       claimedToken: Number(claimedToken) / 10 ** DECIMALS,
       claimedWeth: Number(claimedWeth) / 10 ** DECIMALS,
-      count: logs.length,
+      count,
     };
   } catch {
     return { claimedToken: 0, claimedWeth: 0, count: 0 };
@@ -618,7 +652,7 @@ export async function getTokenFees(tokenAddress, options = {}) {
 
   let claimedFromEvents = null;
   if (feeWallet && addr) {
-    const ev = await getClaimedFeesFromEvents(feeWallet, addr);
+    const ev = await getClaimedFeesFromEvents(feeWallet, addr, poolIdForHook ?? undefined);
     claimedFromEvents = { claimedToken: ev.claimedToken, claimedWeth: ev.claimedWeth, count: ev.count };
   }
 
