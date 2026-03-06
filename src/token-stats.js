@@ -404,7 +404,7 @@ async function fetchDopplerPoolState(tokenAddress) {
             : { id: CHAIN_ID, name: "Unknown", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: [] } } };
       const publicClient = viem.createPublicClient({
         chain,
-        transport: viem.http(process.env.RPC_URL || undefined),
+        transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL || undefined),
       });
       const { DopplerSDK } = await import("@whetstone-research/doppler-sdk");
       const sdk = new DopplerSDK({

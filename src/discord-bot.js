@@ -671,8 +671,8 @@ async function runClaimWatchCycle() {
       try {
         const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
         const hookFees = out.hookFees;
-        const currentToken = hookFees ? Number(hookFees.beneficiaryFees0) / 10 ** CLAIM_WATCH_DECIMALS : 0;
-        const currentWeth = hookFees ? Number(hookFees.beneficiaryFees1) / 10 ** CLAIM_WATCH_DECIMALS : 0;
+        const currentWeth = hookFees ? Number(hookFees.beneficiaryFees0) / 10 ** CLAIM_WATCH_DECIMALS : 0;
+        const currentToken = hookFees ? Number(hookFees.beneficiaryFees1) / 10 ** CLAIM_WATCH_DECIMALS : 0;
         const symbol = out.symbol ?? "—";
         const name = out.name ?? "—";
 
@@ -686,8 +686,8 @@ async function runClaimWatchCycle() {
         const wethDropped = currentWeth < prev.lastClaimableWeth - CLAIM_DROP_TOLERANCE;
         if (tokenDropped || wethDropped) {
           const lines = [];
-          if (tokenDropped) lines.push(`Token: ${prev.lastClaimableToken.toFixed(6)} → ${currentToken.toFixed(6)}`);
           if (wethDropped) lines.push(`WETH: ${prev.lastClaimableWeth.toFixed(6)} → ${currentWeth.toFixed(6)}`);
+          if (tokenDropped) lines.push(`Token: ${prev.lastClaimableToken.toFixed(6)} → ${currentToken.toFixed(6)}`);
           const embed = {
             color: 0x00_80_00,
             title: "Fees claimed",
@@ -778,8 +778,8 @@ async function replyFeesForMessage(message, tokenAddress) {
       ];
       for (const t of recipient.tokens) {
         const h = t.hookFees;
-        const tokenAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
-        const wethAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
+        const wethAmt = Number(h.beneficiaryFees0) / 10 ** DECIMALS;
+        const tokenAmt = Number(h.beneficiaryFees1) / 10 ** DECIMALS;
         lines.push(`• **${t.tokenName}** ($${t.tokenSymbol}) \`${t.tokenAddress.slice(0, 10)}…\``);
         lines.push(`  Token: ${tokenAmt.toFixed(4)} · WETH: ${wethAmt.toFixed(6)}`);
         lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);

@@ -11,7 +11,7 @@ BankrMonitor **does not run** the indexer. It calls the **Doppler indexer’s Gr
 
 - **Token/pool** — After the indexer has seen the pool’s create/migrate event on-chain (usually within a few minutes of deploy).
 - **Volume / historical fees** — As swap (and mint/burn) events are indexed; typically within a few minutes of the first swap.
-- **Claimable fees** — Come from **on-chain** (`getHookFees`), not the indexer. The indexer is used for **historical accrued** and **volume**; RPC is used for claimable.
+- **Claimable fees** — Come from **on-chain** (`getHookFees`), not the indexer. The indexer is used for **historical accrued** and **volume**; RPC is used for claimable. Set **RPC_URL_BASE** or **RPC_URL** (e.g. on Railway) so the bot can read claimable. Claimable also needs a **pool ID** (from Bankr API or indexer); if the token is very new or the indexer hasn’t indexed the pool yet, claimable can show as unavailable even when RPC is set.
 
 So “No fee data yet” often means: pool very new or no swaps yet; indexer may not have the pool or cumulated fees yet. Data is shown in **ET** (America/New_York) where we display “Data retrieved”.
 
