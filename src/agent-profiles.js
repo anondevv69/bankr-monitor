@@ -13,6 +13,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENT_PROFILES_API = process.env.AGENT_PROFILES_API_URL || "https://api.bankr.bot/agent-profiles";
 const SEEN_AGENTS_FILE = process.env.SEEN_AGENTS_FILE || join(process.cwd(), ".bankr-seen-agents.json");
 const SEEN_AGENTS_MAX = Math.min(parseInt(process.env.SEEN_AGENTS_MAX || "500", 10), 2000);
+const AGENT_PROFILES_DEBUG = process.env.AGENT_PROFILES_DEBUG === "1" || process.env.AGENT_PROFILES_DEBUG === "true";
+
+/** Comma-separated slugs to get update alerts for (e.g. WATCHED_AGENT_SLUGS=clanker,truth_terminal). New agents always get one alert. */
+function getWatchedAgentSlugs() {
+  const raw = process.env.WATCHED_AGENT_SLUGS;
+  if (!raw || typeof raw !== "string") return new Set();
+  return new Set(raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
+}
 
 const FETCH_HEADERS = {
   Accept: "application/json",
@@ -36,11 +44,26 @@ export async function fetchAgentProfiles(opts = {}) {
       return { profiles: [], total: 0 };
     }
     const data = await res.json();
-    const profiles = Array.isArray(data.profiles) ? data.profiles : [];
-    const total = typeof data.total === "number" ? data.total : profiles.length;
-    if (profiles.length === 0 && res.ok) {
-      console.warn("[Agent profiles] API 200 but no profiles in response (check response shape)");
+
+    let profiles = [];
+    let total = 0;
+    if (Array.isArray(data?.profiles)) {
+      profiles = data.profiles;
+      total = typeof data.total === "number" ? data.total : profiles.length;
+    } else if (Array.isArray(data)) {
+      profiles = data;
+      total = data.length;
+    } else if (Array.isArray(data?.data)) {
+      profiles = data.data;
+      total = typeof data.total === "number" ? data.total : profiles.length;
+    } else if (Array.isArray(data?.items)) {
+      profiles = data.items;
+      total = typeof data.total === "number" ? data.total : profiles.length;
+    } else {
+      console.warn("[Agent profiles] Unexpected API response shape. Keys:", data && typeof data === "object" ? Object.keys(data).join(", ") : typeof data);
+      if (AGENT_PROFILES_DEBUG) console.log("[Agent profiles] Raw response preview:", JSON.stringify(data).slice(0, 300));
     }
+
     return { profiles, total };
   } catch (e) {
     console.error("[Agent profiles] fetch failed:", e?.message);
@@ -90,6 +113,7 @@ export async function getNewAgentProfiles(opts = {}) {
   }
   const newProfiles = [];
   for (const p of profiles) {
+    if (p.status !== "approved") continue;
     const id = p.id || p.slug || p.tokenAddress;
     if (!id) continue;
     const key = String(id).trim().toLowerCase();
@@ -112,6 +136,7 @@ const AGENT_PROFILES_WS_URL = "https://api.bankr.bot";
  */
 export async function markSeenAndReturnIfNew(profile) {
   if (!profile || typeof profile !== "object") return null;
+  if (profile.status !== "approved") return null;
   const id = profile.id || profile.slug || profile.tokenAddress;
   if (!id) return null;
   const key = String(id).trim().toLowerCase();
@@ -124,11 +149,12 @@ export async function markSeenAndReturnIfNew(profile) {
 
 /**
  * Subscribe to Bankr agent-profiles WebSocket for real-time new/updated profile events.
- * Calls onNew(profile) when we receive AGENT_PROFILE_UPDATE for a profile we haven't seen.
+ * Calls onNew(profile) when: (1) a new profile we haven't seen, or (2) an update for a WATCHED_AGENT_SLUGS profile.
  * @param {(profile: object) => void} onNew
  * @returns {() => void} Unsubscribe function
  */
 export function subscribeAgentProfileUpdates(onNew) {
+  const watchedSlugs = getWatchedAgentSlugs();
   let socket = null;
   async function connect() {
     try {
@@ -137,8 +163,11 @@ export function subscribeAgentProfileUpdates(onNew) {
       socket.on("connect", () => console.log("[Agent profiles] WebSocket connected for real-time new-agent pings"));
       socket.on("connect_error", (e) => console.warn("[Agent profiles] WebSocket connect_error:", e.message));
       socket.on("AGENT_PROFILE_UPDATE", async (profile) => {
+        const slug = (profile?.slug || profile?.id || "").toString().trim().toLowerCase();
+        const isWatched = slug && watchedSlugs.has(slug);
         const newProfile = await markSeenAndReturnIfNew(profile);
         if (newProfile) onNew(newProfile);
+        else if (isWatched && profile?.status === "approved") onNew(profile);
       });
     } catch (e) {
       console.warn("[Agent profiles] WebSocket unavailable:", e?.message);

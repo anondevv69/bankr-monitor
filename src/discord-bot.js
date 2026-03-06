@@ -888,15 +888,27 @@ function formatFeesTokenReply(out, tokenAddress) {
       } else {
         lines.push("_None claimed yet (claimable = accrued)._");
       }
+      const eps = 1e-9;
+      const totalAccrued = accruedWeth + accruedToken;
+      const totalClaimable = claimableW + claimableT;
+      if (totalAccrued >= eps) {
+        if (totalClaimable < eps) {
+          lines.push("**Status:** ALL CLAIMED");
+        } else if (totalClaimable < totalAccrued - eps) {
+          lines.push("**Status:** PARTIALLY CLAIMED");
+        } else {
+          lines.push("**Status:** UNCLAIMED");
+        }
+      }
     } else {
-      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env to enable._");
+      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env to enable; then you'll see claimable amounts and status (UNCLAIMED / PARTIALLY CLAIMED / ALL CLAIMED)._");
     }
     lines.push("");
   }
 
   if (hasHookData || hasIndexerFees) {
-    const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
-    lines.push(`_Data retrieved: ${retrievedAt} UTC_`);
+    const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "America/New_York" });
+    lines.push(`_Data retrieved: ${retrievedAt} ET_`);
     lines.push("");
   }
 
@@ -962,13 +974,25 @@ client.on("messageCreate", async (message) => {
           feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
         }
       }
+      if (out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
+        const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
+        const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
+        const eps = 1e-9;
+        const totalAccrued = w + t;
+        const totalClaimable = cW + cT;
+        if (totalAccrued >= eps) {
+          if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
+          else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
+          else feeParts.push("**Status:** UNCLAIMED");
+        }
+      }
     }
     if (out.hookFees && !claimableLine) {
       feeParts.push("**Claimable:** 0 WETH · 0 token (no unclaimed fees yet).");
     }
     if (feeParts.length > 0) {
-      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
-      feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
+      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "America/New_York" });
+      feeParts.push(`_Data retrieved: ${retrievedAt} ET_`);
     } else if (out.launch) {
       if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
         feeParts.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
@@ -979,10 +1003,10 @@ client.on("messageCreate", async (message) => {
       } else if (!rpcSet) {
         feeParts.push("_No fee data yet — set **RPC_URL_BASE** or **RPC_URL** (Base RPC) in the bot env for on-chain claimable._");
       } else {
-        feeParts.push("_No fee data yet for this pool (indexer or on-chain)._");
+        feeParts.push("_No fee data yet for this pool. Volume and historical fees usually appear in the indexer within a few minutes of the first swap; claimable uses on-chain data when RPC is set._");
       }
-      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "UTC" });
-      feeParts.push(`_Data retrieved: ${retrievedAt} UTC_`);
+      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "America/New_York" });
+      feeParts.push(`_Data retrieved: ${retrievedAt} ET_`);
     }
     if (feeParts.length > 0 && embed.fields) {
       embed.fields.splice(3, 0, { name: "Fees", value: feeParts.join("\n"), inline: false });
