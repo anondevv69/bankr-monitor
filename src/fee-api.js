@@ -8,7 +8,7 @@
  *
  * Optional: in-memory cache 60s (claimable responses). Set PORT (default 3xxx).
  *
- * Env: RPC_URL or RPC_URL_BASE (Base RPC). BANKR_API_KEY for ?token= resolution.
+ * Env: RPC_URL_BASE (Base RPC). BANKR_API_KEY for ?token= resolution.
  */
 
 import "dotenv/config";

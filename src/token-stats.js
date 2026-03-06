@@ -22,6 +22,8 @@ const DOPPLER_INDEXER_URL =
   (CHAIN_ID === 8453 ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
+/** Base RPC URL for on-chain reads (claimable fees, pool state). Only RPC_URL_BASE is used; RPC_URL is fallback. */
+const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
 
 /**
@@ -404,7 +406,7 @@ async function fetchDopplerPoolState(tokenAddress) {
             : { id: CHAIN_ID, name: "Unknown", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: [] } } };
       const publicClient = viem.createPublicClient({
         chain,
-        transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL || undefined),
+        transport: viem.http(getBaseRpcUrl()),
       });
       const { DopplerSDK } = await import("@whetstone-research/doppler-sdk");
       const sdk = new DopplerSDK({
@@ -441,7 +443,7 @@ function formatUsd(value) {
 
 export { fetchPoolByBaseToken, fetchCumulatedFees, fetchHookFeesOnChain, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
 
-/** On-chain read of RehypeDopplerHook.getHookFees(poolId). Returns beneficiary share (token0, token1) or null. Requires RPC_URL for Base. */
+/** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC). */
 async function fetchHookFeesOnChain(poolId) {
   if (!poolId || typeof poolId !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(poolId.trim())) return null;
   if (CHAIN_ID !== 8453) return null;
@@ -450,7 +452,7 @@ async function fetchHookFeesOnChain(poolId) {
     const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
     const publicClient = viem.createPublicClient({
       chain,
-      transport: viem.http(process.env.RPC_URL_BASE || process.env.RPC_URLBASE || process.env.RPC_URL || "https://mainnet.base.org"),
+      transport: viem.http(getBaseRpcUrl()),
     });
     const { getAddresses } = await import("@whetstone-research/doppler-sdk");
     const { rehypeDopplerHookAbi } = await import("@whetstone-research/doppler-sdk");
