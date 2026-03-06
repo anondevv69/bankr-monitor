@@ -51,11 +51,11 @@ function send(res, statusCode, body, contentType = "application/json") {
 }
 
 async function handleClaimableByPool(poolId) {
-  const hookFees = await fetchHookFeesOnChain(poolId);
+  const { hookFees, error: hookError } = await fetchHookFeesOnChain(poolId);
   if (!hookFees) {
     return {
       ok: false,
-      error: "Not a Rehype pool or RPC failed",
+      error: hookError ? `Hook read failed: ${hookError}` : "Not a Rehype pool or RPC failed",
       poolId,
       chainId: CHAIN_ID,
     };

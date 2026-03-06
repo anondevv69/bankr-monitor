@@ -443,10 +443,12 @@ function formatUsd(value) {
 
 export { fetchPoolByBaseToken, fetchCumulatedFees, fetchHookFeesOnChain, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
 
-/** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC). */
+/** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC).
+ * @returns {{ hookFees: object|null, error: string|null }}
+ */
 async function fetchHookFeesOnChain(poolId) {
-  if (!poolId || typeof poolId !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(poolId.trim())) return null;
-  if (CHAIN_ID !== 8453) return null;
+  if (!poolId || typeof poolId !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(poolId.trim())) return { hookFees: null, error: "invalid_pool_id" };
+  if (CHAIN_ID !== 8453) return { hookFees: null, error: "chain_not_base" };
   try {
     const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
     const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
@@ -458,7 +460,7 @@ async function fetchHookFeesOnChain(poolId) {
     const { rehypeDopplerHookAbi } = await import("@whetstone-research/doppler-sdk");
     const addresses = getAddresses(CHAIN_ID);
     const hookAddress = addresses?.rehypeDopplerHook;
-    if (!hookAddress) return null;
+    if (!hookAddress) return { hookFees: null, error: "no_hook_address" };
     const result = await publicClient.readContract({
       address: hookAddress,
       abi: rehypeDopplerHookAbi,
@@ -473,16 +475,20 @@ async function fetchHookFeesOnChain(poolId) {
     const f1 = r?.fees1 ?? (Array.isArray(r) ? r[1] : undefined);
     if (r && (b0 != null || b1 != null)) {
       return {
-        beneficiaryFees0: b0 != null ? BigInt(b0) : 0n,
-        beneficiaryFees1: b1 != null ? BigInt(b1) : 0n,
-        fees0: f0 != null ? BigInt(f0) : 0n,
-        fees1: f1 != null ? BigInt(f1) : 0n,
+        hookFees: {
+          beneficiaryFees0: b0 != null ? BigInt(b0) : 0n,
+          beneficiaryFees1: b1 != null ? BigInt(b1) : 0n,
+          fees0: f0 != null ? BigInt(f0) : 0n,
+          fees1: f1 != null ? BigInt(f1) : 0n,
+        },
+        error: null,
       };
     }
-  } catch {
-    /* not a Rehype pool or RPC failed */
+    return { hookFees: null, error: "unexpected_contract_response" };
+  } catch (e) {
+    const msg = (e?.message ?? String(e)).slice(0, 200);
+    return { hookFees: null, error: `rpc_or_contract: ${msg}` };
   }
-  return null;
 }
 
 const CREATOR_SHARE_BPS = 5700;
@@ -550,8 +556,13 @@ export async function getTokenFees(tokenAddress, options = {}) {
   let hookFees = null;
   // Use same poolId as for cumulatedFees (launch.poolId or indexer v4pools), so we get claimable when indexer has accrued.
   const poolIdForHook = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
+  let claimableUnavailableReason = null;
   if (poolIdForHook) {
-    hookFees = await fetchHookFeesOnChain(poolIdForHook);
+    const hookResult = await fetchHookFeesOnChain(poolIdForHook);
+    hookFees = hookResult.hookFees;
+    if (hookResult.error) claimableUnavailableReason = hookResult.error;
+  } else {
+    claimableUnavailableReason = "no_pool_id";
   }
 
   return {
@@ -570,6 +581,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     dexMetrics: dexMetrics ?? null,
     /** True if we had a bytes32 poolId and could call the on-chain hook (even if hook returned zero). */
     hasPoolIdForHook: !!poolIdForHook,
+    /** When claimable is unavailable: no_pool_id | rpc_or_contract: ... | etc. */
+    claimableUnavailableReason: claimableUnavailableReason ?? null,
   };
 }
 

@@ -89,6 +89,17 @@ function debugLogError(err, context) {
   fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
 }
 
+/** Send claimable-unavailable reason to debug webhook for easier debugging (RPC, pool ID, etc.). */
+function debugLogClaimableUnavailable(tokenAddress, out, context = "fees") {
+  if (!DEBUG_WEBHOOK_URL || !out?.claimableUnavailableReason) return;
+  const rpc = process.env.RPC_URL_BASE || process.env.RPC_URL;
+  const rpcHint = rpc ? `${rpc.replace(/\/\/[^/:]+@/, "//***@").slice(0, 45)}…` : "not set";
+  const body = JSON.stringify({
+    content: `**Claimable unavailable** \`${context}\`\nToken: \`${(tokenAddress || "").slice(0, 10)}…${(tokenAddress || "").slice(-6)}\`\nReason: \`${out.claimableUnavailableReason}\`\nRPC_URL_BASE: ${rpcHint}\nHas pool ID: ${out.hasPoolIdForHook ? "yes" : "no"}`,
+  });
+  fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
+}
+
 function getLookupPagination(matches, page) {
   const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
   const currentPage = Math.max(0, Math.min(page, totalPages - 1));
@@ -766,6 +777,7 @@ async function replyFeesForMessage(message, tokenAddress) {
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
     const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+    if (out.claimableUnavailableReason) debugLogClaimableUnavailable(out.tokenAddress, out, "mention");
     if (out.launch) {
       await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
       return;
@@ -949,6 +961,7 @@ client.on("messageCreate", async (message) => {
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
     const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+    if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
     const embed = buildTokenDetailEmbed(out, tokenAddress);
     const feeParts = [];
     const claimableLine = out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
@@ -1324,6 +1337,7 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+      if (out.claimableUnavailableReason) debugLogClaimableUnavailable(out.tokenAddress, out, "fees-token");
       const content = formatFeesTokenReply(out, tokenAddress);
       await interaction.editReply({ content });
       debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/fees-token", tokenAddress);
