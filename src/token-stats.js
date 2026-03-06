@@ -15,6 +15,7 @@
 
 import "dotenv/config";
 
+import { parseAbiItem } from "viem";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
@@ -445,6 +446,54 @@ function formatUsd(value) {
 
 export { fetchPoolByBaseToken, fetchCumulatedFees, fetchHookFeesOnChain, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };
 
+/** Event signature for claim transactions on RehypeDopplerHook (recipient + asset/token). If the contract uses a different event, getLogs returns []. */
+const CLAIMED_FEES_EVENT = parseAbiItem(
+  "event ClaimedFees(address indexed recipient, address indexed asset, uint256 tokenAmount, uint256 wethAmount)"
+);
+
+/**
+ * Get total claimed fees from on-chain ClaimedFees events (so status is not just accrued − claimable).
+ * @param {string} feeWallet - Fee recipient address (0x...).
+ * @param {string} tokenAddress - Pool asset / token address (0x...).
+ * @returns {Promise<{ claimedToken: number, claimedWeth: number, count: number }>}
+ */
+export async function getClaimedFeesFromEvents(feeWallet, tokenAddress) {
+  const recipient = normalizeAddress(feeWallet);
+  const asset = normalizeAddress(tokenAddress);
+  if (!recipient || !asset || CHAIN_ID !== 8453) return { claimedToken: 0, claimedWeth: 0, count: 0 };
+  try {
+    const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+    const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
+    const publicClient = viem.createPublicClient({
+      chain,
+      transport: viem.http(getBaseRpcUrl()),
+    });
+    const hookAddress = DOPPLER_CONTRACTS_BASE.RehypeDopplerHook;
+    const DECIMALS = 18;
+    const logs = await publicClient.getLogs({
+      address: hookAddress,
+      event: CLAIMED_FEES_EVENT,
+      args: { recipient, asset },
+      fromBlock: 0n,
+      toBlock: "latest",
+    });
+    let claimedToken = 0n;
+    let claimedWeth = 0n;
+    for (const log of logs) {
+      const args = log.args;
+      if (args?.tokenAmount != null) claimedToken += BigInt(args.tokenAmount);
+      if (args?.wethAmount != null) claimedWeth += BigInt(args.wethAmount);
+    }
+    return {
+      claimedToken: Number(claimedToken) / 10 ** DECIMALS,
+      claimedWeth: Number(claimedWeth) / 10 ** DECIMALS,
+      count: logs.length,
+    };
+  } catch {
+    return { claimedToken: 0, claimedWeth: 0, count: 0 };
+  }
+}
+
 /** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC).
  * @returns {{ hookFees: object|null, error: string|null }}
  */
@@ -567,6 +616,12 @@ export async function getTokenFees(tokenAddress, options = {}) {
     claimableUnavailableReason = "no_pool_id";
   }
 
+  let claimedFromEvents = null;
+  if (feeWallet && addr) {
+    const ev = await getClaimedFeesFromEvents(feeWallet, addr);
+    claimedFromEvents = { claimedToken: ev.claimedToken, claimedWeth: ev.claimedWeth, count: ev.count };
+  }
+
   return {
     tokenAddress: addr,
     name,
@@ -585,6 +640,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     hasPoolIdForHook: !!poolIdForHook,
     /** When claimable is unavailable: no_pool_id | rpc_or_contract: ... | etc. */
     claimableUnavailableReason: claimableUnavailableReason ?? null,
+    /** Total claimed from on-chain ClaimedFees events (so status is not just accrued − claimable). */
+    claimedFromEvents: claimedFromEvents ?? null,
   };
 }
 

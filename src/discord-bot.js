@@ -892,26 +892,47 @@ function formatFeesTokenReply(out, tokenAddress) {
     if (hasHookData) {
       const claimableT = claimableToken ?? 0;
       const claimableW = claimableWeth ?? 0;
-      const claimedT = Math.max(0, accruedToken - claimableT);
-      const claimedW = Math.max(0, accruedWeth - claimableW);
-      if (claimedT > 0 || claimedW > 0) {
-        lines.push("**Already claimed** ≈ Accrued − Claimable:");
-        if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
-        if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
-        lines.push("_Some fees have been claimed for this token._");
-      } else {
-        lines.push("_None claimed yet (claimable = accrued)._");
-      }
+      const fromEvents = out.claimedFromEvents;
       const eps = 1e-9;
-      const totalAccrued = accruedWeth + accruedToken;
       const totalClaimable = claimableW + claimableT;
-      if (totalAccrued >= eps) {
-        if (totalClaimable < eps) {
-          lines.push("**Status:** ALL CLAIMED");
-        } else if (totalClaimable < totalAccrued - eps) {
-          lines.push("**Status:** PARTIALLY CLAIMED");
+
+      if (fromEvents != null) {
+        const claimedT = fromEvents.claimedToken ?? 0;
+        const claimedW = fromEvents.claimedWeth ?? 0;
+        const totalClaimedFromEvents = claimedT + claimedW;
+        if (totalClaimedFromEvents >= eps) {
+          lines.push("**Already claimed** (on-chain events):");
+          if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
+          if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
+          lines.push("_Detected from ClaimedFees events on Base._");
         } else {
-          lines.push("**Status:** UNCLAIMED");
+          lines.push("**Already claimed** (on-chain events): 0");
+          lines.push("_No claim transactions detected for this recipient/token._");
+        }
+        if (totalClaimedFromEvents >= eps) {
+          if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
+          else if (totalClaimable < (accruedWeth + accruedToken) - eps) lines.push("**Status:** PARTIALLY CLAIMED");
+          else lines.push("**Status:** UNCLAIMED");
+        } else {
+          if (totalClaimable >= eps) lines.push("**Status:** UNCLAIMED");
+          else if (accruedWeth + accruedToken >= eps) lines.push("**Status:** _Unknown (hook reports 0 claimable; no claim events yet)_");
+        }
+      } else {
+        const claimedT = Math.max(0, accruedToken - claimableT);
+        const claimedW = Math.max(0, accruedWeth - claimableW);
+        if (claimedT > 0 || claimedW > 0) {
+          lines.push("**Already claimed** ≈ Accrued − Claimable:");
+          if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
+          if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
+          lines.push("_Some fees have been claimed for this token._");
+        } else {
+          lines.push("_None claimed yet (claimable = accrued)._");
+        }
+        const totalAccrued = accruedWeth + accruedToken;
+        if (totalAccrued >= eps) {
+          if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
+          else if (totalClaimable < totalAccrued - eps) lines.push("**Status:** PARTIALLY CLAIMED");
+          else lines.push("**Status:** UNCLAIMED");
         }
       }
     } else {
@@ -983,10 +1004,28 @@ client.on("messageCreate", async (message) => {
       if (out.hookFees && claimableLine) {
         const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
         const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
-        const claimedW = Math.max(0, w - cW);
-        const claimedT = Math.max(0, t - cT);
-        if (claimedW > 0 || claimedT > 0) {
-          feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+        const fromEvents = out.claimedFromEvents;
+        if (fromEvents != null) {
+          const claimedW = fromEvents.claimedWeth ?? 0;
+          const claimedT = fromEvents.claimedToken ?? 0;
+          if (claimedW > 0 || claimedT > 0) {
+            feeParts.push(`**Already claimed (on-chain):** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+          } else {
+            feeParts.push("**Already claimed (on-chain):** 0 (no claim events detected).");
+          }
+        } else {
+          const claimedW = Math.max(0, w - cW);
+          const claimedT = Math.max(0, t - cT);
+          if (claimedW > 0 || claimedT > 0) {
+            feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+          }
+        }
+      } else if (out.hookFees && !claimableLine && out.claimedFromEvents != null) {
+        const ev = out.claimedFromEvents;
+        if ((ev.claimedWeth ?? 0) > 0 || (ev.claimedToken ?? 0) > 0) {
+          feeParts.push(`**Already claimed (on-chain):** WETH ${(ev.claimedWeth ?? 0).toFixed(4)} • Token ${fmtT(ev.claimedToken ?? 0)}`);
+        } else {
+          feeParts.push("**Already claimed (on-chain):** 0 (no claim events detected).");
         }
       }
       if (out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
@@ -995,10 +1034,25 @@ client.on("messageCreate", async (message) => {
         const eps = 1e-9;
         const totalAccrued = w + t;
         const totalClaimable = cW + cT;
-        if (totalAccrued >= eps) {
-          if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
-          else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
-          else feeParts.push("**Status:** UNCLAIMED");
+        const fromEvents = out.claimedFromEvents;
+        if (fromEvents != null) {
+          const claimedT = fromEvents.claimedToken ?? 0;
+          const claimedW = fromEvents.claimedWeth ?? 0;
+          const totalClaimed = claimedT + claimedW;
+          if (totalClaimed >= eps) {
+            if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
+            else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
+            else feeParts.push("**Status:** UNCLAIMED");
+          } else {
+            if (totalClaimable >= eps) feeParts.push("**Status:** UNCLAIMED");
+            else if (totalAccrued >= eps) feeParts.push("**Status:** _Unknown (no claim events; hook reports 0 claimable)_");
+          }
+        } else {
+          if (totalAccrued >= eps) {
+            if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
+            else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
+            else feeParts.push("**Status:** UNCLAIMED");
+          }
         }
       }
     }
