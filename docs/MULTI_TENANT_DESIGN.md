@@ -11,7 +11,8 @@ Each Discord server (or Telegram group) that adds the bot gets **its own config*
 | **guildId** (Discord) | Server ID. Primary key for Discord. |
 | **chatId** (Telegram) | Optional; for Telegram-only or dual alerts. |
 | **bankrApiKey** | Their Bankr API key (for launches, lookup, deploy). Stored per tenant. |
-| **alertChannelId** | Discord channel for *all* new launch alerts. |
+| **allLaunchesChannelId** | Optional. Discord channel for *every* Bankr launch (firehose, no rules). |
+| **alertChannelId** | Optional. Discord channel for *curated* alerts only (passes filter_x_match, filter_max_deploys). |
 | **watchAlertChannelId** | Discord channel for *watch-list* matches only (optional). |
 | **telegramChatId** | If they want Telegram alerts for this tenant. |
 | **rules** | Monitoring rules: `filterXMatch`, `filterMaxDeploys`, `pollIntervalMs`, etc. |
@@ -30,10 +31,11 @@ Each Discord server (or Telegram group) that adds the bot gets **its own config*
 **`/setup`** (wizard or single modal):
 
 1. **API key** – “Enter your Bankr API key (from bankr.bot/api).” Store in tenant config.
-2. **Alert channel** – “Choose the channel for all new token alerts.” (channel picker or ID)
-3. **Watch alert channel** (optional) – “Choose the channel for watch-list matches only, or skip.”
-4. **Rules** – “Only alert when deployer and fee recipient match?” (filter_x_match), “Max deploys per day to alert?” (filter_max_deploys), “Poll interval (minutes).” (poll_interval_ms)
-5. **Watchlist** – “Add X handles, wallets, keywords via `/watch add` after setup.”
+2. **All launches channel** (optional) – Firehose: every Bankr deploy.
+3. **Curated alert channel** (optional) – Only launches that pass rules (X match, max deploys/day). At least one of (2) or (3) required.
+4. **Watch alert channel** (optional) – Watch-list matches only.
+5. **Rules** – Curated channel only: filter_x_match, filter_max_deploys, poll interval.
+6. **Watchlist** – `/watch add` for X, wallets, keywords.
 
 After saving, mark tenant as configured so the notify loop includes this guild.
 

@@ -356,9 +356,15 @@ Notify on new launches via Discord bot channel (recommended) or webhook, and/or 
 
 ### Discord bot channel (recommended for /watch and /lookup)
 
-When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and **DISCORD_WATCH_ALERT_CHANNEL_ID** so alerts post to channels (not the webhook). Right-click each channel → Copy channel ID (enable Developer Mode in Discord settings).
+When using the Discord bot (`npm start`), you can set:
 
-**Optional env when using /setup:** You can leave **DISCORD_ALERT_CHANNEL_ID**, **DISCORD_WATCH_ALERT_CHANNEL_ID**, **BANKR_API_KEY**, **FILTER_X_MATCH**, and **DISCORD_WEBHOOK_URL** unset (or blank). Each server configures API key, alert channel, watch channel, and rules via **/setup** in Discord. When those env vars are not set, launch alerts are sent to **each server’s /setup channels** (every server that has run /setup with an alert channel gets the feed). So you only need **DISCORD_BOT_TOKEN** (and **DISCORD_CLIENT_ID** for register) in env; the rest can be configured per server. If you do set the env channels, they take precedence (single global feed to those channels).
+- **DISCORD_ALL_LAUNCHES_CHANNEL_ID** — every Bankr deploy (firehose, no filters).
+- **DISCORD_ALERT_CHANNEL_ID** — curated only (respects **FILTER_X_MATCH**, **FILTER_MAX_DEPLOYS**).
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** — watch-list matches only.
+
+Right-click each channel → Copy channel ID (Developer Mode). You can use one, two, or all three (same launch is deduped per channel).
+
+**Optional env when using /setup:** Per-server **/setup** can set **all_launches_channel** (firehose), **alert_channel** (curated), **watch_channel** (watch list); at least one of firehose or curated is required. If no global env channels are set, alerts go to each server’s configured channels.
 
 - **/watch** — Manage the launch watch list (add/remove X, Farcaster, wallet, keyword).
 - **/claim-watch** — Get notified when a token’s fees are claimed: add/remove/list token addresses; alerts post to your watch or alert channel when claimable drops.
@@ -370,14 +376,15 @@ When using the Discord bot (`npm start`), set **DISCORD_ALERT_CHANNEL_ID** and *
 
 **Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, `/fees-token`, paste token, mention fees, `/deploy`, `/watch list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
 
-**Two feeds:**
+**Three feed types:**
 
 | Variable | Purpose |
 |----------|---------|
-| **DISCORD_ALERT_CHANNEL_ID** | **Real-time deployments** — all new Bankr tokens, always on |
-| **DISCORD_WATCH_ALERT_CHANNEL_ID** | **Watch list only** — only tokens matching your wallet/X/Farcaster/keyword list, elsewhere |
+| **DISCORD_ALL_LAUNCHES_CHANNEL_ID** | **Firehose** — every Bankr deployment (no filter) |
+| **DISCORD_ALERT_CHANNEL_ID** | **Curated** — only if deploy passes **FILTER_X_MATCH** / **FILTER_MAX_DEPLOYS** |
+| **DISCORD_WATCH_ALERT_CHANNEL_ID** | **Watch list** — only tokens matching **/watch** (X, FC, wallet, keyword) |
 
-Use two different channels so you get every deployment in one place and your watch-list pings in another.
+Example: one channel for all deploys, another for “quality” deploys (same X on deployer + fee recipient), a third for your watch list.
 
 ### Setup
 
@@ -385,10 +392,18 @@ Use two different channels so you get every deployment in one place and your wat
    - Server → Server Settings → Integrations → Webhooks → New Webhook
    - Copy the webhook URL
 
-2. **Telegram bot**
-   - Message [@BotFather](https://t.me/BotFather) → `/newbot` → get token
-   - For your chat ID: message [@userinfobot](https://t.me/userinfobot) or use [getUpdates](https://api.telegram.org/bot<TOKEN>/getUpdates) after sending the bot a message
-   - Telegram is **receive-only**: the app sends launch alerts to the configured chat. It does not accept commands from Telegram users (no settings or watchlist in Telegram).
+2. **Telegram firehose (subscription channel)**  
+   Use a **channel** (not a group) so people can subscribe and get every Bankr deployment:
+
+   - **Create a channel:** Telegram → Menu → New Channel → name it (e.g. "Bankr Deploys") → add a description.
+   - **Make it public** (optional): Channel info → Edit → set a **username** (e.g. `bankr_deploys`). Share **t.me/bankr_deploys** so anyone can join. Or leave it private and share an invite link.
+   - **Add your bot:** Channel → Administrators → Add Admin → your bot → enable **Post messages** (and **Edit messages** if you want). No need for other permissions.
+   - **Get the channel chat ID:** Channel IDs look like `-1001234567890`. Easiest: forward any message from the channel to [@userinfobot](https://t.me/userinfobot) or to [@RawDataBot](https://t.me/RawDataBot); the reply shows the chat ID. Or add the bot, post once, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and read `message.chat.id` (use the bot token from [@BotFather](https://t.me/BotFather)).
+   - Set **TELEGRAM_BOT_TOKEN** (from @BotFather) and **TELEGRAM_CHAT_ID** (the channel ID) in your env. The bot will post every new Bankr launch to that channel; subscribers see the firehose.
+
+   Telegram is **receive-only**: the app only sends alerts. It does not accept commands from users.
+
+   **Share with users:** Once the channel is public, give people the link (e.g. **t.me/your_channel_username**). They join the channel and get every new Bankr deploy automatically.
 
 3. **Environment variables**
    ```bash

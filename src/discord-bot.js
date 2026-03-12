@@ -51,6 +51,9 @@ import { getNewAgentProfiles, subscribeAgentProfileUpdates, fetchAgentProfiles }
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
+/** Optional: post every Bankr launch here (unfiltered firehose). */
+const ALL_LAUNCHES_CHANNEL_ID = process.env.DISCORD_ALL_LAUNCHES_CHANNEL_ID;
+/** Optional: post only launches that pass global filters (same as notify.js). If unset, only watch/all channels used. */
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
 const AGENT_ALERT_CHANNEL_ID = process.env.DISCORD_AGENT_ALERT_CHANNEL_ID;
@@ -59,6 +62,9 @@ const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
+
+/** When true, /deploy is not registered and is hidden from help. Deploy handler code remains so it can be re-enabled by setting to false. */
+const HIDE_DEPLOY_COMMAND = true;
 
 /** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
 function canManageServer(interaction) {
@@ -282,70 +288,72 @@ async function registerCommands(appId) {
           )
       )
       .toJSON(),
-    new SlashCommandBuilder()
-      .setName("deploy")
-      .setDescription("Deploy a Bankr token (ticker, description, links; fees to wallet, X, or Farcaster)")
-      .addStringOption((o) =>
-        o
-          .setName("name")
-          .setDescription("Token name (required, 1–100 chars)")
-          .setRequired(true)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("symbol")
-          .setDescription("Ticker symbol (optional, 1–10 chars)")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("description")
-          .setDescription("Short description (optional, max 500 chars)")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("image_url")
-          .setDescription("URL to token logo image")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("website_url")
-          .setDescription("Token website URL")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("tweet_url")
-          .setDescription("Twitter/X post URL about the token")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("fee_recipient_type")
-          .setDescription("Where to send creator fees (57%)")
-          .setRequired(false)
-          .addChoices(
-            { name: "Wallet (0x...)", value: "wallet" },
-            { name: "X (Twitter) handle", value: "x" },
-            { name: "Farcaster handle", value: "farcaster" },
-            { name: "ENS name", value: "ens" }
-          )
-      )
-      .addStringOption((o) =>
-        o
-          .setName("fee_recipient_value")
-          .setDescription("Address, @handle, or ENS (required if fee type is set)")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("simulate_only")
-          .setDescription("Dry run: no real deploy (default: false)")
-          .setRequired(false)
-      )
-      .toJSON(),
+    ...(HIDE_DEPLOY_COMMAND ? [] : [
+      new SlashCommandBuilder()
+        .setName("deploy")
+        .setDescription("Deploy a Bankr token (ticker, description, links; fees to wallet, X, or Farcaster)")
+        .addStringOption((o) =>
+          o
+            .setName("name")
+            .setDescription("Token name (required, 1–100 chars)")
+            .setRequired(true)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("symbol")
+            .setDescription("Ticker symbol (optional, 1–10 chars)")
+            .setRequired(false)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("description")
+            .setDescription("Short description (optional, max 500 chars)")
+            .setRequired(false)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("image_url")
+            .setDescription("URL to token logo image")
+            .setRequired(false)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("website_url")
+            .setDescription("Token website URL")
+            .setRequired(false)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("tweet_url")
+            .setDescription("Twitter/X post URL about the token")
+            .setRequired(false)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("fee_recipient_type")
+            .setDescription("Where to send creator fees (57%)")
+            .setRequired(false)
+            .addChoices(
+              { name: "Wallet (0x...)", value: "wallet" },
+              { name: "X (Twitter) handle", value: "x" },
+              { name: "Farcaster handle", value: "farcaster" },
+              { name: "ENS name", value: "ens" }
+            )
+        )
+        .addStringOption((o) =>
+          o
+            .setName("fee_recipient_value")
+            .setDescription("Address, @handle, or ENS (required if fee type is set)")
+            .setRequired(false)
+        )
+        .addBooleanOption((o) =>
+          o
+            .setName("simulate_only")
+            .setDescription("Dry run: no real deploy (default: false)")
+            .setRequired(false)
+        )
+        .toJSON(),
+    ]),
     new SlashCommandBuilder()
       .setName("setup")
       .setDescription("Configure Bankr monitor for this server (API key, channels, rules)")
@@ -357,9 +365,15 @@ async function registerCommands(appId) {
       )
       .addChannelOption((o) =>
         o
+          .setName("all_launches_channel")
+          .setDescription("Firehose: every Bankr launch (no filters). Optional if curated channel set.")
+          .setRequired(false)
+      )
+      .addChannelOption((o) =>
+        o
           .setName("alert_channel")
-          .setDescription("Channel for all new token launch alerts")
-          .setRequired(true)
+          .setDescription("Curated: only launches passing rules (X match, max deploys/day). Optional if firehose set.")
+          .setRequired(false)
       )
       .addChannelOption((o) =>
         o
@@ -414,7 +428,10 @@ async function registerCommands(appId) {
           .setName("channels")
           .setDescription("Update alert channels")
           .addChannelOption((o) =>
-            o.setName("alert_channel").setDescription("Channel for all launch alerts").setRequired(false)
+            o.setName("all_launches_channel").setDescription("Firehose: every Bankr launch (clear = unset)").setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o.setName("alert_channel").setDescription("Curated: rules apply (clear = unset)").setRequired(false)
           )
           .addChannelOption((o) =>
             o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
@@ -435,7 +452,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup, deploy)")
+      .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup)" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
       .toJSON(),
     new SlashCommandBuilder()
       .setName("agents")
@@ -496,42 +513,32 @@ function isWatchMatchForTenant(launch, watchList) {
 }
 
 async function runNotify() {
-  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
     try {
       const { newLaunches } = await runNotifyCycle();
+      const allChannel = ALL_LAUNCHES_CHANNEL_ID ? await client.channels.fetch(ALL_LAUNCHES_CHANNEL_ID).catch(() => null) : null;
       const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
       const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
 
       for (const launch of newLaunches) {
         const embed = buildLaunchEmbed(launch);
-        const showInAlert = launch.passedFilters !== false;
+        const showInAll = true;
+        const showInCurated = launch.passedFilters !== false;
         const showInWatch = launch.isWatchMatch;
-        const sameChannel = alertChannel && watchChannel && alertChannel.id === watchChannel.id;
-        if (sameChannel) {
-          if ((showInAlert || showInWatch) && alertChannel) {
-            try {
-              await alertChannel.send({ embeds: [embed] });
-            } catch (e) {
-              console.error(`Alert/Watch channel failed:`, e.message);
-            }
-          }
-        } else {
-          if (alertChannel && showInAlert) {
-            try {
-              await alertChannel.send({ embeds: [embed] });
-            } catch (e) {
-              console.error(`Alert channel ${ALERT_CHANNEL_ID} failed:`, e.message);
-            }
-          }
-          if (watchChannel && showInWatch) {
-            try {
-              await watchChannel.send({ embeds: [embed] });
-            } catch (e) {
-              console.error(`Watch channel ${WATCH_ALERT_CHANNEL_ID} failed:`, e.message, "- Check bot has Send Messages + Embed Links in that channel.");
-            }
+        const posted = new Set();
+        async function postOnce(ch) {
+          if (!ch || posted.has(ch.id)) return;
+          posted.add(ch.id);
+          try {
+            await ch.send({ embeds: [embed] });
+          } catch (e) {
+            console.error(`Channel ${ch.id} send failed:`, e.message);
           }
         }
+        if (allChannel && showInAll) await postOnce(allChannel);
+        if (alertChannel && showInCurated) await postOnce(alertChannel);
+        if (watchChannel && showInWatch) await postOnce(watchChannel);
         await sendTelegram(launch);
       }
     } catch (e) {
@@ -542,7 +549,7 @@ async function runNotify() {
     const tenantsWithChannels = [];
     for (const gid of guildIds) {
       const t = await getTenant(gid);
-      if (t && (t.alertChannelId || t.watchAlertChannelId)) tenantsWithChannels.push({ guildId: gid, ...t });
+      if (t && (t.allLaunchesChannelId || t.alertChannelId || t.watchAlertChannelId)) tenantsWithChannels.push({ guildId: gid, ...t });
     }
     if (tenantsWithChannels.length > 0) {
       try {
@@ -551,14 +558,31 @@ async function runNotify() {
         for (const launch of newLaunches) {
           const embed = buildLaunchEmbed(launch);
           for (const tenant of tenantsWithChannels) {
-            const showInAlert = tenantPassesFilters(launch, tenant.rules);
+            const showInCurated = tenantPassesFilters(launch, tenant.rules);
             const watchList = await getWatchListForGuild(tenant.guildId);
             const showInWatch = isWatchMatchForTenant(launch, watchList);
+            const allCh = tenant.allLaunchesChannelId ? await client.channels.fetch(tenant.allLaunchesChannelId).catch(() => null) : null;
             const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
-            if (alertCh && showInAlert) await alertCh.send({ embeds: [embed] }).catch(() => {});
-            if (watchCh && showInWatch && watchCh?.id !== alertCh?.id) await watchCh.send({ embeds: [embed] }).catch(() => {});
-            if (tenant.telegramChatId && (showInAlert || showInWatch)) await sendTelegram(launch, { chatId: tenant.telegramChatId }).catch(() => {});
+            const posted = new Set();
+            async function postOnce(ch) {
+              if (!ch || posted.has(ch.id)) return;
+              posted.add(ch.id);
+              await ch.send({ embeds: [embed] }).catch(() => {});
+            }
+            if (allCh) await postOnce(allCh);
+            if (alertCh && showInCurated) await postOnce(alertCh);
+            if (watchCh && showInWatch) await postOnce(watchCh);
+            if (
+              tenant.telegramChatId &&
+              (tenant.allLaunchesChannelId || showInCurated || showInWatch)
+            ) {
+              await sendTelegram(launch, { chatId: tenant.telegramChatId }).catch(() => {});
+            }
+          }
+          // Global Telegram firehose: every launch to TELEGRAM_CHAT_ID when set (same as Discord firehose)
+          if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+            await sendTelegram(launch).catch(() => {});
           }
         }
       } catch (e) {
@@ -619,12 +643,13 @@ function buildAgentProfileEmbed(profile) {
 /** Send one agent profile to all configured channels (env or per-guild). */
 async function sendAgentProfileToChannels(profile) {
   const embed = buildAgentProfileEmbed(profile);
-  const hasEnvChannels = ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
+  const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
     const agentChannel = AGENT_ALERT_CHANNEL_ID ? await client.channels.fetch(AGENT_ALERT_CHANNEL_ID).catch(() => null) : null;
+    const allChannel = ALL_LAUNCHES_CHANNEL_ID ? await client.channels.fetch(ALL_LAUNCHES_CHANNEL_ID).catch(() => null) : null;
     const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
     const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
-    const channel = agentChannel || alertChannel || watchChannel;
+    const channel = agentChannel || allChannel || alertChannel || watchChannel;
     if (channel) {
       await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
     } else {
@@ -639,7 +664,12 @@ async function sendAgentProfileToChannels(profile) {
     let sent = false;
     for (const gid of guildIds) {
       const tenant = await getTenant(gid);
-      const channelId = tenant?.agentAlertChannelId || tenant?.alertChannelId || tenant?.watchAlertChannelId || AGENT_ALERT_CHANNEL_ID;
+      const channelId =
+        tenant?.agentAlertChannelId ||
+        tenant?.allLaunchesChannelId ||
+        tenant?.alertChannelId ||
+        tenant?.watchAlertChannelId ||
+        AGENT_ALERT_CHANNEL_ID;
       if (!channelId) {
         console.warn(`[Agent profiles] Guild ${gid}: no agent/alert/watch channel set in /setup`);
         continue;
@@ -726,10 +756,13 @@ client.once("ready", async () => {
   if (AGENT_ALERT_CHANNEL_ID) {
     console.log(`Agent profile alerts will post to channel ${AGENT_ALERT_CHANNEL_ID}`);
   }
-  if (ALERT_CHANNEL_ID) {
-    console.log(`Launch alerts will post to channel ${ALERT_CHANNEL_ID}`);
+  if (ALL_LAUNCHES_CHANNEL_ID) {
+    console.log(`All Bankr launches (firehose) → channel ${ALL_LAUNCHES_CHANNEL_ID}`);
   }
-  if (!ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID && !AGENT_ALERT_CHANNEL_ID) {
+  if (ALERT_CHANNEL_ID) {
+    console.log(`Curated launch alerts (filtered) → channel ${ALERT_CHANNEL_ID}`);
+  }
+  if (!ALL_LAUNCHES_CHANNEL_ID && !ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID && !AGENT_ALERT_CHANNEL_ID) {
     console.log("No Discord channel IDs in env; alerts go to each server's /setup channels or notify.js webhook.");
   }
 
@@ -1240,7 +1273,9 @@ client.on("interactionCreate", async (interaction) => {
       color: 0x0052_ff,
       title: "BankrMonitor – How to use",
       description:
-        "This bot helps you **watch** Bankr launches, **look up** tokens by wallet/X/Farcaster, and **deploy** Bankr tokens. Data: Bankr API.",
+        "This bot helps you **watch** Bankr launches and **look up** tokens by wallet/X/Farcaster." +
+        (HIDE_DEPLOY_COMMAND ? "" : " You can also **deploy** Bankr tokens from Discord.") +
+        " Data: Bankr API.",
       fields: [
         {
           name: "📋 /watch",
@@ -1265,15 +1300,17 @@ client.on("interactionCreate", async (interaction) => {
             "**query:** X handle, Farcaster handle, or profile URL. Use **/lookup** with the same handle to see their token deployments.",
           inline: false,
         },
-        {
-          name: "🚀 /deploy",
-          value:
-            "**Deploy a Bankr token** from Discord.\n" +
-            "**name** (required), **symbol**, **description**, **image_url**, **website_url**, **tweet_url**.\n" +
-            "**Fee recipient:** wallet (0x…), X handle, Farcaster handle, or ENS — set type + value to send 57% creator fees there. Otherwise fees go to the API key wallet.\n" +
-            "**simulate_only:** dry run. Requires **BANKR_API_KEY** with Agent API (write) access at [bankr.bot/api](https://bankr.bot/api). Rate limit: 50 deploys/24h.",
-          inline: false,
-        },
+        ...(HIDE_DEPLOY_COMMAND ? [] : [
+          {
+            name: "🚀 /deploy",
+            value:
+              "**Deploy a Bankr token** from Discord.\n" +
+              "**name** (required), **symbol**, **description**, **image_url**, **website_url**, **tweet_url**.\n" +
+              "**Fee recipient:** wallet (0x…), X handle, Farcaster handle, or ENS — set type + value to send 57% creator fees there. Otherwise fees go to the API key wallet.\n" +
+              "**simulate_only:** dry run. Requires **BANKR_API_KEY** with Agent API (write) access at [bankr.bot/api](https://bankr.bot/api). Rate limit: 50 deploys/24h.",
+            inline: false,
+          },
+        ]),
         {
           name: "💰 /fees-token",
           value:
@@ -1290,8 +1327,8 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "📌 Channels & paste",
           value:
-            "**Alert channel** – all new Bankr launches.\n**Watch channel** – only launches that match your watch list.\n" +
-            "**Paste a Bankr token** (any channel): if someone pastes a token address ending in **BA3**, the bot replies with name, symbol, link, and what it knows (volume, fees).",
+            "**/setup** — **All launches** = firehose (every Bankr deploy). **Curated** = only launches that pass your rules (same X/FC on deployer + fee recipient, max deploys/day). **Watch** = only your **/watch** list.\n" +
+            "**Paste a Bankr token** (any channel): address ending in **BA3** → bot replies with name, symbol, link, fees.",
           inline: false,
         },
       ],
@@ -1302,6 +1339,13 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "deploy") {
+    if (HIDE_DEPLOY_COMMAND) {
+      await interaction.reply({
+        content: "Deploy is temporarily unavailable.",
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
+      return;
+    }
     if (interaction.guildId && !canManageServer(interaction)) {
       await interaction.reply({
         content: "Only server admins (Manage Server permission) can run **/deploy**.",
@@ -1422,21 +1466,30 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const apiKey = interaction.options.getString("api_key")?.trim();
+      const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
       const alertChannel = interaction.options.getChannel("alert_channel");
       const watchChannel = interaction.options.getChannel("watch_channel");
       const agentChannel = interaction.options.getChannel("agent_channel");
       const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
       const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
       const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
-      if (!apiKey || !alertChannel) {
+      if (!apiKey) {
         await interaction.editReply({
-          content: "Provide **api_key** and **alert_channel**. Get a key at [bankr.bot/api](https://bankr.bot/api).",
+          content: "Provide **api_key**. Get a key at [bankr.bot/api](https://bankr.bot/api).",
+        });
+        return;
+      }
+      if (!allLaunchesChannel && !alertChannel) {
+        await interaction.editReply({
+          content:
+            "Set at least one launch channel: **all_launches_channel** (every Bankr deploy) and/or **alert_channel** (curated — rules below). Watch channel is optional.",
         });
         return;
       }
       const updates = {
         bankrApiKey: apiKey,
-        alertChannelId: alertChannel.id,
+        allLaunchesChannelId: allLaunchesChannel?.id ?? null,
+        alertChannelId: alertChannel?.id ?? null,
         watchAlertChannelId: watchChannel?.id ?? null,
         agentAlertChannelId: agentChannel?.id ?? null,
         rules: {
@@ -1448,14 +1501,16 @@ client.on("interactionCreate", async (interaction) => {
       await setTenant(guildId, updates);
       const lines = [
         "**Server config saved.**",
-        `• Alert channel: ${alertChannel.name}`,
-        watchChannel ? `• Watch channel: ${watchChannel.name}` : "• Watch channel: (none)",
-        agentChannel ? `• Agent alerts channel: ${agentChannel.name}` : "• Agent alerts channel: (none)",
-        `• Filter X match: ${filterXMatch}`,
-        filterMaxDeploys != null ? `• Max deploys/day: ${filterMaxDeploys}` : "",
+        allLaunchesChannel ? `• **All launches** (firehose): ${allLaunchesChannel.name}` : "• All launches channel: (none)",
+        alertChannel ? `• **Curated** (rules): ${alertChannel.name}` : "• Curated channel: (none)",
+        watchChannel ? `• **Watch list**: ${watchChannel.name}` : "• Watch channel: (none)",
+        agentChannel ? `• Agent alerts: ${agentChannel.name}` : "• Agent alerts: (none)",
+        `• Filter X match (curated): ${filterXMatch}`,
+        filterMaxDeploys != null ? `• Max deploys/day (curated): ${filterMaxDeploys}` : "• Max deploys/day: no limit",
         `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
         "",
-        "Use **/watch add** to add X, Farcaster, wallets, or keywords. Use **/settings show** to view or **/settings** subcommands to edit.",
+        "**Tip:** Firehose = every deploy. Curated = only passes X-match / deploy-count rules. **/watch** = your list only.",
+        "Use **/watch add** for X, Farcaster, wallets, keywords. **/settings show** to view.",
       ];
       await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
     } catch (e) {
@@ -1494,8 +1549,9 @@ client.on("interactionCreate", async (interaction) => {
         const w = tenant.watchlist || {};
         const lines = [
           "**Current config** (API key hidden)",
-          `• Alert channel: ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
-          `• Watch channel: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
+          `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
+          `• **Curated** (X match / max deploys): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
+          `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
           `• Agent alerts channel: ${tenant.agentAlertChannelId ? `<#${tenant.agentAlertChannelId}>` : "—"}`,
           `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
           `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
@@ -1518,15 +1574,24 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       if (sub === "channels") {
+        const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
         const alertChannel = interaction.options.getChannel("alert_channel");
         const watchChannel = interaction.options.getChannel("watch_channel");
         const agentChannel = interaction.options.getChannel("agent_channel");
         const updates = {};
+        if (allLaunchesChannel) updates.allLaunchesChannelId = allLaunchesChannel.id;
         if (alertChannel) updates.alertChannelId = alertChannel.id;
-        if (watchChannel !== null) updates.watchAlertChannelId = watchChannel?.id ?? null;
-        if (agentChannel !== null) updates.agentAlertChannelId = agentChannel?.id ?? null;
+        if (interaction.options.data.options?.find((o) => o.name === "watch_channel")) {
+          updates.watchAlertChannelId = watchChannel?.id ?? null;
+        }
+        if (interaction.options.data.options?.find((o) => o.name === "agent_channel")) {
+          updates.agentAlertChannelId = agentChannel?.id ?? null;
+        }
         if (Object.keys(updates).length === 0) {
-          await interaction.editReply({ content: "Provide at least one channel to update." });
+          await interaction.editReply({
+            content:
+              "Pick at least one channel to set. **all_launches_channel** = every deploy; **alert_channel** = curated (rules); **watch_channel** / **agent_channel** optional.",
+          });
           return;
         }
         await setTenant(guildId, updates);
@@ -1557,9 +1622,9 @@ client.on("interactionCreate", async (interaction) => {
     const tenant = guildId ? await getTenant(guildId) : null;
     const sub = interaction.options.getSubcommand();
 
-    if (!guildId || !tenant || (!tenant.alertChannelId && !tenant.watchAlertChannelId)) {
+    if (!guildId || !tenant || (!tenant.allLaunchesChannelId && !tenant.alertChannelId && !tenant.watchAlertChannelId)) {
       await interaction.reply({
-        content: "Claim watch is available per server. Run **/setup** first (API key + alert channel), then use **/claim-watch add** with a token address.",
+        content: "Claim watch is available per server. Run **/setup** first (API key + at least one launch/watch channel), then use **/claim-watch add** with a token address.",
         flags: MessageFlags.Ephemeral,
       });
       return;

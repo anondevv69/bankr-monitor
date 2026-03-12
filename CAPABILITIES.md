@@ -8,13 +8,16 @@
 | **/watch remove** | Remove a user from the watch list (by type + value). |
 | **/watch list** | Show the current watch list (X, FC, wallets, keywords). |
 | **/lookup** | Search Bankr tokens by **deployer** or **fee recipient**. Query can be a **wallet** (0x…), **X handle** (@user or x.com link), or **Farcaster** (handle or warpcast link). Option **by**: Deployer / Fee recipient / Both. Returns token list (latest 5 we can show + link to full list on Bankr), with pagination when we have more than 5. |
-| **/deploy** | **Deploy a Bankr token** from Discord. Options: **name** (required), **symbol**, **description**, **image_url**, **website_url**, **tweet_url**. **Fee recipient:** set type (wallet / X / Farcaster / ENS) + value to send 57% creator fees there; otherwise fees go to the API key wallet. **simulate_only** for dry run. Requires **BANKR_API_KEY** with [Agent API (write) access](https://bankr.bot/api); rate limit 50 deploys/24h. |
+| **/deploy** | *(hidden by default)* Deploy a Bankr token from Discord. Re-enable by setting `HIDE_DEPLOY_COMMAND = false` in discord-bot.js. |
 | **/help** | Show this breakdown of how to use the bot. |
 
-**Two notification channels (optional):**
+**Notification channels (optional, env or per-server /setup):**
 
-- **DISCORD_ALERT_CHANNEL_ID** – All new Bankr launches (real-time feed).
-- **DISCORD_WATCH_ALERT_CHANNEL_ID** – Only launches that match your watch list.
+- **DISCORD_ALL_LAUNCHES_CHANNEL_ID** – **Firehose:** every Bankr launch (no filters).
+- **DISCORD_ALERT_CHANNEL_ID** – **Curated:** only launches that pass global filters (same as notify.js: X-match, max deploys).
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** – Only launches that match your **/watch** list.
+
+Per-server **/setup**: set **all_launches_channel** and/or **alert_channel** (at least one), plus optional **watch_channel** for watch-list-only alerts.
 
 ---
 
