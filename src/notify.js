@@ -564,15 +564,16 @@ export async function sendTelegram(launch, options = {}) {
   if (!TELEGRAM_TOKEN || !chatId) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
-  let text = `[New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n\n`;
+
+  let text = `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
   text += `[View on Bankr](${launchUrl}) | [Basescan](${basescanTokenUrl})\n`;
-  text += `*CA:* \`${launch.tokenAddress}\`\n`;
+  text += `*CA:* \`${launch.tokenAddress}\`\n\n`;
 
   if (launch.launcher) {
     text += `*Launcher:*\n`;
     if (launch.launcherX) text += `  X: [@${escapeMarkdown(launch.launcherX)}](${xProfileUrl(launch.launcherX)})\n`;
     if (launch.launcherFarcaster) text += `  Farcaster: [${escapeMarkdown(launch.launcherFarcaster)}](${farcasterProfileUrl(launch.launcherFarcaster)})\n`;
-    text += `  Wallet: [${launch.launcher}](${walletLink(launch.launcher)})\n`;
+    text += `  Wallet: [${launch.launcher}](${walletLink(launch.launcher)})\n\n`;
   }
 
   if (launch.beneficiaries?.length) {
@@ -583,13 +584,16 @@ export async function sendTelegram(launch, options = {}) {
       if (b.farcaster) text += `  Farcaster: [${escapeMarkdown(b.farcaster)}](${farcasterProfileUrl(b.farcaster)})\n`;
       text += `  Wallet: [${addr}](${walletLink(addr)})\n`;
     }
+    text += `\n`;
   }
 
   if (launch.deployCount != null && launch.deployCount > 1) {
     text += `*Deploys (in feed):* ${launch.deployCount}\n`;
   }
   if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
-  if (launch.website) text += `*Website:* ${launch.website}\n`;
+  if (launch.website) text += `*Website:* ${launch.website}\n\n`;
+
+  text += buildTradeLinks(launch.tokenAddress);
 
   const img = launch.image ? imageUrl(launch.image) : null;
   const basePayload = { chat_id: chatId, disable_web_page_preview: true };
