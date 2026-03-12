@@ -417,6 +417,17 @@ function buildTradeLinks(tokenAddress) {
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
 }
 
+/** Inline keyboard for Telegram: GMGN and BB only (no FCW). Returns null if invalid token. */
+function telegramTradeKeyboard(tokenAddress) {
+  const addr = (tokenAddress || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(addr)) return null;
+  const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
+  const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  return {
+    inline_keyboard: [[{ text: "🔵 GMGN", url: gmgnUrl }, { text: "🔥 BB", url: bbUrl }]],
+  };
+}
+
 /** Format deployer or feeRecipient object for Discord embed value (wallet + X + Farcaster links). */
 function formatDeployerOrFeeForEmbed(obj) {
   if (!obj) return "—";
@@ -591,25 +602,25 @@ export async function sendTelegram(launch, options = {}) {
     text += `*Deploys (in feed):* ${launch.deployCount}\n`;
   }
   if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
-  if (launch.website) text += `*Website:* ${launch.website}\n\n`;
-
-  text += buildTradeLinks(launch.tokenAddress);
+  if (launch.website) text += `*Website:* ${launch.website}\n`;
 
   const img = launch.image ? imageUrl(launch.image) : null;
   const basePayload = { chat_id: chatId, disable_web_page_preview: true };
+  const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
+  const payloadExtra = replyMarkup ? { reply_markup: replyMarkup } : {};
 
   try {
     if (img) {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...basePayload, photo: img, caption: text, parse_mode: "Markdown" }),
+        body: JSON.stringify({ ...basePayload, ...payloadExtra, photo: img, caption: text, parse_mode: "Markdown" }),
       });
     } else {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...basePayload, text, parse_mode: "Markdown" }),
+        body: JSON.stringify({ ...basePayload, ...payloadExtra, text, parse_mode: "Markdown" }),
       });
     }
   } catch (e) {
