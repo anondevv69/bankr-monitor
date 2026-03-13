@@ -40,7 +40,14 @@ import {
   removeClaimWatchToken,
   getTenantStats,
 } from "./tenant-store.js";
-import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram, sendTelegramHotPing } from "./notify.js";
+import {
+  runNotifyCycle,
+  buildLaunchEmbed,
+  buildTokenDetailEmbed,
+  sendTelegram,
+  sendTelegramHotPing,
+  fetchLaunchByTokenAddress,
+} from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats } from "./token-stats.js";
@@ -75,6 +82,17 @@ const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(
 const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_HOLDERS || "20", 10));
 /** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
+/** Role IDs to mention on hot launch ping (comma-separated). E.g. HOT_LAUNCH_DISCORD_ROLE_IDS=123,456 */
+const HOT_LAUNCH_DISCORD_ROLE_IDS = (process.env.HOT_LAUNCH_DISCORD_ROLE_IDS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => /^\d+$/.test(s));
+/** If "true" or "1", include @everyone in hot ping. Set to "false" to only ping roles. Default true. */
+const HOT_LAUNCH_USE_EVERYONE =
+  process.env.HOT_LAUNCH_USE_EVERYONE === undefined ||
+  process.env.HOT_LAUNCH_USE_EVERYONE === "" ||
+  process.env.HOT_LAUNCH_USE_EVERYONE === "true" ||
+  process.env.HOT_LAUNCH_USE_EVERYONE === "1";
 
 /** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
 function canManageServer(interaction) {
@@ -546,16 +564,24 @@ function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, al
         buysFirstMin: buysFirstMin,
         holderCount: stats.holderCount,
       };
-      const embed = buildLaunchEmbed(launch);
+      const launchForEmbed =
+        (await fetchLaunchByTokenAddress(launch.tokenAddress, process.env.BANKR_API_KEY)) || launch;
+      const embed = buildLaunchEmbed(launchForEmbed);
       if (hotByBuys && hotByHolders) {
-        embed.title = `🔥👥 Hot: ${launch.name} ($${launch.symbol}) — ${buysFirstMin}+ buys in first min · 20+ holders`;
+        embed.title = `🔥👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buysFirstMin}+ buys in first min · 20+ holders`;
       } else if (hotByBuys) {
-        embed.title = `🔥 Hot: ${launch.name} ($${launch.symbol}) — ${buysFirstMin}+ buys in first minute`;
+        embed.title = `🔥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buysFirstMin}+ buys in first minute`;
       } else {
-        embed.title = `👥 Hot: ${launch.name} ($${launch.symbol}) — 20+ holders`;
+        embed.title = `👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — 20+ holders`;
       }
       embed.color = 0xff6600;
-      const hotPingContent = "@everyone 🔥 **Hot token**";
+      const pingParts = [];
+      if (HOT_LAUNCH_USE_EVERYONE) pingParts.push("@everyone");
+      if (HOT_LAUNCH_DISCORD_ROLE_IDS.length > 0) {
+        pingParts.push(HOT_LAUNCH_DISCORD_ROLE_IDS.map((id) => `<@&${id}>`).join(" "));
+      }
+      pingParts.push("🔥 **Hot token**");
+      const hotPingContent = pingParts.join(" ");
       const posted = new Set();
       for (const channelId of discordChannelIds) {
         if (posted.has(channelId)) continue;
@@ -569,7 +595,7 @@ function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, al
         }
       }
       for (const chatId of telegramChatIds) {
-        await sendTelegramHotPing(launch, hotStats, { chatId }).catch(() => {});
+        await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
       }
     } catch (e) {
       console.error("Hot launch check failed:", e.message);

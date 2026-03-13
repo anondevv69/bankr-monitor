@@ -195,6 +195,13 @@ async function fetchSingleBankrLaunch(tokenAddress, apiKey) {
   return null;
 }
 
+/** Fetch launch by token address and return same shape as formatBankrLaunch (for hot ping so CA/name/symbol are canonical). */
+export async function fetchLaunchByTokenAddress(tokenAddress, apiKey) {
+  const raw = await fetchSingleBankrLaunch(tokenAddress, apiKey);
+  if (!raw?.tokenAddress) return null;
+  return formatBankrLaunch(raw);
+}
+
 async function fetchLaunches(apiKey) {
   const key = apiKey ?? BANKR_API_KEY;
   if (key && CHAIN_ID === 8453) {
