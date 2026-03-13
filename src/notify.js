@@ -628,7 +628,8 @@ export async function sendTelegram(launch, options = {}) {
   }
 }
 
-/** Send a short "hot launch" ping to Telegram (5–10+ buys in first minute and/or 20+ holders). */
+/** Send a short "hot launch" ping to Telegram (5–10+ buys in first minute and/or 20+ holders).
+ * Pins the message so in groups/supergroups members get a notification (no @everyone in Telegram). */
 export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !stats) return;
@@ -639,7 +640,7 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   if (hotByBuys) parts.push(`🔥 ${buysFirstMin ?? 0}+ buys in first minute`);
   if (hotByHolders) parts.push(`👥 ${holderCount ?? 0}+ holders`);
   const line = parts.join(" · ");
-  const text = `*Hot launch:* [${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
+  const text = `🔔 *HOT TOKEN*\n\n[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payload = {
     chat_id: chatId,
@@ -649,11 +650,24 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   };
   try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    const data = await res.json().catch(() => ({}));
+    const messageId = data?.result?.message_id;
+    if (messageId != null) {
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/pinChatMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          disable_notification: false,
+        }),
+      }).catch((e) => console.error("Telegram pin hot message:", e.message));
+    }
   } catch (e) {
     console.error("Telegram hot ping error:", e.message);
   }
