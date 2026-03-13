@@ -628,6 +628,37 @@ export async function sendTelegram(launch, options = {}) {
   }
 }
 
+/** Send a short "hot launch" ping to Telegram (5–10+ buys in first minute and/or 20+ holders). */
+export async function sendTelegramHotPing(launch, stats, options = {}) {
+  const chatId = options.chatId ?? TELEGRAM_CHAT;
+  if (!TELEGRAM_TOKEN || !chatId || !stats) return;
+  const { hotByBuys, hotByHolders, buysFirstMin, holderCount } = stats;
+  if (!hotByBuys && !hotByHolders) return;
+  const launchUrl = bankrLaunchUrl(launch.tokenAddress);
+  const parts = [];
+  if (hotByBuys) parts.push(`🔥 ${buysFirstMin ?? 0}+ buys in first minute`);
+  if (hotByHolders) parts.push(`👥 ${holderCount ?? 0}+ holders`);
+  const line = parts.join(" · ");
+  const text = `*Hot launch:* [${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
+  const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  };
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("Telegram hot ping error:", e.message);
+  }
+}
+
 /** Run one notify cycle: fetch, filter, update seen. Returns new launches (enriched) and totalCount.
  * @param {{ bankrApiKey?: string }} [options] - When provided (e.g. from Discord tenant), use this key for Bankr API so cycle works without env key.
  */

@@ -30,8 +30,8 @@ const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
 
 /**
- * Fetch Base token metrics from DexScreener (market cap, 24h buys/sells). No API key required.
- * @returns {{ marketCap: number, trades24h: { buys: number, sells: number } } | null}
+ * Fetch Base token metrics from DexScreener (market cap, 24h buys/sells, optional m5/h1). No API key required.
+ * @returns {{ marketCap: number, trades24h: { buys: number, sells: number }, buys5m?: number, buys1h?: number } | null}
  */
 async function fetchDexScreenerBaseToken(tokenAddress) {
   try {
@@ -50,13 +50,40 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
       return bLiq > aLiq ? b : a;
     }, basePairs[0]);
     const marketCap = best.fdv ?? best.liquidity?.usd ?? null;
-    const h24 = best.txns?.h24;
+    const txns = best.txns ?? best.transactions;
+    const h24 = txns?.h24;
     const buys = h24?.buys ?? 0;
     const sells = h24?.sells ?? 0;
-    return {
+    const m5 = txns?.m5;
+    const h1 = txns?.h1;
+    const result = {
       marketCap: marketCap != null ? Number(marketCap) : null,
       trades24h: { buys: Number(buys), sells: Number(sells) },
     };
+    if (m5 && typeof m5.buys === "number") result.buys5m = m5.buys;
+    if (h1 && typeof h1.buys === "number") result.buys1h = h1.buys;
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch stats used for "hot launch" alerts: buys in last 5m/1h and holder count.
+ * @returns {{ buys5m: number, buys1h: number, holderCount: number|null } | null}
+ */
+export async function getHotTokenStats(tokenAddress) {
+  const addr = normalizeAddress(tokenAddress);
+  if (!addr) return null;
+  try {
+    const [dex, doppler] = await Promise.all([
+      fetchDexScreenerBaseToken(addr),
+      fetchDopplerTokenVolume(addr),
+    ]);
+    const buys5m = dex?.buys5m ?? dex?.trades24h?.buys ?? 0;
+    const buys1h = dex?.buys1h ?? dex?.trades24h?.buys ?? 0;
+    const holderCount = doppler?.holderCount != null ? Number(doppler.holderCount) : null;
+    return { buys5m: Number(buys5m), buys1h: Number(buys1h), holderCount };
   } catch {
     return null;
   }

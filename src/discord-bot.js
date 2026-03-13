@@ -40,10 +40,10 @@ import {
   removeClaimWatchToken,
   getTenantStats,
 } from "./tenant-store.js";
-import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram } from "./notify.js";
+import { runNotifyCycle, buildLaunchEmbed, buildTokenDetailEmbed, sendTelegram, sendTelegramHotPing } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
-import { getTokenFees } from "./token-stats.js";
+import { getTokenFees, getHotTokenStats } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 import { getNewAgentProfiles, subscribeAgentProfileUpdates, fetchAgentProfiles } from "./agent-profiles.js";
@@ -65,6 +65,16 @@ const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, 
 
 /** When true, /deploy is not registered and is hidden from help. Deploy handler code remains so it can be re-enabled by setting to false. */
 const HIDE_DEPLOY_COMMAND = true;
+
+/** Hot launch ping: min buys in first minute to trigger (DexScreener m5 at ~65s ≈ first minute). Set to 0 to disable. Use 5–10 for "first minute" pings. */
+const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(
+  0,
+  parseInt(process.env.HOT_LAUNCH_MIN_BUYS_FIRST_MIN || process.env.HOT_LAUNCH_MIN_BUYS_5M || "5", 10)
+);
+/** Hot launch ping: min holder count to trigger "20+ holders" (indexer). Set to 0 to disable. */
+const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_HOLDERS || "20", 10));
+/** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
+const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
 
 /** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
 function canManageServer(interaction) {
@@ -512,6 +522,62 @@ function isWatchMatchForTenant(launch, watchList) {
   return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
 }
 
+/** Schedule a delayed check for "hot" launch (5–10+ buys in first minute, 20+ holders). Sends a second ping if thresholds are met. */
+function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, allLaunchesChannelIds = [] }) {
+  if (
+    (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 && HOT_LAUNCH_MIN_HOLDERS <= 0) ||
+    (discordChannelIds.length === 0 && telegramChatIds.length === 0)
+  ) {
+    return;
+  }
+  const allLaunchesSet = new Set(Array.isArray(allLaunchesChannelIds) ? allLaunchesChannelIds : [allLaunchesChannelIds].filter(Boolean));
+  setTimeout(async () => {
+    try {
+      const stats = await getHotTokenStats(launch.tokenAddress);
+      if (!stats) return;
+      const buysFirstMin = stats.buys5m ?? 0;
+      const hotByBuys = HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 && buysFirstMin >= HOT_LAUNCH_MIN_BUYS_FIRST_MIN;
+      const hotByHolders =
+        HOT_LAUNCH_MIN_HOLDERS > 0 && stats.holderCount != null && stats.holderCount >= HOT_LAUNCH_MIN_HOLDERS;
+      if (!hotByBuys && !hotByHolders) return;
+      const hotStats = {
+        hotByBuys,
+        hotByHolders,
+        buysFirstMin: buysFirstMin,
+        holderCount: stats.holderCount,
+      };
+      const embed = buildLaunchEmbed(launch);
+      if (hotByBuys && hotByHolders) {
+        embed.title = `🔥👥 Hot: ${launch.name} ($${launch.symbol}) — ${buysFirstMin}+ buys in first min · 20+ holders`;
+      } else if (hotByBuys) {
+        embed.title = `🔥 Hot: ${launch.name} ($${launch.symbol}) — ${buysFirstMin}+ buys in first minute`;
+      } else {
+        embed.title = `👥 Hot: ${launch.name} ($${launch.symbol}) — 20+ holders`;
+      }
+      embed.color = 0xff6600;
+      const hotPingContent = "@everyone 🔥 **Hot token**";
+      const posted = new Set();
+      for (const channelId of discordChannelIds) {
+        if (posted.has(channelId)) continue;
+        posted.add(channelId);
+        const ch = await client.channels.fetch(channelId).catch(() => null);
+        if (ch) {
+          const isAllLaunches = allLaunchesSet.has(channelId);
+          await ch
+            .send({ content: isAllLaunches ? hotPingContent : null, embeds: [embed] })
+            .catch((e) => console.error("Hot ping Discord:", e.message));
+        }
+      }
+      for (const chatId of telegramChatIds) {
+        await sendTelegramHotPing(launch, hotStats, { chatId }).catch(() => {});
+      }
+    } catch (e) {
+      console.error("Hot launch check failed:", e.message);
+      debugLogError(e, "scheduleHotLaunchCheck");
+    }
+  }, HOT_LAUNCH_DELAY_MS);
+}
+
 async function runNotify() {
   const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
@@ -540,6 +606,18 @@ async function runNotify() {
         if (alertChannel && showInCurated) await postOnce(alertChannel);
         if (watchChannel && showInWatch) await postOnce(watchChannel);
         await sendTelegram(launch);
+      }
+      if (newLaunches.length > 0 && (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)) {
+        const discordIds = [allChannel?.id, alertChannel?.id, watchChannel?.id].filter(Boolean);
+        const telegramIds = process.env.TELEGRAM_CHAT_ID ? [process.env.TELEGRAM_CHAT_ID] : [];
+        const allLaunchesIds = allChannel?.id ? [allChannel.id] : [];
+        for (const launch of newLaunches) {
+          scheduleHotLaunchCheck(launch, {
+            discordChannelIds: discordIds,
+            telegramChatIds: telegramIds,
+            allLaunchesChannelIds: allLaunchesIds,
+          });
+        }
       }
     } catch (e) {
       console.error("Notify failed:", e.message);
@@ -583,6 +661,28 @@ async function runNotify() {
           // Global Telegram firehose: every launch to TELEGRAM_CHAT_ID when set (same as Discord firehose)
           if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
             await sendTelegram(launch).catch(() => {});
+          }
+        }
+        if (newLaunches.length > 0 && (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)) {
+          const discordIds = new Set();
+          const telegramIds = new Set();
+          const allLaunchesIds = [];
+          if (process.env.TELEGRAM_CHAT_ID) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
+          for (const tenant of tenantsWithChannels) {
+            if (tenant.allLaunchesChannelId) {
+              discordIds.add(tenant.allLaunchesChannelId);
+              allLaunchesIds.push(tenant.allLaunchesChannelId);
+            }
+            if (tenant.alertChannelId) discordIds.add(tenant.alertChannelId);
+            if (tenant.watchAlertChannelId) discordIds.add(tenant.watchAlertChannelId);
+            if (tenant.telegramChatId) telegramIds.add(tenant.telegramChatId);
+          }
+          for (const launch of newLaunches) {
+            scheduleHotLaunchCheck(launch, {
+              discordChannelIds: [...discordIds],
+              telegramChatIds: [...telegramIds],
+              allLaunchesChannelIds: allLaunchesIds,
+            });
           }
         }
       } catch (e) {
