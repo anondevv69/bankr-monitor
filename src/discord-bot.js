@@ -52,7 +52,7 @@ import {
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
-import { fetchTopFeeEarners } from "./whales.js";
+import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 
@@ -837,8 +837,18 @@ async function runClaimWatchCycle() {
         const tokenDropped = currentToken < prev.lastClaimableToken - CLAIM_DROP_TOLERANCE;
         const wethDropped = currentWeth < prev.lastClaimableWeth - CLAIM_DROP_TOLERANCE;
         if (tokenDropped || wethDropped) {
-          const claimedWeth = Math.max(0, prev.lastClaimableWeth - currentWeth);
-          const claimedToken = Math.max(0, prev.lastClaimableToken - currentToken);
+          const claimFromIndexer = await fetchLatestFeeClaim(tokenAddress, out.feeWallet ?? undefined);
+          let claimedWeth = 0;
+          let claimedToken = 0;
+          let txHash = null;
+          if (claimFromIndexer && (claimFromIndexer.weth > 0 || claimFromIndexer.tokenAmount > 0)) {
+            claimedWeth = claimFromIndexer.weth;
+            claimedToken = claimFromIndexer.tokenAmount;
+            txHash = claimFromIndexer.transactionHash;
+          } else {
+            claimedWeth = Math.max(0, prev.lastClaimableWeth - currentWeth);
+            claimedToken = Math.max(0, prev.lastClaimableToken - currentToken);
+          }
           const parts = [];
           if (claimedWeth > 0) parts.push(`**Claimed:** ${claimedWeth.toFixed(4)} WETH`);
           if (claimedToken > 0) {
@@ -852,16 +862,21 @@ async function runClaimWatchCycle() {
                     : claimedToken.toFixed(4);
             parts.push(`${fmt} ${symbol}`);
           }
+          const descLines = [
+            `**Token:** ${name} ($${symbol})`,
+            `**CA:** \`${tokenAddress}\``,
+            parts.length ? parts.join(" · ") : "Fees claimed.",
+            "",
+            "[View on Bankr](https://bankr.bot/launches/" + tokenAddress + ")",
+          ];
+          if (txHash) {
+            descLines.push("");
+            descLines.push(`**Tx:** https://basescan.org/tx/${txHash}`);
+          }
           const embed = {
             color: 0x00_80_00,
             title: "💰 Fee claim detected",
-            description: [
-              `**Token:** ${name} ($${symbol})`,
-              `**CA:** \`${tokenAddress}\``,
-              parts.length ? parts.join(" · ") : "Fees claimed.",
-              "",
-              "[View on Bankr](https://bankr.bot/launches/" + tokenAddress + ")",
-            ].join("\n"),
+            description: descLines.join("\n"),
           };
           await channel.send({ embeds: [embed] }).catch((e) => console.error("Claim alert send failed:", e.message));
         }
@@ -1216,7 +1231,7 @@ client.on("interactionCreate", async (interaction) => {
     pruneLookupCache();
     const entry = lookupCache.get(interaction.message?.id);
     if (!entry) {
-      await interaction.reply({ content: "This lookup has expired. Run /lookup again.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.reply({ content: "This lookup has expired. Run /lookup again." }).catch(() => {});
       return;
     }
     const totalPages = Math.ceil(entry.matches.length / LOOKUP_PAGE_SIZE) || 1;
@@ -1235,7 +1250,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "wallet-lookup") {
     const query = interaction.options.getString("query");
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferReply();
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
@@ -1267,7 +1282,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
     const by = interaction.options.getString("by") || "both";
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferReply();
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
@@ -1380,7 +1395,7 @@ client.on("interactionCreate", async (interaction) => {
       ],
       footer: { text: "Bankr: bankr.bot" },
     };
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply({ embeds: [embed] }).catch(() => {});
     return;
   }
 
@@ -1473,11 +1488,10 @@ client.on("interactionCreate", async (interaction) => {
     if (!tokenAddress) {
       await interaction.reply({
         content: "Provide a token address (0x...) or a Bankr launch URL (e.g. https://bankr.bot/launches/0x...).",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferReply();
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
