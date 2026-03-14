@@ -24,6 +24,7 @@ const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL ||
   (CHAIN_ID === 8453 ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
+const BANKR_AGENT_PROFILES_URL = "https://api.bankr.bot/agent-profiles";
 const BANKR_API_KEY = process.env.BANKR_API_KEY;
 /** Base RPC URL for on-chain reads (claimable fees, pool state). Only RPC_URL_BASE is used; RPC_URL is fallback. */
 const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
@@ -113,6 +114,26 @@ async function fetchBankrLaunch(tokenAddress, apiKey = BANKR_API_KEY) {
     } catch {
       /* try next */
     }
+  }
+  return null;
+}
+
+/**
+ * Fetch Bankr agent profile (weeklyRevenueWeth, marketCapUsd, etc.).
+ * GET /agent-profiles/{token_address} — used for enrichment when indexer is slow or down.
+ */
+async function fetchBankrAgentProfile(tokenAddress, apiKey = BANKR_API_KEY) {
+  const addr = tokenAddress?.trim?.()?.toLowerCase?.();
+  if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  try {
+    const res = await fetch(`${BANKR_AGENT_PROFILES_URL}/${addr}`, { headers });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json && (json.weeklyRevenueWeth != null || json.marketCapUsd != null)) return json;
+  } catch {
+    /* ignore */
   }
   return null;
 }
@@ -654,11 +675,12 @@ export async function getTokenFees(tokenAddress, options = {}) {
   if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
 
   const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
-  const [launch, doppler, poolState, dexMetrics] = await Promise.all([
+  const [launch, doppler, poolState, dexMetrics, agentProfile] = await Promise.all([
     fetchBankrLaunch(addr, apiKey),
     fetchDopplerTokenVolume(addr),
     fetchDopplerPoolState(addr),
     fetchDexScreenerBaseToken(addr),
+    fetchBankrAgentProfile(addr, apiKey),
   ]);
 
   const name = launch?.tokenName ?? doppler?.name ?? "—";
@@ -692,7 +714,11 @@ export async function getTokenFees(tokenAddress, options = {}) {
     (typeof launch.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.poolId.trim()) ? launch.poolId.trim() : null) ??
     (launch.pool && typeof launch.pool === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.pool.trim()) ? launch.pool.trim() : null) ??
     (launch.pool?.poolId && typeof launch.pool.poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(launch.pool.poolId.trim()) ? launch.pool.poolId.trim() : null);
-  const poolFromIndexer = poolIdFromLaunch ? null : await fetchPoolByBaseToken(addr);
+  // Resolve poolId: run indexer and on-chain SDK in parallel so Claimable/Claims work when indexer is down
+  const [poolFromIndexer, sdkPoolId] = await Promise.all([
+    poolIdFromLaunch ? Promise.resolve(null) : fetchPoolByBaseToken(addr),
+    CHAIN_ID === 8453 ? fetchPoolIdFromDopplerSdk(addr) : Promise.resolve(null),
+  ]);
   const effectivePoolId = poolIdFromLaunch ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
   if (effectivePoolId && feeWallet) {
     // Only query fees for the fee recipient (creator). We show what they could claim or have accrued.
@@ -709,11 +735,9 @@ export async function getTokenFees(tokenAddress, options = {}) {
   }
 
   let hookFees = null;
-  // Use same poolId as for cumulatedFees (launch.poolId or indexer v4pools). Must be bytes32 (64 hex) for on-chain hook and Release events.
-  let poolIdForHook = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
-  if (!poolIdForHook && CHAIN_ID === 8453) {
-    poolIdForHook = await fetchPoolIdFromDopplerSdk(addr);
-  }
+  // Prefer on-chain poolId (SDK) for hook and Release events so Claimable/Claims work when indexer is down
+  const effectivePoolIdBytes32 = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
+  const poolIdForHook = sdkPoolId ?? effectivePoolIdBytes32;
   let claimableUnavailableReason = null;
   if (poolIdForHook) {
     const hookResult = await fetchHookFeesOnChain(poolIdForHook);
@@ -743,6 +767,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     formatUsd,
     poolState,
     dexMetrics: dexMetrics ?? null,
+    /** Bankr agent-profiles API: weeklyRevenueWeth, marketCapUsd, etc. (enrichment when indexer is slow) */
+    agentProfile: agentProfile ?? null,
     /** True if we had a bytes32 poolId and could call the on-chain hook (even if hook returned zero). */
     hasPoolIdForHook: !!poolIdForHook,
     /** When claimable is unavailable: no_pool_id | rpc_or_contract: ... | etc. */

@@ -1055,6 +1055,10 @@ function formatFeesTokenReply(out, tokenAddress) {
       const dailyAvgUsd = totalFeesUsd / days;
       if (dailyAvgUsd >= 0 && dailyAvgUsd < 1e12) lines.push(`**Daily Average** • ${fmt(dailyAvgUsd) ?? `$${dailyAvgUsd.toFixed(0)}`}`);
     }
+    const weeklyWeth = out.agentProfile?.weeklyRevenueWeth != null ? Number(out.agentProfile.weeklyRevenueWeth) : null;
+    if (weeklyWeth != null && !Number.isNaN(weeklyWeth) && weeklyWeth >= 0) {
+      lines.push(`**Weekly revenue** • ${weeklyWeth.toFixed(4)} WETH`);
+    }
     lines.push(`**Claims** • ${claimsCount}`);
     lines.push("");
   }
