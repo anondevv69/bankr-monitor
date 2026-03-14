@@ -124,7 +124,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
   const query = `
     query Token($id: String!) {
       token(id: $id) {
-        address name symbol volumeUsd holderCount
+        address name symbol volumeUsd holderCount firstSeenAt
         pool { address }
       }
     }
@@ -150,7 +150,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
   // 2) GraphQL list with filter (Ponder/Doppler: tokens where address + chainId)
   // Inline values: some indexers don't support variables inside where
   const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount pool { address } } } }`;
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address } } } }`;
   try {
     const res = await fetch(`${base}/graphql`, {
       method: "POST",
@@ -627,6 +627,12 @@ export async function getTokenFees(tokenAddress, options = {}) {
   const name = launch?.tokenName ?? doppler?.name ?? "—";
   const symbol = launch?.tokenSymbol ?? doppler?.symbol ?? "—";
   const volumeUsd = doppler?.volumeUsd != null ? String(doppler.volumeUsd) : null;
+  const firstSeenAt =
+    doppler?.firstSeenAt != null
+      ? typeof doppler.firstSeenAt === "number"
+        ? doppler.firstSeenAt
+        : Math.floor(new Date(doppler.firstSeenAt).getTime() / 1000)
+      : null;
   const volumeNum = volumeUsd != null ? Number(volumeUsd) : NaN;
   const estimatedCreatorFeesUsd = !Number.isNaN(volumeNum) && volumeNum >= 0
     ? (volumeNum * (SWAP_FEE_BPS / 10000) * (CREATOR_SHARE_BPS / 10000))
@@ -703,6 +709,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     claimableUnavailableReason: claimableUnavailableReason ?? null,
     /** Total claimed from on-chain ClaimedFees events (so status is not just accrued − claimable). */
     claimedFromEvents: claimedFromEvents ?? null,
+    /** Unix timestamp (seconds) when token was first seen by indexer; for daily average. */
+    firstSeenAt: firstSeenAt ?? null,
   };
 }
 

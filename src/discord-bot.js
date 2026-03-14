@@ -51,7 +51,8 @@ import {
 } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
-import { getTokenFees, getHotTokenStats } from "./token-stats.js";
+import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
+import { fetchTopFeeEarners } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 
@@ -259,6 +260,18 @@ async function registerCommands(appId) {
           .setName("token")
           .setDescription("Token address (0x...) or Bankr launch URL (e.g. bankr.bot/launches/0x...)")
           .setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("bankr-whales")
+      .setDescription("Top Bankr fee earners leaderboard (all-time)")
+      .addIntegerOption((o) =>
+        o
+          .setName("limit")
+          .setDescription("Number of entries (default 10, max 50)")
+          .setRequired(false)
+          .setMinValue(1)
+          .setMaxValue(50)
       )
       .toJSON(),
     new SlashCommandBuilder()
@@ -824,13 +837,31 @@ async function runClaimWatchCycle() {
         const tokenDropped = currentToken < prev.lastClaimableToken - CLAIM_DROP_TOLERANCE;
         const wethDropped = currentWeth < prev.lastClaimableWeth - CLAIM_DROP_TOLERANCE;
         if (tokenDropped || wethDropped) {
-          const lines = [];
-          if (wethDropped) lines.push(`WETH: ${prev.lastClaimableWeth.toFixed(6)} → ${currentWeth.toFixed(6)}`);
-          if (tokenDropped) lines.push(`Token: ${prev.lastClaimableToken.toFixed(6)} → ${currentToken.toFixed(6)}`);
+          const claimedWeth = Math.max(0, prev.lastClaimableWeth - currentWeth);
+          const claimedToken = Math.max(0, prev.lastClaimableToken - currentToken);
+          const parts = [];
+          if (claimedWeth > 0) parts.push(`**Claimed:** ${claimedWeth.toFixed(4)} WETH`);
+          if (claimedToken > 0) {
+            const fmt =
+              claimedToken >= 1e9
+                ? `${(claimedToken / 1e9).toFixed(0)}B`
+                : claimedToken >= 1e6
+                  ? `${(claimedToken / 1e6).toFixed(0)}M`
+                  : claimedToken >= 1e3
+                    ? `${(claimedToken / 1e3).toFixed(1)}K`
+                    : claimedToken.toFixed(4);
+            parts.push(`${fmt} ${symbol}`);
+          }
           const embed = {
             color: 0x00_80_00,
-            title: "Fees claimed",
-            description: `**${name}** ($${symbol})\n\`${tokenAddress}\`\n\n${lines.join("\n")}\n\n[View on Bankr](https://bankr.bot/launches/${tokenAddress})`,
+            title: "💰 Fee claim detected",
+            description: [
+              `**Token:** ${name} ($${symbol})`,
+              `**CA:** \`${tokenAddress}\``,
+              parts.length ? parts.join(" · ") : "Fees claimed.",
+              "",
+              "[View on Bankr](https://bankr.bot/launches/" + tokenAddress + ")",
+            ].join("\n"),
           };
           await channel.send({ embeds: [embed] }).catch((e) => console.error("Claim alert send failed:", e.message));
         }
@@ -953,9 +984,15 @@ function formatClaimableOneLiner(hookFees, symbol) {
   return parts.length ? `${parts.join(" + ")} (57% creator share)` : null;
 }
 
+function fmtTokenAmount(n) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return n.toFixed(4);
+}
+
 function formatFeesTokenReply(out, tokenAddress) {
-  const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, estimatedCreatorFeesUsd, formatUsd: fmt, error } = out;
-  const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
+  const { name, symbol, feeWallet, feeRecipient, cumulatedFees, hookFees, estimatedCreatorFeesUsd, formatUsd: fmt, error, firstSeenAt } = out;
   const feeLabel = feeRecipient?.xUsername ? `@${feeRecipient.xUsername}` : feeRecipient?.farcasterUsername ?? feeWallet ?? "—";
   if (error && !out.launch) {
     return `**${name}** ($${symbol})\n\n${error}`;
@@ -968,99 +1005,64 @@ function formatFeesTokenReply(out, tokenAddress) {
     "",
   ];
 
-  // Claimable right now — pool order: token0 = WETH, token1 = asset
   const hasHookData = hookFees != null;
   const claimableWeth = hasHookData ? Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS : null;
   const claimableToken = hasHookData ? Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS : null;
+  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
+  const accruedWeth = hasIndexerFees && cumulatedFees.token0Fees != null ? Number(BigInt(cumulatedFees.token0Fees)) / 10 ** DECIMALS : null;
+  const accruedToken = hasIndexerFees && cumulatedFees.token1Fees != null ? Number(BigInt(cumulatedFees.token1Fees)) / 10 ** DECIMALS : null;
+  const totalFeesUsd = hasIndexerFees && cumulatedFees.totalFeesUsd != null ? Number(cumulatedFees.totalFeesUsd) : null;
+  const claimsCount = out.claimedFromEvents?.count ?? 0;
 
-  if (hasHookData) {
-    const oneLiner = formatClaimableOneLiner(hookFees, symbol);
-    if (oneLiner) {
-      lines.push(`**Claimable:** ${oneLiner}`);
-      lines.push("");
+  // Bankr-style Fee Revenue block
+  if (hasIndexerFees || hasHookData) {
+    lines.push("**Fee Revenue**");
+    if (hasIndexerFees) {
+      const totalEarnedParts = [];
+      if (accruedWeth != null && accruedWeth > 0) totalEarnedParts.push(`${accruedWeth.toFixed(4)} WETH`);
+      if (accruedToken != null && accruedToken > 0) totalEarnedParts.push(`${fmtTokenAmount(accruedToken)} ${symbol}`);
+      if (totalFeesUsd != null && totalFeesUsd >= 0) totalEarnedParts.push(`(${fmt(totalFeesUsd) ?? `$${totalFeesUsd.toFixed(0)}`})`);
+      lines.push(`**Total Earned** • ${totalEarnedParts.length ? totalEarnedParts.join(" ") : "—"}`);
     }
-    lines.push("**Claimable right now** (on-chain `getHookFees`) — what the recipient can claim:");
-    if (hookFees.beneficiaryFees0 > 0n || hookFees.beneficiaryFees1 > 0n) {
-      if (hookFees.beneficiaryFees0 > 0n) lines.push(`• WETH: ${claimableWeth.toFixed(4)}`);
-      if (hookFees.beneficiaryFees1 > 0n) {
-        const n = claimableToken;
-        const tokStr = n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
-        lines.push(`• Token: ${tokStr}`);
+    if (hasHookData) {
+      if ((hookFees.beneficiaryFees0 ?? 0n) > 0n || (hookFees.beneficiaryFees1 ?? 0n) > 0n) {
+        const claimParts = [];
+        if (hookFees.beneficiaryFees0 > 0n) claimParts.push(`${claimableWeth.toFixed(4)} WETH`);
+        if (hookFees.beneficiaryFees1 > 0n) claimParts.push(`${fmtTokenAmount(claimableToken)} ${symbol}`);
+        lines.push(`**Claimable** • ${claimParts.join(" • ")}`);
+      } else {
+        lines.push("**Claimable** • No unclaimed fees yet.");
       }
-    } else {
-      lines.push("• No unclaimed fees yet.");
     }
+    if (totalFeesUsd != null && firstSeenAt != null && firstSeenAt > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const days = Math.max(1, (nowSec - firstSeenAt) / 86400);
+      const dailyAvgUsd = totalFeesUsd / days;
+      if (dailyAvgUsd >= 0 && dailyAvgUsd < 1e12) lines.push(`**Daily Average** • ${fmt(dailyAvgUsd) ?? `$${dailyAvgUsd.toFixed(0)}`}`);
+    }
+    lines.push(`**Claims** • ${claimsCount}`);
     lines.push("");
   }
 
-  // Historical accrued (indexer): indexer uses token0 = WETH, token1 = asset (token)
-  const hasIndexerFees = cumulatedFees && (cumulatedFees.token0Fees != null || cumulatedFees.token1Fees != null || cumulatedFees.totalFeesUsd != null);
-  if (hasIndexerFees) {
-    const raw0 = cumulatedFees.token0Fees != null ? BigInt(cumulatedFees.token0Fees) : 0n;
-    const raw1 = cumulatedFees.token1Fees != null ? BigInt(cumulatedFees.token1Fees) : 0n;
-    const accruedWeth = Number(raw0) / 10 ** DECIMALS;
-    const accruedToken = Number(raw1) / 10 ** DECIMALS;
-    function fmtTokenAmount(n) {
-      if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
-      if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
-      if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-      return n.toFixed(4);
-    }
-    lines.push("**Historical accrued** (indexer) — all-time fees for this beneficiary:");
-    if (cumulatedFees.token0Fees != null) lines.push(`• WETH: ${accruedWeth.toFixed(4)}`);
-    if (cumulatedFees.token1Fees != null) lines.push(`• Token (${symbol}): ${fmtTokenAmount(accruedToken)}`);
-    const totalUsd = cumulatedFees.totalFeesUsd != null ? Number(cumulatedFees.totalFeesUsd) : NaN;
-    if (cumulatedFees.totalFeesUsd != null && !Number.isNaN(totalUsd) && totalUsd < 1e9 && totalUsd >= 0) {
-      lines.push(`• **Total (USD):** ${fmt(cumulatedFees.totalFeesUsd) ?? cumulatedFees.totalFeesUsd}`);
-    }
-    if (hasHookData) {
-      const claimableT = claimableToken ?? 0;
-      const claimableW = claimableWeth ?? 0;
-      const fromEvents = out.claimedFromEvents;
-      const eps = 1e-9;
-      const totalClaimable = claimableW + claimableT;
+  // Status and claim-detail (compact)
+  if (hasIndexerFees && hasHookData) {
+    const claimableT = claimableToken ?? 0;
+    const claimableW = claimableWeth ?? 0;
+    const fromEvents = out.claimedFromEvents;
+    const eps = 1e-9;
+    const totalClaimable = claimableW + claimableT;
+    const accW = accruedWeth ?? 0;
+    const accT = accruedToken ?? 0;
+    const totalAccrued = accW + accT;
 
-      if (fromEvents != null) {
-        const claimedT = fromEvents.claimedToken ?? 0;
-        const claimedW = fromEvents.claimedWeth ?? 0;
-        const totalClaimedFromEvents = claimedT + claimedW;
-        if (totalClaimedFromEvents >= eps) {
-          lines.push("**Already claimed** (on-chain events):");
-          if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
-          if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
-          lines.push("_Detected from ClaimedFees events on Base._");
-        } else {
-          lines.push("**Already claimed** (on-chain events): 0");
-          lines.push("_No claim transactions detected for this recipient/token._");
-        }
-        if (totalClaimedFromEvents >= eps) {
-          if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
-          else if (totalClaimable < (accruedWeth + accruedToken) - eps) lines.push("**Status:** PARTIALLY CLAIMED");
-          else lines.push("**Status:** UNCLAIMED");
-        } else {
-          if (totalClaimable >= eps) lines.push("**Status:** UNCLAIMED");
-          else if (accruedWeth + accruedToken >= eps) lines.push("**Status:** _Unknown (hook reports 0 claimable; no claim events yet)_");
-        }
-      } else {
-        const claimedT = Math.max(0, accruedToken - claimableT);
-        const claimedW = Math.max(0, accruedWeth - claimableW);
-        if (claimedT > 0 || claimedW > 0) {
-          lines.push("**Already claimed** ≈ Accrued − Claimable:");
-          if (claimedT > 0) lines.push(`• Token: ${fmtTokenAmount(claimedT)}`);
-          if (claimedW > 0) lines.push(`• WETH: ${claimedW.toFixed(4)}`);
-          lines.push("_Some fees have been claimed for this token._");
-        } else {
-          lines.push("_None claimed yet (claimable = accrued)._");
-        }
-        const totalAccrued = accruedWeth + accruedToken;
-        if (totalAccrued >= eps) {
-          if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
-          else if (totalClaimable < totalAccrued - eps) lines.push("**Status:** PARTIALLY CLAIMED");
-          else lines.push("**Status:** UNCLAIMED");
-        }
-      }
-    } else {
-      lines.push("_Claimable (on-chain) not available — cannot tell if any fees have been claimed. Set **RPC_URL_BASE** (Base RPC) in the bot env to enable; then you'll see claimable amounts and status (UNCLAIMED / PARTIALLY CLAIMED / ALL CLAIMED)._");
+    if (fromEvents != null && fromEvents.count > 0) {
+      if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
+      else if (totalClaimable < totalAccrued - eps) lines.push("**Status:** PARTIALLY CLAIMED");
+      else lines.push("**Status:** UNCLAIMED");
+    } else if (totalAccrued >= eps) {
+      if (totalClaimable >= eps) lines.push("**Status:** UNCLAIMED");
+      else if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
+      else lines.push("**Status:** _Unknown (hook reports 0 claimable; no claim events yet)_");
     }
     lines.push("");
   }
@@ -1071,12 +1073,8 @@ function formatFeesTokenReply(out, tokenAddress) {
     lines.push("");
   }
 
-  // Removed: estimated $0, "no volume", and RPC hint when we have historical or claimable data
-  if (!hasHookData && !hasIndexerFees) {
-    if (estimatedCreatorFeesUsd != null && estimatedCreatorFeesUsd > 0) {
-      lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
-      lines.push("");
-    }
+  if (!hasHookData && !hasIndexerFees && estimatedCreatorFeesUsd != null && estimatedCreatorFeesUsd > 0) {
+    lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
   }
   return lines.join("\n").trim();
 }
@@ -1491,6 +1489,33 @@ client.on("interactionCreate", async (interaction) => {
       console.error("Fees-token failed:", e.message);
       debugLogError(e, "fees-token");
       await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "bankr-whales") {
+    const limit = interaction.options.getInteger("limit") ?? 10;
+    await interaction.deferReply();
+    try {
+      const rows = await fetchTopFeeEarners(limit);
+      if (rows.length === 0) {
+        await interaction.editReply("No fee-earner data from the indexer right now. Try again later or check DOPPLER_INDEXER_URL.");
+        return;
+      }
+      const lines = ["**Top Bankr Fee Earners** (all-time)\n"];
+      rows.forEach((r, i) => {
+        const short = `${r.wallet.slice(0, 6)}…${r.wallet.slice(-4)}`;
+        const usd = formatUsd(r.totalUsd) ?? `$${r.totalUsd.toFixed(0)}`;
+        const wethStr = r.weth > 0 ? `\n   ${r.weth.toFixed(4)} WETH` : "";
+        lines.push(`${i + 1}. \`${short}\`\n   ${usd}${wethStr}`);
+      });
+      lines.push("\n_Data from Doppler Indexer · [Bankr](https://bankr.bot)_");
+      await interaction.editReply(lines.join("\n"));
+      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/bankr-whales", `${rows.length}`);
+    } catch (e) {
+      console.error("bankr-whales failed:", e.message);
+      debugLogError(e, "bankr-whales");
+      await interaction.editReply({ content: `Leaderboard failed: ${e.message}` }).catch(() => {});
     }
     return;
   }
