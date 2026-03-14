@@ -50,7 +50,10 @@ export async function getTenant(guildId) {
     /** Launches that pass filter_x_match / filter_max_deploys (curated). */
     alertChannelId: t.alertChannelId ?? null,
     watchAlertChannelId: t.watchAlertChannelId ?? null,
-    agentAlertChannelId: t.agentAlertChannelId ?? null,
+    hotAlertChannelId: t.hotAlertChannelId ?? null,
+    hotLaunchEnabled: t.hotLaunchEnabled !== false,
+    trendingAlertChannelId: t.trendingAlertChannelId ?? null,
+    trendingEnabled: t.trendingEnabled === true,
     telegramChatId: t.telegramChatId ?? null,
     rules: { ...DEFAULT_RULES, ...t.rules },
     watchlist: { ...DEFAULT_WATCHLIST, ...t.watchlist },
@@ -65,7 +68,7 @@ export async function getTenant(guildId) {
 /**
  * Set (create or update) tenant config for a guild.
  * @param {string} guildId
- * @param {Partial<{ bankrApiKey: string, allLaunchesChannelId: string|null, alertChannelId: string, watchAlertChannelId: string, agentAlertChannelId: string, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
+ * @param {Partial<{ bankrApiKey: string, allLaunchesChannelId: string|null, alertChannelId: string, watchAlertChannelId: string, hotAlertChannelId: string, hotLaunchEnabled: boolean, trendingAlertChannelId: string, trendingEnabled: boolean, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
  */
 export async function setTenant(guildId, updates) {
   if (!guildId || typeof guildId !== "string") return null;
@@ -101,7 +104,7 @@ export async function listActiveTenantGuildIds() {
   const tenants = await loadAll();
   return Object.keys(tenants).filter((id) => {
     const t = tenants[id];
-    return t && (t.allLaunchesChannelId || t.alertChannelId || t.watchAlertChannelId || t.telegramChatId || t.agentAlertChannelId);
+    return t && (t.allLaunchesChannelId || t.alertChannelId || t.watchAlertChannelId || t.telegramChatId || t.hotAlertChannelId || t.trendingAlertChannelId);
   });
 }
 

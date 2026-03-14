@@ -8,7 +8,6 @@ import "dotenv/config";
  * Env: DISCORD_BOT_TOKEN (required)
  *   DISCORD_ALERT_CHANNEL_ID    - channel for all launch alerts (fallback)
  *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword)
- *   DISCORD_AGENT_ALERT_CHANNEL_ID - optional; channel for new Bankr agent profile alerts (bankr.bot/agents). Use so you don't miss new agents.
  * Channel IDs are usually set per server via /setup; env vars are optional fallbacks.
  */
 
@@ -55,7 +54,7 @@ import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
-import { getNewAgentProfiles, subscribeAgentProfileUpdates, fetchAgentProfiles } from "./agent-profiles.js";
+import { fetchAgentProfiles } from "./agent-profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -65,7 +64,10 @@ const ALL_LAUNCHES_CHANNEL_ID = process.env.DISCORD_ALL_LAUNCHES_CHANNEL_ID;
 /** Optional: post only launches that pass global filters (same as notify.js). If unset, only watch/all channels used. */
 const ALERT_CHANNEL_ID = process.env.DISCORD_ALERT_CHANNEL_ID;
 const WATCH_ALERT_CHANNEL_ID = process.env.DISCORD_WATCH_ALERT_CHANNEL_ID;
-const AGENT_ALERT_CHANNEL_ID = process.env.DISCORD_AGENT_ALERT_CHANNEL_ID;
+const HOT_LAUNCH_ALERT_CHANNEL_ID = process.env.DISCORD_HOT_LAUNCH_ALERT_CHANNEL_ID || null;
+const HOT_LAUNCH_ENABLED = process.env.HOT_LAUNCH_ENABLED !== "false" && process.env.HOT_LAUNCH_ENABLED !== "0";
+const TRENDING_ALERT_CHANNEL_ID = process.env.DISCORD_TRENDING_ALERT_CHANNEL_ID || null;
+const TRENDING_ENABLED = process.env.TRENDING_ENABLED === "true" || process.env.TRENDING_ENABLED === "1";
 const DEBUG_WEBHOOK_URL = process.env.DISCORD_DEBUG_WEBHOOK_URL;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
@@ -435,8 +437,26 @@ async function registerCommands(appId) {
       )
       .addChannelOption((o) =>
         o
-          .setName("agent_channel")
-          .setDescription("Channel for new Bankr agent profile alerts (optional)")
+          .setName("hot_channel")
+          .setDescription("Channel for hot token alerts (5+ buys in 1 min, 20+ holders). Optional.")
+          .setRequired(false)
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName("hot_enabled")
+          .setDescription("Enable hot token alerts (default: true)")
+          .setRequired(false)
+      )
+      .addChannelOption((o) =>
+        o
+          .setName("trending_channel")
+          .setDescription("Channel for trending token alerts. Optional.")
+          .setRequired(false)
+      )
+      .addBooleanOption((o) =>
+        o
+          .setName("trending_enabled")
+          .setDescription("Enable trending alerts (default: false)")
           .setRequired(false)
       )
       .addBooleanOption((o) =>
@@ -489,7 +509,16 @@ async function registerCommands(appId) {
             o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
           )
           .addChannelOption((o) =>
-            o.setName("agent_channel").setDescription("Channel for new agent profile alerts").setRequired(false)
+            o.setName("hot_channel").setDescription("Channel for hot token alerts").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("hot_enabled").setDescription("Enable hot token alerts").setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o.setName("trending_channel").setDescription("Channel for trending alerts").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("trending_enabled").setDescription("Enable trending alerts").setRequired(false)
           )
       )
       .addSubcommand((s) =>
@@ -657,13 +686,17 @@ async function runNotify() {
         if (watchChannel && showInWatch) await postOnce(watchChannel);
         await sendTelegram(launch);
       }
-      if (newLaunches.length > 0 && (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)) {
-        const discordIds = [allChannel?.id, alertChannel?.id, watchChannel?.id].filter(Boolean);
+      if (
+        HOT_LAUNCH_ENABLED &&
+        newLaunches.length > 0 &&
+        (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)
+      ) {
+        const discordIds = [allChannel?.id, alertChannel?.id, watchChannel?.id, HOT_LAUNCH_ALERT_CHANNEL_ID, TRENDING_ENABLED ? TRENDING_ALERT_CHANNEL_ID : null].filter(Boolean);
         const telegramIds = process.env.TELEGRAM_CHAT_ID ? [process.env.TELEGRAM_CHAT_ID] : [];
         const allLaunchesIds = allChannel?.id ? [allChannel.id] : [];
         for (const launch of newLaunches) {
           scheduleHotLaunchCheck(launch, {
-            discordChannelIds: discordIds,
+            discordChannelIds: [...new Set(discordIds)],
             telegramChatIds: telegramIds,
             allLaunchesChannelIds: allLaunchesIds,
           });
@@ -713,18 +746,26 @@ async function runNotify() {
             await sendTelegram(launch).catch(() => {});
           }
         }
-        if (newLaunches.length > 0 && (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)) {
+        const anyHotEnabled = tenantsWithChannels.some((t) => t.hotLaunchEnabled !== false);
+        if (
+          anyHotEnabled &&
+          newLaunches.length > 0 &&
+          (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)
+        ) {
           const discordIds = new Set();
           const telegramIds = new Set();
           const allLaunchesIds = [];
           if (process.env.TELEGRAM_CHAT_ID) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
           for (const tenant of tenantsWithChannels) {
+            if (tenant.hotLaunchEnabled === false) continue;
             if (tenant.allLaunchesChannelId) {
               discordIds.add(tenant.allLaunchesChannelId);
               allLaunchesIds.push(tenant.allLaunchesChannelId);
             }
             if (tenant.alertChannelId) discordIds.add(tenant.alertChannelId);
             if (tenant.watchAlertChannelId) discordIds.add(tenant.watchAlertChannelId);
+            if (tenant.hotAlertChannelId) discordIds.add(tenant.hotAlertChannelId);
+            if (tenant.trendingEnabled && tenant.trendingAlertChannelId) discordIds.add(tenant.trendingAlertChannelId);
             if (tenant.telegramChatId) telegramIds.add(tenant.telegramChatId);
           }
           for (const launch of newLaunches) {
@@ -750,103 +791,10 @@ async function runNotify() {
       });
     }
   }
-  // Always run claim-watch and agent profiles so servers that only have those channels still get pings
   await runClaimWatchCycle().catch((e) => {
     console.error("Claim watch cycle failed:", e.message);
     debugLogError(e, "runClaimWatchCycle");
   });
-  await runAgentProfilesCycle().catch((e) => {
-    console.error("Agent profiles cycle failed:", e.message);
-    debugLogError(e, "runAgentProfilesCycle");
-  });
-}
-
-/** Build a Discord embed for a new Bankr Agent Profile. */
-function buildAgentProfileEmbed(profile) {
-  const slug = (profile.slug || profile.id || "").toString().trim();
-  const url = slug ? `https://bankr.bot/agent-profiles/${encodeURIComponent(slug)}` : "https://bankr.bot/agents";
-  const title = profile.projectName || profile.name || "New Agent";
-  const symbol = profile.tokenSymbol ? ` ($${profile.tokenSymbol})` : "";
-  const embed = {
-    title: `🆕 New Agent Profile · ${title}${symbol}`,
-    url,
-    color: 0x5865f2,
-    description: profile.description ? String(profile.description).slice(0, 500) : null,
-    fields: [],
-    footer: { text: slug ? `Agent: ${slug} · bankr.bot/agents` : "Bankr Agent Profiles · bankr.bot/agents" },
-    timestamp: profile.createdAt ? new Date(profile.createdAt).toISOString() : undefined,
-  };
-  if (slug) embed.fields.push({ name: "Profile", value: `[\`${slug}\`](${url})`, inline: true });
-  if (profile.marketCapUsd != null && profile.marketCapUsd > 0) {
-    const fmt = profile.marketCapUsd >= 1e6 ? `${(profile.marketCapUsd / 1e6).toFixed(2)}M` : profile.marketCapUsd >= 1e3 ? `${(profile.marketCapUsd / 1e3).toFixed(2)}K` : String(profile.marketCapUsd);
-    embed.fields.push({ name: "Market cap", value: `$${fmt}`, inline: true });
-  }
-  if (profile.weeklyRevenueWeth != null && profile.weeklyRevenueWeth !== "" && Number(profile.weeklyRevenueWeth) > 0) {
-    embed.fields.push({ name: "Weekly revenue (WETH)", value: String(profile.weeklyRevenueWeth), inline: true });
-  }
-  if (profile.tokenAddress) {
-    embed.fields.push({ name: "Token (CA)", value: `\`${profile.tokenAddress}\``, inline: false });
-  }
-  if (profile.websiteUrl || profile.website) {
-    const web = profile.websiteUrl || profile.website;
-    embed.fields.push({ name: "Website", value: web, inline: false });
-  }
-  embed.fields.push({ name: "View", value: `[Open on Bankr](${url})`, inline: false });
-  return embed;
-}
-
-/** Send one agent profile to all configured channels (env or per-guild). */
-async function sendAgentProfileToChannels(profile) {
-  const embed = buildAgentProfileEmbed(profile);
-  const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID || AGENT_ALERT_CHANNEL_ID;
-  if (hasEnvChannels) {
-    const agentChannel = AGENT_ALERT_CHANNEL_ID ? await client.channels.fetch(AGENT_ALERT_CHANNEL_ID).catch(() => null) : null;
-    const allChannel = ALL_LAUNCHES_CHANNEL_ID ? await client.channels.fetch(ALL_LAUNCHES_CHANNEL_ID).catch(() => null) : null;
-    const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
-    const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
-    const channel = agentChannel || allChannel || alertChannel || watchChannel;
-    if (channel) {
-      await channel.send({ embeds: [embed] }).catch((e) => console.error("Agent profile alert failed:", e.message));
-    } else {
-      console.warn("[Agent profiles] Env channels set but could not fetch any channel (check channel IDs)");
-    }
-  } else {
-    const guildIds = await listActiveTenantGuildIds();
-    if (guildIds.length === 0) {
-      console.warn("[Agent profiles] No guilds with /setup; run /setup and set Agent alerts channel (or alert/watch channel)");
-      return;
-    }
-    let sent = false;
-    for (const gid of guildIds) {
-      const tenant = await getTenant(gid);
-      const channelId =
-        tenant?.agentAlertChannelId ||
-        tenant?.allLaunchesChannelId ||
-        tenant?.alertChannelId ||
-        tenant?.watchAlertChannelId ||
-        AGENT_ALERT_CHANNEL_ID;
-      if (!channelId) {
-        console.warn(`[Agent profiles] Guild ${gid}: no agent/alert/watch channel set in /setup`);
-        continue;
-      }
-      const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (!channel) {
-        console.warn(`[Agent profiles] Guild ${gid}: channel ${channelId} not found or bot has no access`);
-        continue;
-      }
-      await channel.send({ embeds: [embed] }).catch((e) => console.error(`[Agent profiles] Guild ${gid} send failed:`, e.message));
-      sent = true;
-    }
-    if (!sent) console.warn("[Agent profiles] No channel could be used (check /setup and bot permissions)");
-  }
-}
-
-async function runAgentProfilesCycle() {
-  const newProfiles = await getNewAgentProfiles({ limit: 100 });
-  if (newProfiles.length === 0) return;
-  console.log(`[Agent profiles] ${newProfiles.length} new profile(s) to send (poll)`);
-  for (const profile of newProfiles) await sendAgentProfileToChannels(profile);
-  console.log(`[Agent profiles] Finished sending ${newProfiles.length} agent alert(s)`);
 }
 
 const CLAIM_WATCH_DECIMALS = 18;
@@ -908,16 +856,13 @@ client.once("ready", async () => {
   if (WATCH_ALERT_CHANNEL_ID) {
     console.log(`Watch-list alerts will post to channel ${WATCH_ALERT_CHANNEL_ID}`);
   }
-  if (AGENT_ALERT_CHANNEL_ID) {
-    console.log(`Agent profile alerts will post to channel ${AGENT_ALERT_CHANNEL_ID}`);
-  }
   if (ALL_LAUNCHES_CHANNEL_ID) {
     console.log(`All Bankr launches (firehose) → channel ${ALL_LAUNCHES_CHANNEL_ID}`);
   }
   if (ALERT_CHANNEL_ID) {
     console.log(`Curated launch alerts (filtered) → channel ${ALERT_CHANNEL_ID}`);
   }
-  if (!ALL_LAUNCHES_CHANNEL_ID && !ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID && !AGENT_ALERT_CHANNEL_ID) {
+  if (!ALL_LAUNCHES_CHANNEL_ID && !ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
     console.log("No Discord channel IDs in env; alerts go to each server's /setup channels or notify.js webhook.");
   }
 
@@ -945,10 +890,6 @@ client.once("ready", async () => {
     debugLogError(e, "runNotify");
   });
 
-  subscribeAgentProfileUpdates((profile) => {
-    console.log("[Agent profiles] New agent (WebSocket):", profile.projectName || profile.slug || profile.id);
-    sendAgentProfileToChannels(profile).catch((e) => console.error("[Agent profiles] WebSocket ping failed:", e.message));
-  });
 });
 
 // Prune stale lookup cache entries
@@ -1412,7 +1353,7 @@ client.on("interactionCreate", async (interaction) => {
         color: 0x5865f2,
         title: "Latest 5 Bankr agents",
         description: lines.join("\n") + `\n\n[View all agents](${listUrl})`,
-        footer: { text: `Total approved: ${total ?? profiles.length} · New agents are announced in your Agent alerts channel (see /settings)` },
+        footer: { text: `Total approved: ${total ?? profiles.length} · bankr.bot/agents` },
         timestamp: new Date().toISOString(),
       };
       await interaction.editReply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1476,7 +1417,7 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "🤖 /agents",
           value:
-            "**Latest 5 Bankr agents** – approved agent profiles from [bankr.bot/agents](https://bankr.bot/agents). New agents are announced in your **Agent alerts channel** (set in /setup or /settings) when they’re added; same flow as launch alerts.",
+            "**Latest 5 Bankr agents** – view approved agent profiles from [bankr.bot/agents](https://bankr.bot/agents).",
           inline: false,
         },
         {
@@ -1624,7 +1565,10 @@ client.on("interactionCreate", async (interaction) => {
       const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
       const alertChannel = interaction.options.getChannel("alert_channel");
       const watchChannel = interaction.options.getChannel("watch_channel");
-      const agentChannel = interaction.options.getChannel("agent_channel");
+      const hotChannel = interaction.options.getChannel("hot_channel");
+      const hotEnabled = interaction.options.getBoolean("hot_enabled");
+      const trendingChannel = interaction.options.getChannel("trending_channel");
+      const trendingEnabled = interaction.options.getBoolean("trending_enabled");
       const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
       const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
       const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
@@ -1646,7 +1590,10 @@ client.on("interactionCreate", async (interaction) => {
         allLaunchesChannelId: allLaunchesChannel?.id ?? null,
         alertChannelId: alertChannel?.id ?? null,
         watchAlertChannelId: watchChannel?.id ?? null,
-        agentAlertChannelId: agentChannel?.id ?? null,
+        hotAlertChannelId: hotChannel?.id ?? null,
+        hotLaunchEnabled: hotEnabled !== false,
+        trendingAlertChannelId: trendingChannel?.id ?? null,
+        trendingEnabled: trendingEnabled === true,
         rules: {
           filterXMatch,
           filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
@@ -1659,7 +1606,8 @@ client.on("interactionCreate", async (interaction) => {
         allLaunchesChannel ? `• **All launches** (firehose): ${allLaunchesChannel.name}` : "• All launches channel: (none)",
         alertChannel ? `• **Curated** (rules): ${alertChannel.name}` : "• Curated channel: (none)",
         watchChannel ? `• **Watch list**: ${watchChannel.name}` : "• Watch channel: (none)",
-        agentChannel ? `• Agent alerts: ${agentChannel.name}` : "• Agent alerts: (none)",
+        hotChannel ? `• **Hot tokens**: ${hotChannel.name} (${updates.hotLaunchEnabled ? "on" : "off"})` : "• Hot tokens: (none)",
+        trendingChannel ? `• **Trending**: ${trendingChannel.name} (${updates.trendingEnabled ? "on" : "off"})` : "• Trending: (none)",
         `• Filter X match (curated): ${filterXMatch}`,
         filterMaxDeploys != null ? `• Max deploys/day (curated): ${filterMaxDeploys}` : "• Max deploys/day: no limit",
         `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
@@ -1707,7 +1655,8 @@ client.on("interactionCreate", async (interaction) => {
           `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
           `• **Curated** (X match / max deploys): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
           `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
-          `• Agent alerts channel: ${tenant.agentAlertChannelId ? `<#${tenant.agentAlertChannelId}>` : "—"}`,
+          `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
+          `• **Trending**: ${tenant.trendingAlertChannelId ? `<#${tenant.trendingAlertChannelId}>` : "—"} ${tenant.trendingEnabled ? "(on)" : "(off)"}`,
           `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
           `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
           `• Poll interval: ${((tenant.rules?.pollIntervalMs ?? 60000) / 60_000)} min`,
@@ -1732,20 +1681,32 @@ client.on("interactionCreate", async (interaction) => {
         const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
         const alertChannel = interaction.options.getChannel("alert_channel");
         const watchChannel = interaction.options.getChannel("watch_channel");
-        const agentChannel = interaction.options.getChannel("agent_channel");
+        const hotChannel = interaction.options.getChannel("hot_channel");
+        const hotEnabled = interaction.options.getBoolean("hot_enabled");
+        const trendingChannel = interaction.options.getChannel("trending_channel");
+        const trendingEnabled = interaction.options.getBoolean("trending_enabled");
         const updates = {};
         if (allLaunchesChannel) updates.allLaunchesChannelId = allLaunchesChannel.id;
         if (alertChannel) updates.alertChannelId = alertChannel.id;
         if (interaction.options.data.options?.find((o) => o.name === "watch_channel")) {
           updates.watchAlertChannelId = watchChannel?.id ?? null;
         }
-        if (interaction.options.data.options?.find((o) => o.name === "agent_channel")) {
-          updates.agentAlertChannelId = agentChannel?.id ?? null;
+        if (interaction.options.data.options?.find((o) => o.name === "hot_channel")) {
+          updates.hotAlertChannelId = hotChannel?.id ?? null;
+        }
+        if (interaction.options.data.options?.find((o) => o.name === "hot_enabled") !== undefined) {
+          updates.hotLaunchEnabled = hotEnabled !== false;
+        }
+        if (interaction.options.data.options?.find((o) => o.name === "trending_channel")) {
+          updates.trendingAlertChannelId = trendingChannel?.id ?? null;
+        }
+        if (interaction.options.data.options?.find((o) => o.name === "trending_enabled") !== undefined) {
+          updates.trendingEnabled = trendingEnabled === true;
         }
         if (Object.keys(updates).length === 0) {
           await interaction.editReply({
             content:
-              "Pick at least one channel to set. **all_launches_channel** = every deploy; **alert_channel** = curated (rules); **watch_channel** / **agent_channel** optional.",
+              "Pick at least one channel to set. **all_launches_channel** = every deploy; **alert_channel** = curated; **watch_channel** / **hot_channel** / **trending_channel** optional.",
           });
           return;
         }
