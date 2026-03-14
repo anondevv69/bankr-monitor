@@ -31,6 +31,7 @@ const BANKR_LAUNCHES_LIMIT = Math.min(
   2000
 );
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
+const FILTER_FEE_RECIPIENT_HAS_X = process.env.FILTER_FEE_RECIPIENT_HAS_X === "1" || process.env.FILTER_FEE_RECIPIENT_HAS_X === "true";
 const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL || "https://bankr.indexer.doppler.lol";
@@ -734,6 +735,10 @@ export async function runNotifyCycle(options = {}) {
       const xMatch = deployerX && feeX && deployerX === feeX;
       const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
       if (!xMatch && !fcMatch) return false;
+    }
+    if (FILTER_FEE_RECIPIENT_HAS_X) {
+      const feeX = l.beneficiaries?.[0]?.xUsername ? String(l.beneficiaries[0].xUsername).trim().replace(/^@/, "") : null;
+      if (!feeX) return false;
     }
     if (FILTER_MAX_DEPLOYS != null && FILTER_MAX_DEPLOYS > 0) {
       const count = l.launcher ? deployCounts[l.launcher.toLowerCase()]?.size : 0;

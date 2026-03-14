@@ -477,6 +477,12 @@ async function registerCommands(appId) {
           .setDescription("Only alert when deployer and fee recipient share same X/FC (default: false)")
           .setRequired(false)
       )
+      .addBooleanOption((o) =>
+        o
+          .setName("filter_fee_recipient_has_x")
+          .setDescription("Curated: only show deployments where fee recipient has an X account (default: false)")
+          .setRequired(false)
+      )
       .addIntegerOption((o) =>
         o
           .setName("filter_max_deploys")
@@ -499,6 +505,9 @@ async function registerCommands(appId) {
           .setDescription("Update monitoring rules")
           .addBooleanOption((o) =>
             o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("filter_fee_recipient_has_x").setDescription("Curated: only show when fee recipient has X account").setRequired(false)
           )
           .addIntegerOption((o) =>
             o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
@@ -560,6 +569,7 @@ async function registerCommands(appId) {
 /** Per-tenant filter: same logic as notify.js passesFilters but using tenant rules. */
 function tenantPassesFilters(launch, rules) {
   const filterXMatch = rules?.filterXMatch === true;
+  const filterFeeRecipientHasX = rules?.filterFeeRecipientHasX === true;
   const filterMaxDeploys = rules?.filterMaxDeploys != null ? Number(rules.filterMaxDeploys) : null;
   if (filterXMatch) {
     const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
@@ -571,6 +581,10 @@ function tenantPassesFilters(launch, rules) {
     const xMatch = deployerX && feeX && deployerX === feeX;
     const fcMatch = deployerFc && feeFc && deployerFc === feeFc;
     if (!xMatch && !fcMatch) return false;
+  }
+  if (filterFeeRecipientHasX) {
+    const feeX = launch.beneficiaries?.[0]?.xUsername ? String(launch.beneficiaries[0].xUsername).trim().replace(/^@/, "") : null;
+    if (!feeX) return false;
   }
   if (filterMaxDeploys != null && filterMaxDeploys > 0 && launch.deployCount != null && launch.deployCount > filterMaxDeploys) return false;
   return true;
@@ -602,13 +616,14 @@ function isWatchMatchForTenant(launch, watchList) {
 }
 
 /** Schedule a delayed check for "hot" launch (5–10+ buys in first minute, 20+ holders). Sends a second ping if thresholds are met. */
-function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, allLaunchesChannelIds = [] }) {
+function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, allLaunchesChannelIds = [], bankrApiKey } = {}) {
   if (
     (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 && HOT_LAUNCH_MIN_HOLDERS <= 0) ||
     (discordChannelIds.length === 0 && telegramChatIds.length === 0)
   ) {
     return;
   }
+  const apiKey = bankrApiKey ?? process.env.BANKR_API_KEY;
   const allLaunchesSet = new Set(Array.isArray(allLaunchesChannelIds) ? allLaunchesChannelIds : [allLaunchesChannelIds].filter(Boolean));
   setTimeout(async () => {
     try {
@@ -626,7 +641,7 @@ function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, al
         holderCount: stats.holderCount,
       };
       const launchForEmbed =
-        (await fetchLaunchByTokenAddress(launch.tokenAddress, process.env.BANKR_API_KEY)) || launch;
+        (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
       const embed = buildLaunchEmbed(launchForEmbed);
       if (hotByBuys && hotByHolders) {
         embed.title = `🔥👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buysFirstMin}+ buys in first min · 20+ holders`;
@@ -673,12 +688,17 @@ async function runNotify() {
       const allChannel = ALL_LAUNCHES_CHANNEL_ID ? await client.channels.fetch(ALL_LAUNCHES_CHANNEL_ID).catch(() => null) : null;
       const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
       const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
+      const curatedLaunches = newLaunches.filter((l) => l.passedFilters !== false);
 
       for (const launch of newLaunches) {
         const embed = buildLaunchEmbed(launch);
         const showInAll = true;
         const showInCurated = launch.passedFilters !== false;
         const showInWatch = launch.isWatchMatch;
+        if (showInCurated && curatedLaunches.length > 0) {
+          const idx = curatedLaunches.indexOf(launch) + 1;
+          embed.footer = { text: `New deployment · ${idx} of ${curatedLaunches.length}` };
+        }
         const posted = new Set();
         async function postOnce(ch) {
           if (!ch || posted.has(ch.id)) return;
@@ -707,6 +727,7 @@ async function runNotify() {
             discordChannelIds: [...new Set(discordIds)],
             telegramChatIds: telegramIds,
             allLaunchesChannelIds: allLaunchesIds,
+            bankrApiKey: process.env.BANKR_API_KEY,
           });
         }
       }
@@ -724,23 +745,32 @@ async function runNotify() {
       try {
         const firstApiKey = tenantsWithChannels[0]?.bankrApiKey ?? process.env.BANKR_API_KEY;
         const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
+        // Per-tenant curated list for "1 of N" footer
+        for (const tenant of tenantsWithChannels) {
+          tenant._curatedLaunches = newLaunches.filter((l) => tenantPassesFilters(l, tenant.rules));
+        }
         for (const launch of newLaunches) {
           const embed = buildLaunchEmbed(launch);
           for (const tenant of tenantsWithChannels) {
             const showInCurated = tenantPassesFilters(launch, tenant.rules);
+            const curatedForTenant = tenant._curatedLaunches || [];
+            const curatedEmbed =
+              showInCurated && curatedForTenant.length > 0
+                ? { ...embed, footer: { text: `New deployment · ${curatedForTenant.indexOf(launch) + 1} of ${curatedForTenant.length}` } }
+                : embed;
             const watchList = await getWatchListForGuild(tenant.guildId);
             const showInWatch = isWatchMatchForTenant(launch, watchList);
             const allCh = tenant.allLaunchesChannelId ? await client.channels.fetch(tenant.allLaunchesChannelId).catch(() => null) : null;
             const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
             const posted = new Set();
-            async function postOnce(ch) {
+            async function postOnce(ch, emb = embed) {
               if (!ch || posted.has(ch.id)) return;
               posted.add(ch.id);
-              await ch.send({ embeds: [embed] }).catch(() => {});
+              await ch.send({ embeds: [emb] }).catch(() => {});
             }
             if (allCh) await postOnce(allCh);
-            if (alertCh && showInCurated) await postOnce(alertCh);
+            if (alertCh && showInCurated) await postOnce(alertCh, curatedEmbed);
             if (watchCh && showInWatch) await postOnce(watchCh);
             if (
               tenant.telegramChatId &&
@@ -781,6 +811,7 @@ async function runNotify() {
               discordChannelIds: [...discordIds],
               telegramChatIds: [...telegramIds],
               allLaunchesChannelIds: allLaunchesIds,
+              bankrApiKey: firstApiKey,
             });
           }
         }
@@ -1568,6 +1599,7 @@ client.on("interactionCreate", async (interaction) => {
       const trendingChannel = interaction.options.getChannel("trending_channel");
       const trendingEnabled = interaction.options.getBoolean("trending_enabled");
       const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
+      const filterFeeRecipientHasX = interaction.options.getBoolean("filter_fee_recipient_has_x") ?? false;
       const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
       const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
       if (!apiKey) {
@@ -1594,6 +1626,7 @@ client.on("interactionCreate", async (interaction) => {
         trendingEnabled: trendingEnabled === true,
         rules: {
           filterXMatch,
+          filterFeeRecipientHasX,
           filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
           pollIntervalMs: pollIntervalMin != null ? Math.max(0.5, pollIntervalMin) * 60_000 : 60_000,
         },
@@ -1610,7 +1643,7 @@ client.on("interactionCreate", async (interaction) => {
         filterMaxDeploys != null ? `• Max deploys/day (curated): ${filterMaxDeploys}` : "• Max deploys/day: no limit",
         `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
         "",
-        "**Tip:** Firehose = every deploy. Curated = only passes X-match / deploy-count rules. **/watch** = your list only.",
+        "**Tip:** Firehose = every deploy. Curated = only passes rules (X match, fee recipient has X, max deploys/day). **/watch** = your list only.",
         "Use **/watch add** for X, Farcaster, wallets, keywords. **/settings show** to view.",
       ];
       await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
@@ -1651,11 +1684,12 @@ client.on("interactionCreate", async (interaction) => {
         const lines = [
           "**Current config** (API key hidden)",
           `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
-          `• **Curated** (X match / max deploys): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
+          `• **Curated** (rules): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
           `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
           `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
           `• **Trending**: ${tenant.trendingAlertChannelId ? `<#${tenant.trendingAlertChannelId}>` : "—"} ${tenant.trendingEnabled ? "(on)" : "(off)"}`,
           `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
+          `• Filter fee recipient has X: ${tenant.rules?.filterFeeRecipientHasX ?? false}`,
           `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
           `• Poll interval: ${((tenant.rules?.pollIntervalMs ?? 60000) / 60_000)} min`,
           "• Watchlist: X " + (w.x?.length ?? 0) + ", FC " + (w.fc?.length ?? 0) + ", wallets " + (w.wallet?.length ?? 0) + ", keywords " + (w.keywords?.length ?? 0),
@@ -1714,11 +1748,13 @@ client.on("interactionCreate", async (interaction) => {
       }
       if (sub === "rules") {
         const filterXMatch = interaction.options.getBoolean("filter_x_match");
+        const filterFeeRecipientHasX = interaction.options.getBoolean("filter_fee_recipient_has_x");
         const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
         const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
         const tenant = await getTenant(guildId);
         const rules = { ...(tenant?.rules ?? {}) };
         if (filterXMatch !== null) rules.filterXMatch = filterXMatch;
+        if (filterFeeRecipientHasX !== null) rules.filterFeeRecipientHasX = filterFeeRecipientHasX;
         if (filterMaxDeploys !== null) rules.filterMaxDeploys = filterMaxDeploys;
         if (pollIntervalMin != null) rules.pollIntervalMs = Math.max(0.5, pollIntervalMin) * 60_000;
         await setTenant(guildId, { rules });

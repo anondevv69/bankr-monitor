@@ -12,6 +12,7 @@ const TENANTS_FILE = process.env.TENANTS_FILE || join(process.cwd(), ".bankr-ten
 
 const DEFAULT_RULES = {
   filterXMatch: false,
+  filterFeeRecipientHasX: false,
   filterMaxDeploys: null,
   pollIntervalMs: 60_000,
 };
