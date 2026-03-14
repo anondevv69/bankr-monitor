@@ -54,7 +54,6 @@ import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats } from "./token-stats.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
-import { fetchAgentProfiles } from "./agent-profiles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -534,10 +533,6 @@ async function registerCommands(appId) {
     new SlashCommandBuilder()
       .setName("help")
       .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup)" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("agents")
-      .setDescription("Show the latest 5 Bankr agent profiles (bankr.bot/agents)")
       .toJSON(),
   ];
 
@@ -1327,43 +1322,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === "agents") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
-    try {
-      const { profiles, total } = await fetchAgentProfiles({ sort: "newest", limit: 5, offset: 0 });
-      const listUrl = "https://bankr.bot/agents";
-      if (!profiles.length) {
-        await interaction.editReply({
-          content: `No agent profiles returned from Bankr. Check [bankr.bot/agents](${listUrl}) in a browser.`,
-          flags: MessageFlags.Ephemeral,
-        }).catch(() => {});
-        return;
-      }
-      const lines = profiles.map((p, i) => {
-        const slug = p.slug || p.id || "";
-        const url = slug ? `https://bankr.bot/agent-profiles/${encodeURIComponent(slug)}` : listUrl;
-        const name = p.projectName || "Agent";
-        const sym = p.tokenSymbol ? ` ($${p.tokenSymbol})` : "";
-        const cap = p.marketCapUsd != null && p.marketCapUsd > 0
-          ? ` · $${p.marketCapUsd >= 1e6 ? (p.marketCapUsd / 1e6).toFixed(2) + "M" : p.marketCapUsd >= 1e3 ? (p.marketCapUsd / 1e3).toFixed(2) + "K" : p.marketCapUsd}`
-          : "";
-        return `${i + 1}. [**${name}**${sym}](${url})${cap}`;
-      });
-      const embed = {
-        color: 0x5865f2,
-        title: "Latest 5 Bankr agents",
-        description: lines.join("\n") + `\n\n[View all agents](${listUrl})`,
-        footer: { text: `Total approved: ${total ?? profiles.length} · bankr.bot/agents` },
-        timestamp: new Date().toISOString(),
-      };
-      await interaction.editReply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => {});
-    } catch (e) {
-      console.error("Agents command failed:", e.message);
-      await interaction.editReply({ content: `Failed to fetch agents: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
-    }
-    return;
-  }
-
   if (interaction.commandName === "help") {
     const embed = {
       color: 0x0052_ff,
@@ -1412,12 +1370,6 @@ client.on("interactionCreate", async (interaction) => {
           value:
             "**Accrued/claimable fees** for one Bankr token.\n" +
             "**token:** Token address (0x…) or Bankr launch URL (e.g. bankr.bot/launches/0x…). Shows fee recipient, indexer accrued fees (token + WETH + USD) when available, or estimated from volume. Claimed vs unclaimed is not in the API — use [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token <ca>` to see/claim.",
-          inline: false,
-        },
-        {
-          name: "🤖 /agents",
-          value:
-            "**Latest 5 Bankr agents** – view approved agent profiles from [bankr.bot/agents](https://bankr.bot/agents).",
           inline: false,
         },
         {
