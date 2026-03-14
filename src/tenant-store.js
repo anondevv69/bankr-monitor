@@ -118,17 +118,51 @@ export async function getTenantStats() {
   };
 }
 
+/** Normalize watch entry to value string (for matching). Entry can be string or { value, name? }. */
+function watchEntryValue(entry) {
+  if (entry == null) return "";
+  if (typeof entry === "string") return entry.trim().toLowerCase();
+  if (typeof entry === "object" && entry && typeof entry.value === "string") return entry.value.trim().toLowerCase();
+  return "";
+}
+
+/** Normalize watch list array to array of { value, name? } for display. */
+function watchListToDisplay(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.map((e) => {
+    if (typeof e === "string") return { value: e.trim().toLowerCase(), name: null };
+    if (e && typeof e === "object" && typeof e.value === "string")
+      return { value: e.value.trim().toLowerCase(), name: e.name && String(e.name).trim() ? String(e.name).trim() : null };
+    return null;
+  }).filter(Boolean);
+}
+
 /**
- * Get watchlist for a guild from tenant config (or default).
+ * Get watchlist for a guild from tenant config (or default). Returns Sets of values for matching.
  */
 export async function getWatchListForGuild(guildId) {
   const tenant = await getTenant(guildId);
   const w = tenant?.watchlist ?? DEFAULT_WATCHLIST;
+  const toSet = (arr) => new Set((Array.isArray(arr) ? arr : []).map(watchEntryValue).filter(Boolean));
   return {
-    x: new Set(Array.isArray(w.x) ? w.x : []),
-    fc: new Set(Array.isArray(w.fc) ? w.fc : []),
-    wallet: new Set(Array.isArray(w.wallet) ? w.wallet : []),
-    keywords: new Set(Array.isArray(w.keywords) ? w.keywords : []),
+    x: toSet(w.x),
+    fc: toSet(w.fc),
+    wallet: toSet(w.wallet),
+    keywords: toSet(w.keywords),
+  };
+}
+
+/**
+ * Get watchlist with optional display names for listing. Returns arrays of { value, name? }.
+ */
+export async function getWatchListDisplayForGuild(guildId) {
+  const tenant = await getTenant(guildId);
+  const w = { ...DEFAULT_WATCHLIST, ...tenant?.watchlist };
+  return {
+    x: watchListToDisplay(w.x),
+    fc: watchListToDisplay(w.fc),
+    wallet: watchListToDisplay(w.wallet),
+    keywords: watchListToDisplay(w.keywords),
   };
 }
 
@@ -138,8 +172,9 @@ export async function getWatchListForGuild(guildId) {
  * @param {'x'|'fc'|'wallet'|'keywords'} type
  * @param {string} value - handle, wallet address, or keyword
  * @param {boolean} add - true to add, false to remove
+ * @param {string} [name] - optional display name/nickname for this entry
  */
-export async function updateWatchListForGuild(guildId, type, value, add) {
+export async function updateWatchListForGuild(guildId, type, value, add, name) {
   const tenant = await getTenant(guildId);
   const w = { ...DEFAULT_WATCHLIST, ...tenant?.watchlist };
   const list = Array.isArray(w[type]) ? [...w[type]] : [];
@@ -147,11 +182,13 @@ export async function updateWatchListForGuild(guildId, type, value, add) {
   const val = normalized(value);
   if (!val) return false;
   if (add) {
-    if (list.includes(val)) return true;
-    list.push(val);
-    list.sort();
+    const exists = list.some((e) => watchEntryValue(e) === val);
+    if (exists) return true;
+    const displayName = name && String(name).trim() ? String(name).trim() : null;
+    list.push(displayName ? { value: val, name: displayName } : val);
+    list.sort((a, b) => watchEntryValue(a).localeCompare(watchEntryValue(b), undefined, { sensitivity: "base" }));
   } else {
-    const i = list.findIndex((x) => normalized(x) === val);
+    const i = list.findIndex((e) => watchEntryValue(e) === val);
     if (i === -1) return false;
     list.splice(i, 1);
   }

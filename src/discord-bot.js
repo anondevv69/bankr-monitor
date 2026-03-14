@@ -34,6 +34,7 @@ import {
   setTenant,
   listActiveTenantGuildIds,
   getWatchListForGuild,
+  getWatchListDisplayForGuild,
   updateWatchListForGuild,
   getClaimWatchTokens,
   addClaimWatchToken,
@@ -276,6 +277,9 @@ async function registerCommands(appId) {
           )
           .addStringOption((o) =>
             o.setName("value").setDescription("Handle, 0x address, or keyword").setRequired(true)
+          )
+          .addStringOption((o) =>
+            o.setName("name").setDescription("Optional nickname/label for this entry (e.g. Vitalik)").setRequired(false)
           )
       )
       .addSubcommand((s) =>
@@ -739,9 +743,9 @@ async function runNotify() {
 
 /** Build a Discord embed for a new Bankr Agent Profile. */
 function buildAgentProfileEmbed(profile) {
-  const slug = profile.slug || profile.id || "";
+  const slug = (profile.slug || profile.id || "").toString().trim();
   const url = slug ? `https://bankr.bot/agent-profiles/${encodeURIComponent(slug)}` : "https://bankr.bot/agents";
-  const title = profile.projectName || "New Agent";
+  const title = profile.projectName || profile.name || "New Agent";
   const symbol = profile.tokenSymbol ? ` ($${profile.tokenSymbol})` : "";
   const embed = {
     title: `🆕 New Agent Profile · ${title}${symbol}`,
@@ -749,9 +753,10 @@ function buildAgentProfileEmbed(profile) {
     color: 0x5865f2,
     description: profile.description ? String(profile.description).slice(0, 500) : null,
     fields: [],
-    footer: { text: "Bankr Agent Profiles · bankr.bot/agents" },
+    footer: { text: slug ? `Agent: ${slug} · bankr.bot/agents` : "Bankr Agent Profiles · bankr.bot/agents" },
     timestamp: profile.createdAt ? new Date(profile.createdAt).toISOString() : undefined,
   };
+  if (slug) embed.fields.push({ name: "Profile", value: `[\`${slug}\`](${url})`, inline: true });
   if (profile.marketCapUsd != null && profile.marketCapUsd > 0) {
     const fmt = profile.marketCapUsd >= 1e6 ? `${(profile.marketCapUsd / 1e6).toFixed(2)}M` : profile.marketCapUsd >= 1e3 ? `${(profile.marketCapUsd / 1e3).toFixed(2)}K` : String(profile.marketCapUsd);
     embed.fields.push({ name: "Market cap", value: `$${fmt}`, inline: true });
@@ -760,7 +765,11 @@ function buildAgentProfileEmbed(profile) {
     embed.fields.push({ name: "Weekly revenue (WETH)", value: String(profile.weeklyRevenueWeth), inline: true });
   }
   if (profile.tokenAddress) {
-    embed.fields.push({ name: "Token", value: `\`${profile.tokenAddress}\``, inline: false });
+    embed.fields.push({ name: "Token (CA)", value: `\`${profile.tokenAddress}\``, inline: false });
+  }
+  if (profile.websiteUrl || profile.website) {
+    const web = profile.websiteUrl || profile.website;
+    embed.fields.push({ name: "Website", value: web, inline: false });
   }
   embed.fields.push({ name: "View", value: `[Open on Bankr](${url})`, inline: false });
   return embed;
@@ -1406,7 +1415,7 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "📋 /watch",
           value:
-            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). X and Farcaster are resolved to wallet first, then that wallet is added. New launches matching them are posted to the watch channel.\n" +
+            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). Optional **name** = nickname/label for the entry (e.g. \"Vitalik\"). X and Farcaster are resolved to wallet first. New launches matching them are posted to the watch channel.\n" +
             "**remove** – Remove by type + value.\n**list** – Show current watch list.",
           inline: false,
         },
@@ -1810,6 +1819,7 @@ client.on("interactionCreate", async (interaction) => {
   const sub = interaction.options.getSubcommand();
   const type = interaction.options.getString("type");
   const value = interaction.options.getString("value");
+  const name = interaction.options.getString("name");
   const guildId = interaction.guildId ?? null;
   const useTenant = guildId && (await getTenant(guildId));
 
@@ -1827,11 +1837,12 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const normalized = value ? String(value).trim().toLowerCase().replace(/^@/, "") : "";
         if (useTenant) {
-          const added = await updateWatchListForGuild(guildId, type, value, true);
+          const added = await updateWatchListForGuild(guildId, type, value, true, name ?? undefined);
+          const label = name ? `${name} (${type === "x" ? "@" : ""}${normalized || value})` : `${type === "x" ? "@" : ""}${normalized || value}`;
           await interaction.editReply({
             content: added
-              ? `Added **${type === "x" ? "@" : ""}${normalized || value}** to this server's watch list.`
-              : `**${type === "x" ? "@" : ""}${normalized || value}** is already on the watch list.`,
+              ? `Added **${label}** to this server's watch list.`
+              : `**${label}** is already on the watch list.`,
           });
         } else {
           const tenant = guildId ? await getTenant(guildId) : null;
@@ -1852,10 +1863,11 @@ client.on("interactionCreate", async (interaction) => {
       } else if (type === "wallet") {
         const addr = typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
         if (useTenant) {
-          const added = addr ? await updateWatchListForGuild(guildId, "wallet", addr, true) : false;
+          const added = addr ? await updateWatchListForGuild(guildId, "wallet", addr, true, name ?? undefined) : false;
+          const label = name ? `${name} (\`${addr}\`)` : `\`${addr}\``;
           await interaction.reply({
             content: addr
-              ? (added ? `Added wallet \`${addr}\` to this server's watch list.` : `That wallet is already on the watch list.`)
+              ? (added ? `Added wallet ${label} to this server's watch list.` : `That wallet is already on the watch list.`)
               : "Invalid wallet address (use 0x + 40 hex chars).",
             flags: MessageFlags.Ephemeral,
           });
@@ -1870,9 +1882,10 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else {
         if (useTenant) {
-          const added = await updateWatchListForGuild(guildId, "keywords", value, true);
+          const added = await updateWatchListForGuild(guildId, "keywords", value, true, name ?? undefined);
+          const label = name ? `${name} ("${value}")` : `"${value}"`;
           await interaction.reply({
-            content: added ? `Added keyword **"${value}"** to this server's watch list.` : `Keyword **"${value}"** is already on the watch list.`,
+            content: added ? `Added keyword **${label}** to this server's watch list.` : `**${label}** is already on the watch list.`,
             flags: MessageFlags.Ephemeral,
           });
         } else {
@@ -1930,14 +1943,17 @@ client.on("interactionCreate", async (interaction) => {
       }
     } else if (sub === "list") {
       if (useTenant) {
-        const wl = await getWatchListForGuild(guildId);
-        const x = [...wl.x], fc = [...wl.fc], wallet = [...wl.wallet], keywords = [...wl.keywords];
+        const wl = await getWatchListDisplayForGuild(guildId);
+        const fmtX = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} (@${e.value})` : `@${e.value}`)).join(", ") : "_none_");
+        const fmtFc = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} (${e.value})` : e.value)).join(", ") : "_none_");
+        const fmtWallet = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} (\`${e.value}\`)` : `\`${e.value}\``)).join(", ") : "_none_");
+        const fmtKw = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} ("${e.value}")` : `"${e.value}"`)).join(", ") : "_none_");
         const lines = [
           "**Watch list** (this server)",
-          "**X:** " + (x.length ? x.map((h) => `@${h}`).join(", ") : "_none_"),
-          "**Farcaster:** " + (fc.length ? fc.join(", ") : "_none_"),
-          "**Wallets:** " + (wallet.length ? wallet.map((w) => `\`${w}\``).join(", ") : "_none_"),
-          "**Keywords:** " + (keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_"),
+          "**X:** " + fmtX(wl.x),
+          "**Farcaster:** " + fmtFc(wl.fc),
+          "**Wallets:** " + fmtWallet(wl.wallet),
+          "**Keywords:** " + fmtKw(wl.keywords),
         ];
         await interaction.reply({ content: lines.join("\n"), flags: MessageFlags.Ephemeral });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/watch list", "");

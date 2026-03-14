@@ -95,6 +95,19 @@ function walletAddr(obj) {
   return a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null;
 }
 
+/** Pick the token contract address (0x + 40 hex). Never use pool ID (0x + 64 hex). Prefer tokenAddress then asset/token. */
+function pickTokenAddress(l) {
+  const s = (v) => (typeof v === "string" && /^0x[a-fA-F0-9]{40}$/.test(v.trim()) ? v.trim().toLowerCase() : null);
+  const isPoolId = (v) => typeof v === "string" && /^0x[a-fA-F0-9]{64}$/.test(v.trim());
+  const tok = l.tokenAddress;
+  if (s(tok)) return s(tok);
+  if (isPoolId(tok)) {
+    const asset = s(l.asset) ?? s(l.token) ?? s(l.address);
+    if (asset) return asset;
+  }
+  return s(l.asset) ?? s(l.token) ?? s(l.address) ?? (tok ? tok.trim().toLowerCase() : null);
+}
+
 function formatBankrLaunch(l) {
   const rawDeployerX = l.deployer?.xUsername ? (l.deployer.xUsername.startsWith("@") ? l.deployer.xUsername.slice(1) : l.deployer.xUsername) : null;
   const rawFeeX = l.feeRecipient?.xUsername ? (l.feeRecipient.xUsername.startsWith("@") ? l.feeRecipient.xUsername.slice(1) : l.feeRecipient.xUsername) : null;
@@ -107,10 +120,11 @@ function formatBankrLaunch(l) {
   const x = deployerX || feeX || null;
   const launcherWallet = walletAddr(l.deployer) ?? walletAddr(l.deployerWallet ?? l.deployerWalletAddress);
   const feeWallet = walletAddr(l.feeRecipient) ?? walletAddr(l.feeRecipientWallet ?? l.feeRecipientWalletAddress ?? l.feeRecipientAddress);
+  const tokenAddress = pickTokenAddress(l) ?? (l.tokenAddress ? String(l.tokenAddress).trim().toLowerCase() : null);
   return {
     name: l.tokenName,
     symbol: l.tokenSymbol,
-    tokenAddress: l.tokenAddress,
+    tokenAddress,
     launcher: launcherWallet,
     launcherX: rawDeployerX,
     launcherFarcaster: rawDeployerFc,
@@ -188,7 +202,7 @@ async function fetchSingleBankrLaunch(tokenAddress, apiKey) {
     if (!res.ok) return null;
     const json = await res.json();
     const raw = json.launch ?? json;
-    if (raw?.tokenAddress) return raw;
+    if (raw && (raw.tokenAddress || raw.asset || raw.token)) return raw;
   } catch {
     /* ignore */
   }
@@ -198,7 +212,7 @@ async function fetchSingleBankrLaunch(tokenAddress, apiKey) {
 /** Fetch launch by token address and return same shape as formatBankrLaunch (for hot ping so CA/name/symbol are canonical). */
 export async function fetchLaunchByTokenAddress(tokenAddress, apiKey) {
   const raw = await fetchSingleBankrLaunch(tokenAddress, apiKey);
-  if (!raw?.tokenAddress) return null;
+  if (!raw || !pickTokenAddress(raw)) return null;
   return formatBankrLaunch(raw);
 }
 
