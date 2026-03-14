@@ -1511,19 +1511,23 @@ client.on("interactionCreate", async (interaction) => {
     const limit = interaction.options.getInteger("limit") ?? 10;
     await interaction.deferReply();
     try {
-      const rows = await fetchTopFeeEarners(limit);
+      const { rows, source } = await fetchTopFeeEarners(limit);
       if (rows.length === 0) {
         await interaction.editReply("No fee-earner data from the indexer right now. Try again later or check DOPPLER_INDEXER_URL.");
         return;
       }
-      const lines = ["**Top Bankr Fee Earners** (all-time)\n"];
+      const title = source === "v4pools" ? "**Top Bankr Fee Recipients** (by pool volume)\n" : "**Top Bankr Fee Earners** (all-time)\n";
+      const lines = [title];
       rows.forEach((r, i) => {
         const short = `${r.wallet.slice(0, 6)}…${r.wallet.slice(-4)}`;
         const usd = formatUsd(r.totalUsd) ?? `$${r.totalUsd.toFixed(0)}`;
         const wethStr = r.weth > 0 ? `\n   ${r.weth.toFixed(4)} WETH` : "";
         lines.push(`${i + 1}. \`${short}\`\n   ${usd}${wethStr}`);
       });
-      lines.push("\n_Data from Doppler Indexer · [Bankr](https://bankr.bot)_");
+      const footer = source === "v4pools"
+        ? "\n_By pool volume (indexer may not expose fee totals) · [Bankr](https://bankr.bot)_"
+        : "\n_Data from Doppler Indexer · [Bankr](https://bankr.bot)_";
+      lines.push(footer);
       await interaction.editReply(lines.join("\n"));
       debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/bankr-whales", `${rows.length}`);
     } catch (e) {

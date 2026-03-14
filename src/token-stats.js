@@ -420,6 +420,43 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
 
 const POOL_STATE_TIMEOUT_MS = 8_000;
 
+/**
+ * Resolve bytes32 poolId for a token via Doppler SDK (getMulticurvePool).
+ * Used when launch/indexer don't provide a 64-char poolId, so hook reads and Release events work.
+ * @param {string} tokenAddress - Token contract address (0x...).
+ * @returns {Promise<string|null>} bytes32 poolId or null.
+ */
+async function fetchPoolIdFromDopplerSdk(tokenAddress) {
+  if (!tokenAddress || typeof tokenAddress !== "string" || !/^0x[a-fA-F0-9]{40}$/i.test(tokenAddress.trim())) return null;
+  if (CHAIN_ID !== 8453) return null;
+  const run = async () => {
+    try {
+      const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+      const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
+      const publicClient = viem.createPublicClient({
+        chain,
+        transport: viem.http(getBaseRpcUrl()),
+      });
+      const { DopplerSDK } = await import("@whetstone-research/doppler-sdk");
+      const sdk = new DopplerSDK({ publicClient, walletClient: undefined, chainId: CHAIN_ID });
+      const pool = await sdk.getMulticurvePool(tokenAddress.trim());
+      const id = pool?.poolId ?? pool?.id;
+      if (id && typeof id === "string" && /^0x[a-fA-F0-9]{64}$/.test(id.trim())) return id.trim();
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    return await Promise.race([
+      run(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), POOL_STATE_TIMEOUT_MS)),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
 /** Optional: fetch pool state (fee tier, status) via Doppler SDK read-only getState(). Times out so script never hangs. */
 async function fetchDopplerPoolState(tokenAddress) {
   const run = async () => {
@@ -672,8 +709,11 @@ export async function getTokenFees(tokenAddress, options = {}) {
   }
 
   let hookFees = null;
-  // Use same poolId as for cumulatedFees (launch.poolId or indexer v4pools), so we get claimable when indexer has accrued.
-  const poolIdForHook = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
+  // Use same poolId as for cumulatedFees (launch.poolId or indexer v4pools). Must be bytes32 (64 hex) for on-chain hook and Release events.
+  let poolIdForHook = effectivePoolId && /^0x[a-fA-F0-9]{64}$/.test(String(effectivePoolId).trim()) ? String(effectivePoolId).trim() : null;
+  if (!poolIdForHook && CHAIN_ID === 8453) {
+    poolIdForHook = await fetchPoolIdFromDopplerSdk(addr);
+  }
   let claimableUnavailableReason = null;
   if (poolIdForHook) {
     const hookResult = await fetchHookFeesOnChain(poolIdForHook);

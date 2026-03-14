@@ -10,65 +10,109 @@ const DOPPLER_INDEXER_URL =
 
 /**
  * Fetch top fee earners by totalFeesUsd from the indexer.
- * Tries: (1) cumulatedFees as list with orderBy/limit, (2) cumulatedFees.items if schema uses Ponder-style.
+ * Tries multiple query shapes: with/without chainId, items vs list (Bankr indexer uses chainId + items).
  * @param {number} [limit=10]
- * @returns {Promise<Array<{ wallet: string, totalUsd: number, weth: number, token1Fees: string|null }>>}
+ * @returns {Promise<{ rows: Array<{ wallet: string, totalUsd: number, weth: number }>, source: 'cumulatedFees' | 'v4pools' }>}
  */
 export async function fetchTopFeeEarners(limit = 10) {
   const cap = Math.min(Math.max(1, parseInt(limit, 10) || 10), 50);
   const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
 
-  // Shape 1: root-level list (orderBy / orderDirection / limit on collection)
-  const queryList = `
-    query TopFeeRecipients($limit: Int!) {
-      cumulatedFees(
-        orderBy: "totalFeesUsd"
-        orderDirection: "desc"
-        limit: $limit
-      ) {
-        beneficiary
-        token0Fees
-        token1Fees
-        totalFeesUsd
-      }
-    }
-  `;
-
-  // Shape 2: Ponder-style with items
-  const queryItems = `
-    query TopFeeRecipientsItems($limit: Int!) {
-      cumulatedFees(
-        orderBy: "totalFeesUsd"
-        orderDirection: "desc"
-        limit: $limit
-      ) {
-        items {
+  const variants = [
+    // Bankr indexer style: where { chainId }, items, Int chainId
+    {
+      query: `query TopFeeRecipientsChainId($chainId: Int!, $limit: Int!) {
+        cumulatedFees(
+          where: { chainId: $chainId }
+          orderBy: "totalFeesUsd"
+          orderDirection: "desc"
+          limit: $limit
+        ) {
+          items {
+            beneficiary
+            token0Fees
+            token1Fees
+            totalFeesUsd
+          }
+        }
+      }`,
+      variables: { chainId: CHAIN_ID, limit: cap },
+    },
+    // Float chainId (some Doppler deployments use Float! for chainId)
+    {
+      query: `query TopFeeRecipientsChainIdFloat($chainId: Float!, $limit: Int!) {
+        cumulatedFees(
+          where: { chainId: $chainId }
+          orderBy: "totalFeesUsd"
+          orderDirection: "desc"
+          limit: $limit
+        ) {
+          items {
+            beneficiary
+            token0Fees
+            token1Fees
+            totalFeesUsd
+          }
+        }
+      }`,
+      variables: { chainId: CHAIN_ID, limit: cap },
+    },
+    // No where, items only
+    {
+      query: `query TopFeeRecipientsItems($limit: Int!) {
+        cumulatedFees(
+          orderBy: "totalFeesUsd"
+          orderDirection: "desc"
+          limit: $limit
+        ) {
+          items {
+            beneficiary
+            token0Fees
+            token1Fees
+            totalFeesUsd
+          }
+        }
+      }`,
+      variables: { limit: cap },
+    },
+    // Direct list (no items)
+    {
+      query: `query TopFeeRecipients($limit: Int!) {
+        cumulatedFees(
+          orderBy: "totalFeesUsd"
+          orderDirection: "desc"
+          limit: $limit
+        ) {
           beneficiary
           token0Fees
           token1Fees
           totalFeesUsd
         }
-      }
-    }
-  `;
+      }`,
+      variables: { limit: cap },
+    },
+  ];
 
-  for (const query of [queryList, queryItems]) {
+  for (const { query, variables } of variants) {
     try {
       const res = await fetch(`${base}/graphql`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, variables: { limit: cap } }),
+        body: JSON.stringify({ query, variables }),
       });
+      const json = await res.json().catch(() => ({}));
+      if (json.errors?.length) {
+        if (process.env.DEBUG_WHALES === "1") {
+          console.error("[whales] GraphQL errors:", JSON.stringify(json.errors));
+        }
+        continue;
+      }
       if (!res.ok) continue;
-      const json = await res.json();
-      if (json.errors?.length) continue;
 
       let list = json.data?.cumulatedFees;
-      if (list && Array.isArray(list)) {
-        // direct array
-      } else if (list?.items && Array.isArray(list.items)) {
+      if (list?.items && Array.isArray(list.items)) {
         list = list.items;
-      } else {
+      } else if (!Array.isArray(list)) {
         continue;
       }
 
@@ -87,16 +131,93 @@ export async function fetchTopFeeEarners(limit = 10) {
           byWallet.set(w, { wallet: raw, totalUsd: usd, weth });
         }
       }
-      return Array.from(byWallet.values())
+      const out = Array.from(byWallet.values())
         .sort((a, b) => b.totalUsd - a.totalUsd)
         .slice(0, cap);
-    } catch (_) {
-      /* try next shape */
+      if (out.length > 0) return { rows: out, source: "cumulatedFees" };
+    } catch (e) {
+      if (process.env.DEBUG_WHALES === "1") {
+        console.error("[whales] fetch error:", e.message);
+      }
     }
   }
 
+  // Fallback: indexer may not expose global cumulatedFees list; use v4pools by volume and aggregate by beneficiary
+  const fallback = await fetchTopFeeEarnersFromV4Pools(base, cap);
+  return { rows: fallback, source: "v4pools" };
+}
+
+/**
+ * Fallback when cumulatedFees list is not available: get v4pools by volumeUsd, aggregate by beneficiary.
+ * Shows "top fee recipients by pool volume" (proxy for fee earners).
+ */
+async function fetchTopFeeEarnersFromV4Pools(base, cap) {
+  const query = `
+    query V4PoolsByVolume($chainId: Int!, $limit: Int!) {
+      v4pools(
+        where: { chainId: $chainId }
+        orderBy: "volumeUsd"
+        orderDirection: "desc"
+        limit: $limit
+      ) {
+        items {
+          volumeUsd
+          beneficiaries
+        }
+      }
+    }
+  `;
+  const queryFloat = `
+    query V4PoolsByVolumeFloat($chainId: Float!, $limit: Int!) {
+      v4pools(
+        where: { chainId: $chainId }
+        orderBy: "volumeUsd"
+        orderDirection: "desc"
+        limit: $limit
+      ) {
+        items {
+          volumeUsd
+          beneficiaries
+        }
+      }
+    }
+  `;
+  for (const q of [query, queryFloat]) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: q,
+          variables: { chainId: CHAIN_ID, limit: Math.min(200, cap * 20) },
+        }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json().catch(() => ({}));
+      if (json.errors?.length) continue;
+      const items = json.data?.v4pools?.items ?? [];
+      const byWallet = new Map();
+      for (const p of items) {
+        const vol = p.volumeUsd != null ? Number(p.volumeUsd) : 0;
+        const bens = Array.isArray(p.beneficiaries) ? p.beneficiaries : [];
+        for (const b of bens) {
+          if (!b || typeof b !== "string") continue;
+          const raw = String(b).trim();
+          const w = raw.toLowerCase();
+          const cur = byWallet.get(w);
+          if (cur) cur.totalUsd += vol;
+          else byWallet.set(w, { wallet: raw, totalUsd: vol, weth: 0 });
+        }
+      }
+      const out = Array.from(byWallet.values())
+        .sort((a, b) => b.totalUsd - a.totalUsd)
+        .slice(0, cap);
+      if (out.length > 0) return out;
+    } catch (_) {}
+  }
   return [];
 }
+
 
 /**
  * Fetch the most recent fee claim for a token from the indexer (feeClaims).
