@@ -36,6 +36,7 @@ import {
   getWatchListForGuild,
   getWatchListDisplayForGuild,
   updateWatchListForGuild,
+  updateWatchListEntryName,
   getClaimWatchTokens,
   addClaimWatchToken,
   removeClaimWatchToken,
@@ -296,6 +297,25 @@ async function registerCommands(appId) {
           )
           .addStringOption((o) =>
             o.setName("value").setDescription("Handle, address, or keyword to remove").setRequired(true)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("edit")
+          .setDescription("Edit the nickname of a watch list entry")
+          .addStringOption((o) =>
+            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
+              { name: "X (Twitter)", value: "x" },
+              { name: "Farcaster", value: "fc" },
+              { name: "Wallet", value: "wallet" },
+              { name: "Keyword", value: "keyword" }
+            )
+          )
+          .addStringOption((o) =>
+            o.setName("value").setDescription("Handle, 0x address, or keyword (must match existing entry)").setRequired(true)
+          )
+          .addStringOption((o) =>
+            o.setName("name").setDescription("New nickname/label (leave empty to clear)").setRequired(false)
           )
       )
       .toJSON(),
@@ -1415,7 +1435,7 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "📋 /watch",
           value:
-            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). Optional **name** = nickname/label for the entry (e.g. \"Vitalik\"). X and Farcaster are resolved to wallet first. New launches matching them are posted to the watch channel.\n" +
+            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). Optional **name** = nickname/label. **edit** – Change the nickname of an existing entry (type + value + new name; leave name empty to clear). **remove** – Remove by type + value. X and Farcaster are resolved to wallet first.\n" +
             "**remove** – Remove by type + value.\n**list** – Show current watch list.",
           inline: false,
         },
@@ -1940,6 +1960,34 @@ client.on("interactionCreate", async (interaction) => {
           await removeKeyword(value);
           await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
         }
+      }
+    } else if (sub === "edit") {
+      if (!useTenant) {
+        await interaction.reply({
+          content: "Use **/setup** to configure a per-server watchlist first. Editing is only available for server watch lists.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const editName = interaction.options.getString("name");
+      const normalizedVal = type === "wallet" && value && /^0x[a-fA-F0-9]{40}$/.test(value.trim())
+        ? value.trim().toLowerCase()
+        : (value ? String(value).trim().toLowerCase().replace(/^@/, "") : "");
+      const ok = await updateWatchListEntryName(guildId, type, normalizedVal || value, editName ?? null);
+      const label = type === "x" ? `@${normalizedVal || value}` : type === "wallet" ? `\`${normalizedVal || value}\`` : normalizedVal || value;
+      if (ok) {
+        const nameStr = editName != null && String(editName).trim() ? String(editName).trim() : null;
+        await interaction.reply({
+          content: nameStr
+            ? `Updated **${label}** → nickname set to **${nameStr}**.`
+            : `Cleared nickname for **${label}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        await interaction.reply({
+          content: `**${label}** was not found on this server's watch list. Use **/watch list** to see entries.`,
+          flags: MessageFlags.Ephemeral,
+        });
       }
     } else if (sub === "list") {
       if (useTenant) {

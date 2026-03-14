@@ -196,6 +196,29 @@ export async function updateWatchListForGuild(guildId, type, value, add, name) {
   return true;
 }
 
+/**
+ * Update the display name/nickname of an existing watchlist entry. Entry is matched by value.
+ * @param {string} guildId
+ * @param {'x'|'fc'|'wallet'|'keywords'} type
+ * @param {string} value - handle, wallet address, or keyword (must match existing entry)
+ * @param {string} [newName] - new nickname; empty string or null to clear the name
+ * @returns {Promise<boolean>} true if entry was found and updated
+ */
+export async function updateWatchListEntryName(guildId, type, value, newName) {
+  const tenant = await getTenant(guildId);
+  const w = { ...DEFAULT_WATCHLIST, ...tenant?.watchlist };
+  const list = Array.isArray(w[type]) ? [...w[type]] : [];
+  const val = (typeof value === "string" ? value.trim().toLowerCase() : "") || "";
+  if (!val) return false;
+  const i = list.findIndex((e) => watchEntryValue(e) === val);
+  if (i === -1) return false;
+  const displayName = newName != null && String(newName).trim() ? String(newName).trim() : null;
+  const entry = list[i];
+  list[i] = typeof entry === "string" ? (displayName ? { value: val, name: displayName } : val) : { value: val, name: displayName };
+  await setTenant(guildId, { watchlist: { ...w, [type]: list } });
+  return true;
+}
+
 function parseTokenAddress(s) {
   if (!s || typeof s !== "string") return null;
   const t = s.trim();
