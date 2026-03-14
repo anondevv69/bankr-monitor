@@ -554,8 +554,11 @@ export async function getClaimedFeesFromEvents(feeWallet, tokenAddress, poolId) 
   const recipient = normalizeAddress(feeWallet);
   const asset = normalizeAddress(tokenAddress);
   if (!recipient || !asset || CHAIN_ID !== 8453) return { claimedToken: 0, claimedWeth: 0, count: 0 };
+  // Normalize to lowercase so getLogs topic filter matches on-chain (indexed bytes32)
   const poolIdTrimmed =
-    poolId && typeof poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(poolId.trim()) ? poolId.trim() : null;
+    poolId && typeof poolId === "string" && /^0x[a-fA-F0-9]{64}$/.test(poolId.trim())
+      ? poolId.trim().toLowerCase()
+      : null;
 
   try {
     const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
@@ -588,13 +591,26 @@ export async function getClaimedFeesFromEvents(feeWallet, tokenAddress, poolId) 
     // (2) DecayMulticurveInitializer — Release(poolId, beneficiary, fees0, fees1); fees0 = WETH, fees1 = token
     if (poolIdTrimmed) {
       const decayAddress = DOPPLER_CONTRACTS_BASE.DecayMulticurveInitializer;
-      const logsRelease = await publicClient.getLogs({
+      let logsRelease = await publicClient.getLogs({
         address: decayAddress,
         event: RELEASE_EVENT,
         args: { poolId: poolIdTrimmed, beneficiary: recipient },
         fromBlock: 0n,
         toBlock: "latest",
       });
+      // Fallback: some RPCs don't match args filter; fetch by poolId only and filter beneficiary in code
+      if (logsRelease.length === 0) {
+        logsRelease = await publicClient.getLogs({
+          address: decayAddress,
+          event: RELEASE_EVENT,
+          args: { poolId: poolIdTrimmed },
+          fromBlock: 0n,
+          toBlock: "latest",
+        });
+        logsRelease = logsRelease.filter(
+          (log) => log.args?.beneficiary && String(log.args.beneficiary).toLowerCase() === recipient
+        );
+      }
       for (const log of logsRelease) {
         const args = log.args;
         if (args?.fees0 != null) claimedWeth += BigInt(args.fees0);

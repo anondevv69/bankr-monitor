@@ -1036,7 +1036,6 @@ function formatFeesTokenReply(out, tokenAddress) {
       const totalEarnedParts = [];
       if (accruedWeth != null && accruedWeth > 0) totalEarnedParts.push(`${accruedWeth.toFixed(4)} WETH`);
       if (accruedToken != null && accruedToken > 0) totalEarnedParts.push(`${fmtTokenAmount(accruedToken)} ${symbol}`);
-      if (totalFeesUsd != null && totalFeesUsd >= 0) totalEarnedParts.push(`(${fmt(totalFeesUsd) ?? `$${totalFeesUsd.toFixed(0)}`})`);
       lines.push(`**Total Earned** • ${totalEarnedParts.length ? totalEarnedParts.join(" ") : "—"}`);
     }
     if (hasHookData) {
@@ -1057,7 +1056,7 @@ function formatFeesTokenReply(out, tokenAddress) {
     }
     const weeklyWeth = out.agentProfile?.weeklyRevenueWeth != null ? Number(out.agentProfile.weeklyRevenueWeth) : null;
     if (weeklyWeth != null && !Number.isNaN(weeklyWeth) && weeklyWeth >= 0) {
-      lines.push(`**Weekly revenue** • ${weeklyWeth.toFixed(4)} WETH`);
+      lines.push(`**Weekly revenue (est.)** • ${weeklyWeth.toFixed(4)} WETH`);
     }
     lines.push(`**Claims** • ${claimsCount}`);
     lines.push("");
