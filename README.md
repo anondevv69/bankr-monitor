@@ -405,12 +405,40 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
 
    **Share with users:** Once the channel is public, give people the link (e.g. **t.me/your_channel_username**). They join the channel and get every new Bankr deploy automatically.
 
-3. **Environment variables**
+3. **Telegram group with 4 topics (All launches, Hot, Trending, X only fee recipient)**  
+   Use **one group** with **Topics** (forum mode), not separate channels. Each feed is a topic (thread) inside the same group. You can make the group **read-only** so only the bot (and admins) can post.
+
+   - **Create a group:** Telegram → New Group → name it (e.g. "Bankr Alerts").
+   - **Enable Topics:** Group settings → Edit → turn on **Topics** (forum style). This creates a main thread; you’ll add one topic per feed.
+   - **Make it read-only (optional):** Group settings → **Permissions** → under “What can members do?”, turn off **Send messages** (and **Send media** / **Add reactions** if you want). Then only **admins** (e.g. your bot) can post; members only read. The bot must be added as an admin with “Post messages” (and “Manage topics” if the bot creates topics).
+   - **Create 4 topics:** In the group, use “New Topic” and create:
+     - **All launches** — firehose (every deploy)
+     - **Hot launches** — delayed hot ping (e.g. 5+ buys in 1 min, 20+ holders)
+     - **Trending Tokens** — same as hot (trending ping)
+     - **X only fee recipient** — curated (only when fee recipient has X; set **Filter fee recipient has X** in /settings rules)
+   - **Add your bot:** Group → Add members → your bot. Give it **Post messages** (and **Manage topics** if you want the bot to create topics; usually you create them manually).
+   - **Get group ID and topic IDs:**
+     - **Group ID:** Forward a message from the group to [@userinfobot](https://t.me/userinfobot) or [@RawDataBot](https://t.me/RawDataBot); the reply shows the chat ID (e.g. `-1001234567890`). Or send any message in the group, then open `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates` and read `message.chat.id`.
+     - **Topic IDs:** Each topic’s thread ID is the **message_id** of the topic’s first (header) message. After creating a topic, send a message in it, then call `getUpdates` and look at `message.message_thread_id` in the reply — that’s the topic ID. Or use a bot that reports thread IDs (e.g. post in the topic and inspect updates). Topic IDs are integers (e.g. `2`, `3`, `4`, `5`).
+   - **Configure:**
+     - **Env (single group):** Set `TELEGRAM_CHAT_ID` to the group ID. Set `TELEGRAM_TOPIC_FIREHOSE`, `TELEGRAM_TOPIC_CURATED`, `TELEGRAM_TOPIC_HOT`, `TELEGRAM_TOPIC_TRENDING` to the four topic IDs (integers or numeric strings).
+     - **Per-server (Discord bot):** In the server where the bot is in, run **/settings telegram**. Set **group_chat_id** to the Telegram group ID, then **topic_firehose**, **topic_curated** (X only fee recipient), **topic_hot**, **topic_trending** to the four topic IDs.
+   - **Delay for Telegram Hot/Trending:** Hot and Trending pings are sent to Discord first; then, by default, **1 minute later** they are sent to the Telegram Hot and Trending topics. You can change this later: set **TELEGRAM_HOT_PING_DELAY_MS** in env (default `60000` ms), or per server run **/settings telegram** and set **delay_hot_trending_sec** (e.g. `60` for 1 min, `0` for same time as Discord).
+   - **Restrict to your group only:** Set **TELEGRAM_ALLOWED_CHAT_IDS** to your group’s chat ID (e.g. `-1001234567890`). The bot will only send to that chat; if someone adds the bot to another group, it will not post there. Use a comma-separated list for multiple groups. Leave unset to allow all.
+
+4. **Environment variables**
    ```bash
    BANKR_API_KEY=bk_xxx           # Recommended: Bankr-only launches
    DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
    TELEGRAM_BOT_TOKEN=123456:ABC...
-   TELEGRAM_CHAT_ID=-1001234567890
+   TELEGRAM_CHAT_ID=-1001234567890   # Group or channel ID
+   # Optional: topic IDs for group with 4 feeds (integers)
+   TELEGRAM_TOPIC_FIREHOSE=2         # All launches
+   TELEGRAM_TOPIC_CURATED=3          # X only fee recipient
+   TELEGRAM_TOPIC_HOT=4              # Hot launches
+   TELEGRAM_TOPIC_TRENDING=5         # Trending Tokens
+   TELEGRAM_HOT_PING_DELAY_MS=60000  # Delay Telegram hot/trending vs Discord (default 1 min)
+   TELEGRAM_ALLOWED_CHAT_IDS=-1001234567890  # Only these chat IDs receive messages (your group). Unset = allow all.
    ```
 
 ### Run once

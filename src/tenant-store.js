@@ -53,9 +53,26 @@ export async function getTenant(guildId) {
     watchAlertChannelId: t.watchAlertChannelId ?? null,
     hotAlertChannelId: t.hotAlertChannelId ?? null,
     hotLaunchEnabled: t.hotLaunchEnabled !== false,
+    /** Discord role IDs to ping (no @everyone). Server assigns who gets tagged. */
+    hotLaunchRoleIds: Array.isArray(t.hotLaunchRoleIds) ? t.hotLaunchRoleIds : [],
+    /** When true, ping roles when posting to hot channel. Default true. */
+    pingOnHot: t.pingOnHot !== false,
+    /** When true, ping roles when posting to trending channel. Default true. */
+    pingOnTrending: t.pingOnTrending !== false,
+    /** When true, ping roles when a launch matches watch list (X/FC/wallet/keyword). Default false. */
+    pingOnWatchMatch: t.pingOnWatchMatch === true,
+    /** When true, ping roles when posting to curated (alert) channel. Default false. */
+    pingOnCurated: t.pingOnCurated === true,
     trendingAlertChannelId: t.trendingAlertChannelId ?? null,
     trendingEnabled: t.trendingEnabled === true,
     telegramChatId: t.telegramChatId ?? null,
+    /** Telegram group topic IDs (forum threads). Optional; if set, messages go to that topic. */
+    telegramTopicFirehose: t.telegramTopicFirehose != null ? t.telegramTopicFirehose : null,
+    telegramTopicCurated: t.telegramTopicCurated != null ? t.telegramTopicCurated : null,
+    telegramTopicHot: t.telegramTopicHot != null ? t.telegramTopicHot : null,
+    telegramTopicTrending: t.telegramTopicTrending != null ? t.telegramTopicTrending : null,
+    /** Delay (ms) before sending hot/trending pings to Telegram after Discord. Null = use env TELEGRAM_HOT_PING_DELAY_MS. */
+    telegramHotPingDelayMs: t.telegramHotPingDelayMs != null ? t.telegramHotPingDelayMs : null,
     rules: { ...DEFAULT_RULES, ...t.rules },
     watchlist: { ...DEFAULT_WATCHLIST, ...t.watchlist },
     claimWatchTokens: Array.isArray(t.claimWatchTokens) ? t.claimWatchTokens : [],
@@ -69,7 +86,7 @@ export async function getTenant(guildId) {
 /**
  * Set (create or update) tenant config for a guild.
  * @param {string} guildId
- * @param {Partial<{ bankrApiKey: string, allLaunchesChannelId: string|null, alertChannelId: string, watchAlertChannelId: string, hotAlertChannelId: string, hotLaunchEnabled: boolean, trendingAlertChannelId: string, trendingEnabled: boolean, telegramChatId: string, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
+ * @param {Partial<{ bankrApiKey: string, allLaunchesChannelId: string|null, alertChannelId: string, watchAlertChannelId: string, hotAlertChannelId: string, hotLaunchEnabled: boolean, hotLaunchRoleIds: string[], pingOnHot: boolean, pingOnTrending: boolean, pingOnWatchMatch: boolean, pingOnCurated: boolean, trendingAlertChannelId: string, trendingEnabled: boolean, telegramChatId: string, telegramTopicFirehose: number|string|null, telegramTopicCurated: number|string|null, telegramTopicHot: number|string|null, telegramTopicTrending: number|string|null, telegramHotPingDelayMs: number|null, rules: object, watchlist: object, claimWatchTokens: string[], dopplerIndexerUrl: string, rpcUrl: string }>} updates
  */
 export async function setTenant(guildId, updates) {
   if (!guildId || typeof guildId !== "string") return null;
@@ -93,6 +110,18 @@ export async function setTenant(guildId, updates) {
   if (Array.isArray(updates.claimWatchTokens)) {
     next.claimWatchTokens = updates.claimWatchTokens;
   }
+  if (Array.isArray(updates.hotLaunchRoleIds)) {
+    next.hotLaunchRoleIds = updates.hotLaunchRoleIds;
+  }
+  if (typeof updates.pingOnHot === "boolean") next.pingOnHot = updates.pingOnHot;
+  if (typeof updates.pingOnTrending === "boolean") next.pingOnTrending = updates.pingOnTrending;
+  if (typeof updates.pingOnWatchMatch === "boolean") next.pingOnWatchMatch = updates.pingOnWatchMatch;
+  if (typeof updates.pingOnCurated === "boolean") next.pingOnCurated = updates.pingOnCurated;
+  if (updates.telegramTopicFirehose !== undefined) next.telegramTopicFirehose = updates.telegramTopicFirehose;
+  if (updates.telegramTopicCurated !== undefined) next.telegramTopicCurated = updates.telegramTopicCurated;
+  if (updates.telegramTopicHot !== undefined) next.telegramTopicHot = updates.telegramTopicHot;
+  if (updates.telegramTopicTrending !== undefined) next.telegramTopicTrending = updates.telegramTopicTrending;
+  if (updates.telegramHotPingDelayMs !== undefined) next.telegramHotPingDelayMs = updates.telegramHotPingDelayMs;
   tenants[key] = next;
   await saveAll(tenants);
   return getTenant(guildId);

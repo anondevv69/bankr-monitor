@@ -629,6 +629,19 @@ export async function getClaimedFeesFromEvents(feeWallet, tokenAddress, poolId) 
   }
 }
 
+/**
+ * Check if a wallet has ever claimed fees for a pool (on-chain Release/ClaimedFees events).
+ * Use this to verify "has this person collected fees for this pool?" (e.g. Basescan claim tx).
+ * @param {string} wallet - Fee recipient / beneficiary address (0x...).
+ * @param {string} tokenAddress - Pool asset / token address (0x...).
+ * @param {string} [poolId] - Optional bytes32 pool id (0x...64 hex). Improves accuracy on Base.
+ * @returns {Promise<boolean>}
+ */
+export async function hasWalletClaimedForPool(wallet, tokenAddress, poolId) {
+  const r = await getClaimedFeesFromEvents(wallet, tokenAddress, poolId);
+  return r.count > 0;
+}
+
 /** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC).
  * @returns {{ hookFees: object|null, error: string|null }}
  */

@@ -9,7 +9,13 @@
  *   BANKR_API_KEY        - Bankr API key (recommended: Bankr-only launches, no RPC)
  *   DISCORD_WEBHOOK_URL  - Discord webhook URL (optional)
  *   TELEGRAM_BOT_TOKEN   - Telegram bot token (optional)
- *   TELEGRAM_CHAT_ID     - Telegram chat/channel ID (optional)
+ *   TELEGRAM_CHAT_ID     - Telegram group chat ID (optional)
+ *   TELEGRAM_TOPIC_FIREHOSE - Topic/thread ID for firehose (group with topics)
+ *   TELEGRAM_TOPIC_CURATED  - Topic ID for curated (X / fee recipient only)
+ *   TELEGRAM_TOPIC_HOT      - Topic ID for hot launches (env; per-tenant in bot)
+ *   TELEGRAM_TOPIC_TRENDING - Topic ID for trending (env; per-tenant in bot)
+ *   TELEGRAM_HOT_PING_DELAY_MS - Extra delay (ms) before sending hot/trending to Telegram after Discord (default 60000; bot only)
+ *   TELEGRAM_ALLOWED_CHAT_IDS   - Comma-separated chat IDs; only these receive messages (e.g. your group). Unset = allow all.
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
  *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
  *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
@@ -45,6 +51,21 @@ const DEPLOY_COUNT_FILE = process.env.DEPLOY_COUNT_FILE || join(process.cwd(), "
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
+/** If set, only these chat IDs can receive messages (comma-separated). Stops others from using this bot in their groups. Leave unset to allow all. */
+const TELEGRAM_ALLOWED_CHAT_IDS =
+  process.env.TELEGRAM_ALLOWED_CHAT_IDS !== undefined
+    ? String(process.env.TELEGRAM_ALLOWED_CHAT_IDS)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
+
+function allowedTelegramChat(chatId) {
+  if (!chatId) return false;
+  if (TELEGRAM_ALLOWED_CHAT_IDS === null) return true;
+  const id = String(chatId).trim();
+  return TELEGRAM_ALLOWED_CHAT_IDS.includes(id);
+}
 
 const BASESCAN = CHAIN_ID === 8453 ? "https://basescan.org" : "https://sepolia.basescan.org";
 
@@ -592,9 +613,17 @@ function escapeMarkdown(s) {
   return s.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
 }
 
+/** Normalize topic/thread ID for Telegram (forum topic). Can be number or numeric string. */
+function telegramThreadId(v) {
+  if (v == null) return undefined;
+  const n = typeof v === "number" && Number.isInteger(v) ? v : parseInt(String(v).trim(), 10);
+  return Number.isNaN(n) ? undefined : n;
+}
+
 export async function sendTelegram(launch, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
-  if (!TELEGRAM_TOKEN || !chatId) return;
+  if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
+  const messageThreadId = telegramThreadId(options.messageThreadId);
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
 
@@ -627,7 +656,7 @@ export async function sendTelegram(launch, options = {}) {
   if (launch.website) text += `*Website:* ${launch.website}\n`;
 
   const img = launch.image ? imageUrl(launch.image) : null;
-  const basePayload = { chat_id: chatId, disable_web_page_preview: true };
+  const basePayload = { chat_id: chatId, disable_web_page_preview: true, ...(messageThreadId != null && { message_thread_id: messageThreadId }) };
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payloadExtra = replyMarkup ? { reply_markup: replyMarkup } : {};
 
@@ -651,10 +680,12 @@ export async function sendTelegram(launch, options = {}) {
 }
 
 /** Send a short "hot launch" ping to Telegram (5–10+ buys in first minute and/or 20+ holders).
- * Pins the message so in groups/supergroups members get a notification (no @everyone in Telegram). */
+ * Pins the message so in groups/supergroups members get a notification (no @everyone in Telegram).
+ * options.messageThreadId — forum topic ID to post into (group with topics). */
 export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
-  if (!TELEGRAM_TOKEN || !chatId || !stats) return;
+  if (!TELEGRAM_TOKEN || !chatId || !stats || !allowedTelegramChat(chatId)) return;
+  const messageThreadId = telegramThreadId(options.messageThreadId);
   const { hotByBuys, hotByHolders, buysFirstMin, holderCount } = stats;
   if (!hotByBuys && !hotByHolders) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
@@ -669,6 +700,7 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     text,
     parse_mode: "Markdown",
     disable_web_page_preview: true,
+    ...(messageThreadId != null && { message_thread_id: messageThreadId }),
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   };
   try {
@@ -832,10 +864,11 @@ async function main() {
     process.exit(1);
   }
 
+  const firehoseThreadId = telegramThreadId(process.env.TELEGRAM_TOPIC_FIREHOSE);
   const { newLaunches } = await runNotifyCycle();
   for (const launch of newLaunches) {
     await sendDiscordWebhook(launch);
-    await sendTelegram(launch);
+    await sendTelegram(launch, { messageThreadId: firehoseThreadId });
   }
 }
 
