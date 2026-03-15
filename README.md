@@ -434,7 +434,8 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
    TELEGRAM_CHAT_ID=-1001234567890   # Group or channel ID
    # Optional: topic IDs for group with 4 feeds (integers)
    TELEGRAM_TOPIC_FIREHOSE=2         # All launches
-   TELEGRAM_TOPIC_CURATED=3          # X only fee recipient
+   TELEGRAM_TOPIC_CURATED=3          # X only fee recipient (see TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X)
+   TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X=true   # When true, curated topic only gets launches where fee recipient has X. Does not affect Discord or FILTER_*.
    TELEGRAM_TOPIC_HOT=4              # Hot launches
    TELEGRAM_TOPIC_TRENDING=5         # Trending Tokens
    TELEGRAM_HOT_PING_DELAY_MS=60000  # Delay Telegram hot/trending vs Discord (default 1 min)

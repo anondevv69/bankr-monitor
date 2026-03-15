@@ -97,6 +97,15 @@ const HOT_LAUNCH_DISCORD_ROLE_IDS = (process.env.HOT_LAUNCH_DISCORD_ROLE_IDS || 
 const HOT_LAUNCH_USE_EVERYONE =
   process.env.HOT_LAUNCH_USE_EVERYONE === "true" || process.env.HOT_LAUNCH_USE_EVERYONE === "1";
 
+/** When true, env Telegram curated topic only gets launches where fee recipient has X. Does not affect Discord or tenant rules. */
+const TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X =
+  process.env.TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X === "true" || process.env.TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X === "1";
+
+function feeRecipientHasX(launch) {
+  const x = launch.beneficiaries?.[0]?.xUsername;
+  return x != null && String(x).trim().replace(/^@/, "").length > 0;
+}
+
 /** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
 function canManageServer(interaction) {
   if (!interaction.guildId || !interaction.member) return false;
@@ -828,7 +837,10 @@ async function runNotify() {
         const envFirehoseTopic = process.env.TELEGRAM_TOPIC_FIREHOSE;
         const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
         await sendTelegram(launch, envFirehoseTopic != null ? { messageThreadId: envFirehoseTopic } : {}).catch(() => {});
-        if (envCuratedTopic != null && launch.passedFilters !== false) {
+        const sendToEnvCurated =
+          envCuratedTopic != null &&
+          (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : launch.passedFilters !== false);
+        if (sendToEnvCurated) {
           await sendTelegram(launch, { messageThreadId: envCuratedTopic }).catch(() => {});
         }
       }
@@ -914,7 +926,14 @@ async function runNotify() {
           }
           if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
             const envTopicFirehose = process.env.TELEGRAM_TOPIC_FIREHOSE != null ? process.env.TELEGRAM_TOPIC_FIREHOSE : undefined;
+            const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
             await sendTelegram(launch, { messageThreadId: envTopicFirehose }).catch(() => {});
+            const sendToEnvCurated =
+              envCuratedTopic != null &&
+              (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : tenantPassesFilters(launch, {}));
+            if (sendToEnvCurated) {
+              await sendTelegram(launch, { messageThreadId: envCuratedTopic }).catch(() => {});
+            }
           }
         }
         const anyHotEnabled = tenantsWithChannels.some((t) => t.hotLaunchEnabled !== false);
