@@ -17,6 +17,7 @@ import "dotenv/config";
 
 import { parseAbiItem } from "viem";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
+import { getClaimTxsFromBaseScan } from "./basescan-claims.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
@@ -642,6 +643,48 @@ export async function hasWalletClaimedForPool(wallet, tokenAddress, poolId) {
   return r.count > 0;
 }
 
+/** ERC-20 Transfer topic: Transfer(address indexed from, address indexed to, uint256 value). Events are emitted by token contracts; from = fee locker when locker sends to wallet. */
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+/**
+ * Detect fee claims via ERC-20 Transfer logs: from = fee locker, to = wallet. Zero external API cost; uses RPC getLogs.
+ * Use when Release/ClaimedFees events are missing or RPC doesn't index them. One subscription-style check.
+ * @param {string} wallet - Fee recipient address (0x...).
+ * @returns {Promise<{ count: number, latestTxHash: string | null }>}
+ */
+export async function getClaimedViaTransferLogs(wallet) {
+  const recipient = normalizeAddress(wallet);
+  if (!recipient || CHAIN_ID !== 8453) return { count: 0, latestTxHash: null };
+  const lockers = [
+    DOPPLER_CONTRACTS_BASE.DecayMulticurveInitializer,
+    DOPPLER_CONTRACTS_BASE.RehypeDopplerHook,
+  ].map((a) => a.toLowerCase());
+  try {
+    const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+    const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: ["https://mainnet.base.org"] } } };
+    const publicClient = viem.createPublicClient({
+      chain,
+      transport: viem.http(getBaseRpcUrl()),
+    });
+    const pad = (addr) => viem.zeroPadValue(addr, 32);
+    const allLogs = [];
+    for (const locker of lockers) {
+      const logs = await publicClient.getLogs({
+        fromBlock: 0n,
+        toBlock: "latest",
+        topics: [TRANSFER_TOPIC, pad(locker), pad(recipient)],
+      });
+      allLogs.push(...logs);
+    }
+    if (allLogs.length === 0) return { count: 0, latestTxHash: null };
+    const byBlock = [...allLogs].sort((a, b) => Number((b.blockNumber ?? 0n) - (a.blockNumber ?? 0n)));
+    const latest = byBlock[0];
+    return { count: allLogs.length, latestTxHash: latest?.transactionHash ?? null };
+  } catch {
+    return { count: 0, latestTxHash: null };
+  }
+}
+
 /** On-chain read of RehypeDopplerHook.getHookFees(poolId). Requires RPC_URL_BASE (Base RPC).
  * @returns {{ hookFees: object|null, error: string|null }}
  */
@@ -777,9 +820,33 @@ export async function getTokenFees(tokenAddress, options = {}) {
   }
 
   let claimedFromEvents = null;
+  let lastClaimTxHash = null;
   if (feeWallet && addr) {
     const ev = await getClaimedFeesFromEvents(feeWallet, addr, poolIdForHook ?? undefined);
     claimedFromEvents = { claimedToken: ev.claimedToken, claimedWeth: ev.claimedWeth, count: ev.count };
+    // Fallbacks when RPC Release/ClaimedFees events miss the claim (0 cost: RPC getLogs first, then BaseScan)
+    if (ev.count === 0 && CHAIN_ID === 8453) {
+      try {
+        const transferLogs = await getClaimedViaTransferLogs(feeWallet);
+        if (transferLogs.count > 0) {
+          claimedFromEvents = { claimedToken: 0, claimedWeth: 0, count: transferLogs.count };
+          lastClaimTxHash = transferLogs.latestTxHash ?? null;
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      if (claimedFromEvents?.count === 0) {
+        try {
+          const baseScan = await getClaimTxsFromBaseScan(feeWallet, undefined, { limit: 100 });
+          if (baseScan.count > 0) {
+            claimedFromEvents = { claimedToken: 0, claimedWeth: 0, count: baseScan.count };
+            lastClaimTxHash = baseScan.latestTxHash ?? null;
+          }
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
   }
 
   return {
@@ -804,6 +871,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     claimableUnavailableReason: claimableUnavailableReason ?? null,
     /** Total claimed from on-chain ClaimedFees events (so status is not just accrued − claimable). */
     claimedFromEvents: claimedFromEvents ?? null,
+    /** Latest claim tx hash when known (from RPC events or BaseScan fallback). For "View claim tx" link. */
+    lastClaimTxHash: lastClaimTxHash ?? null,
     /** Unix timestamp (seconds) when token was first seen by indexer; for daily average. */
     firstSeenAt: firstSeenAt ?? null,
   };

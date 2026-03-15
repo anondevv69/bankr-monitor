@@ -86,8 +86,8 @@ const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(
 const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_HOLDERS || "20", 10));
 /** Trending: min buys in 5m to post to trending channel/topic (separate from hot). Set to 0 to disable. Default 15. */
 const TRENDING_MIN_BUYS_5M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_5M || "15", 10));
-/** Trending: min buys in 1h to post to trending channel/topic. Set to 0 to disable. Default 30. */
-const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "30", 10));
+/** Trending: min buys in 1h to post to trending (API has 5m/1h only; 1h used for "50 in 30m" style). Set to 0 to disable. Default 50. */
+const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "50", 10));
 /** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
 /** Extra delay (ms) before sending hot/trending pings to Telegram (after Discord). Default 60s so Telegram is ~1 min after Discord. */
@@ -1338,8 +1338,9 @@ function formatFeesTokenReply(out, tokenAddress) {
       lines.push(`**Weekly revenue (est.)** • ${weeklyWeth.toFixed(4)} WETH`);
     }
     lines.push(`**Claims** • ${claimsCount}`);
-    if (out.feeWallet && out.hasPoolIdForHook && out.claimedFromEvents != null) {
+    if (out.feeWallet && out.claimedFromEvents != null) {
       lines.push(`**Fee recipient has claimed for this pool:** ${out.claimedFromEvents.count > 0 ? "Yes" : "No"}`);
+      if (out.lastClaimTxHash) lines.push(`**Claim tx:** https://basescan.org/tx/${out.lastClaimTxHash}`);
     }
     lines.push("");
   }
@@ -1450,8 +1451,9 @@ client.on("messageCreate", async (message) => {
           feeParts.push("**Already claimed (on-chain):** 0 (no claim events detected).");
         }
       }
-      if (out.feeWallet && out.hasPoolIdForHook && out.claimedFromEvents != null) {
+      if (out.feeWallet && out.claimedFromEvents != null) {
         feeParts.push(`**Fee recipient has claimed for this pool:** ${out.claimedFromEvents.count > 0 ? "Yes" : "No"}`);
+        if (out.lastClaimTxHash) feeParts.push(`**Claim tx:** [BaseScan](https://basescan.org/tx/${out.lastClaimTxHash})`);
       }
       if (out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
         const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;

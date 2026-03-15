@@ -3,6 +3,9 @@
  * Queries cumulatedFees ordered by totalFeesUsd (all-time top fee earners).
  */
 
+import { getClaimTxsFromBaseScan } from "./basescan-claims.js";
+import { getClaimedViaTransferLogs } from "./token-stats.js";
+
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const DOPPLER_INDEXER_URL =
   process.env.DOPPLER_INDEXER_URL ||
@@ -295,6 +298,37 @@ export async function fetchLatestFeeClaim(tokenAddress, beneficiary) {
       };
     } catch (_) {
       /* try next */
+    }
+  }
+  // Fallbacks when indexer has no feeClaims: (1) RPC Transfer logs from locker→wallet, (2) BaseScan txlist
+  if (beneficiary && CHAIN_ID === 8453) {
+    try {
+      const transferLogs = await getClaimedViaTransferLogs(beneficiary);
+      if (transferLogs.count > 0 && transferLogs.latestTxHash) {
+        return {
+          amount0: "0",
+          amount1: "0",
+          weth: 0,
+          tokenAmount: 0,
+          transactionHash: transferLogs.latestTxHash,
+        };
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      const { count, latestTxHash } = await getClaimTxsFromBaseScan(beneficiary, undefined, { limit: 50 });
+      if (count > 0 && latestTxHash) {
+        return {
+          amount0: "0",
+          amount1: "0",
+          weth: 0,
+          tokenAmount: 0,
+          transactionHash: latestTxHash,
+        };
+      }
+    } catch (_) {
+      /* ignore */
     }
   }
   return null;
