@@ -679,21 +679,32 @@ export async function sendTelegram(launch, options = {}) {
   }
 }
 
-/** Send a short "hot launch" ping to Telegram (5–10+ buys in first minute and/or 20+ holders).
- * Pins the message so in groups/supergroups members get a notification (no @everyone in Telegram).
- * options.messageThreadId — forum topic ID to post into (group with topics). */
+/** Send a short "hot" or "trending" ping to Telegram.
+ * Hot: 5–10+ buys in first minute and/or 20+ holders. Trending: higher buy threshold (e.g. 15+ in 5m).
+ * options.messageThreadId — forum topic ID. options.trending — use "TRENDING" title and buys5m/1h line. */
 export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !stats || !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId);
-  const { hotByBuys, hotByHolders, buysFirstMin, holderCount } = stats;
-  if (!hotByBuys && !hotByHolders) return;
+  const { hotByBuys, hotByHolders, buysFirstMin, holderCount, isTrending, buys5m, buys1h } = stats;
+  const trending = options.trending === true || isTrending === true;
+  if (trending) {
+    if (buys5m == null && buys1h == null) return;
+  } else if (!hotByBuys && !hotByHolders) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
-  const parts = [];
-  if (hotByBuys) parts.push(`🔥 ${buysFirstMin ?? 0}+ buys in first minute`);
-  if (hotByHolders) parts.push(`👥 ${holderCount ?? 0}+ holders`);
-  const line = parts.join(" · ");
-  const text = `🔔 *HOT TOKEN*\n\n[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
+  let line;
+  let title;
+  if (trending) {
+    title = "📈 *TRENDING*";
+    line = `📈 ${buys5m ?? 0} buys (5m) · ${buys1h ?? 0} (1h)`;
+  } else {
+    const parts = [];
+    if (hotByBuys) parts.push(`🔥 ${buysFirstMin ?? 0}+ buys in first minute`);
+    if (hotByHolders) parts.push(`👥 ${holderCount ?? 0}+ holders`);
+    line = parts.join(" · ");
+    title = "🔔 *HOT TOKEN*";
+  }
+  const text = `${title}\n\n[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payload = {
     chat_id: chatId,

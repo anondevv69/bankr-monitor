@@ -84,6 +84,10 @@ const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(
 );
 /** Hot launch ping: min holder count to trigger "20+ holders" (indexer). Set to 0 to disable. */
 const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_HOLDERS || "20", 10));
+/** Trending: min buys in 5m to post to trending channel/topic (separate from hot). Set to 0 to disable. Default 15. */
+const TRENDING_MIN_BUYS_5M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_5M || "15", 10));
+/** Trending: min buys in 1h to post to trending channel/topic. Set to 0 to disable. Default 30. */
+const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "30", 10));
 /** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
 /** Extra delay (ms) before sending hot/trending pings to Telegram (after Discord). Default 60s so Telegram is ~1 min after Discord. */
@@ -352,13 +356,16 @@ async function registerCommands(appId) {
           .addStringOption((o) =>
             o.setName("token_address").setDescription("Token contract address (0x...)").setRequired(true)
           )
+          .addStringOption((o) =>
+            o.setName("name").setDescription("Optional label for this token (e.g. \"My token\")").setRequired(false)
+          )
       )
       .addSubcommand((s) =>
         s
           .setName("remove")
           .setDescription("Remove a token from the claim watch list")
           .addStringOption((o) =>
-            o.setName("token_address").setDescription("Token address to stop watching").setRequired(true)
+            o.setName("token_address").setDescription("Token address (0x...) or label to remove").setRequired(true)
           )
       )
       .toJSON(),
@@ -453,6 +460,12 @@ async function registerCommands(appId) {
         o
           .setName("watch_channel")
           .setDescription("Channel for watch-list matches only (optional)")
+          .setRequired(false)
+      )
+      .addChannelOption((o) =>
+        o
+          .setName("claim_channel")
+          .setDescription("Channel for fee-claim alerts only (optional; else uses watch/alert channel)")
           .setRequired(false)
       )
       .addChannelOption((o) =>
@@ -554,6 +567,9 @@ async function registerCommands(appId) {
           )
           .addChannelOption((o) =>
             o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o.setName("claim_channel").setDescription("Channel for fee-claim alerts (else watch/alert)").setRequired(false)
           )
           .addChannelOption((o) =>
             o.setName("hot_channel").setDescription("Channel for hot token alerts").setRequired(false)
@@ -707,70 +723,90 @@ function buildRolePingContent(roleIds, suffix = "🔥 **Hot token**") {
   return parts.join(" ");
 }
 
-/** Schedule a delayed check for "hot" launch (5–10+ buys in first minute, 20+ holders). Sends a second ping if thresholds are met. */
-function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, telegramHotTargets = [], telegramTrendingTargets = [], allLaunchesChannelIds = [], bankrApiKey, hotPingConfigByGuildId = {}, telegramHotPingDelayMs: overrideDelayMs } = {}) {
-  const hasTelegram = (telegramChatIds?.length > 0) || (telegramHotTargets?.length > 0) || (telegramTrendingTargets?.length > 0);
+/** Schedule a delayed check for "hot" (buys/holders) and "trending" (higher buy threshold). Sends only to hot/trending channels, not firehose. */
+function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTrendingChannelIds = [], telegramChatIds, telegramHotTargets = [], telegramTrendingTargets = [], bankrApiKey, hotPingConfigByGuildId = {}, telegramHotPingDelayMs: overrideDelayMs } = {}) {
+  const hasHotDest = discordHotChannelIds.length > 0 || (telegramHotTargets?.length > 0);
+  const hasTrendingDest = discordTrendingChannelIds.length > 0 || (telegramTrendingTargets?.length > 0);
+  const hasTelegram = (telegramChatIds?.length > 0) || hasHotDest || hasTrendingDest;
   const telegramDelayMs = overrideDelayMs != null ? Math.max(0, Number(overrideDelayMs)) : TELEGRAM_HOT_PING_DELAY_MS;
   if (
-    (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 && HOT_LAUNCH_MIN_HOLDERS <= 0) ||
-    (discordChannelIds.length === 0 && !hasTelegram)
+    (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 && HOT_LAUNCH_MIN_HOLDERS <= 0 && TRENDING_MIN_BUYS_5M <= 0 && TRENDING_MIN_BUYS_1H <= 0) ||
+    (!hasHotDest && !hasTrendingDest && !hasTelegram)
   ) {
     return;
   }
   const apiKey = bankrApiKey ?? process.env.BANKR_API_KEY;
-  const allLaunchesSet = new Set(Array.isArray(allLaunchesChannelIds) ? allLaunchesChannelIds : [allLaunchesChannelIds].filter(Boolean));
   const hasPerGuildConfig = typeof hotPingConfigByGuildId === "object" && Object.keys(hotPingConfigByGuildId).length > 0;
   setTimeout(async () => {
     try {
       const stats = await getHotTokenStats(launch.tokenAddress);
       if (!stats) return;
-      const buysFirstMin = stats.buys5m ?? 0;
-      const hotByBuys = HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 && buysFirstMin >= HOT_LAUNCH_MIN_BUYS_FIRST_MIN;
+      const buys5m = stats.buys5m ?? 0;
+      const buys1h = stats.buys1h ?? 0;
+      const hotByBuys = HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 && buys5m >= HOT_LAUNCH_MIN_BUYS_FIRST_MIN;
       const hotByHolders =
         HOT_LAUNCH_MIN_HOLDERS > 0 && stats.holderCount != null && stats.holderCount >= HOT_LAUNCH_MIN_HOLDERS;
-      if (!hotByBuys && !hotByHolders) return;
+      const isHot = hotByBuys || hotByHolders;
+      const isTrending =
+        (TRENDING_MIN_BUYS_5M > 0 && buys5m >= TRENDING_MIN_BUYS_5M) ||
+        (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H);
+      if (!isHot && !isTrending) return;
       const hotStats = {
         hotByBuys,
         hotByHolders,
-        buysFirstMin: buysFirstMin,
+        buysFirstMin: buys5m,
         holderCount: stats.holderCount,
+        isTrending,
+        buys5m,
+        buys1h,
       };
       const launchForEmbed =
         (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
-      const embed = buildLaunchEmbed(launchForEmbed);
+      const embedHot = buildLaunchEmbed(launchForEmbed);
+      const embedTrending = buildLaunchEmbed(launchForEmbed);
+      embedHot.color = 0xff6600;
+      embedTrending.color = 0x5865f2;
       if (hotByBuys && hotByHolders) {
-        embed.title = `🔥👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buysFirstMin}+ buys in first min · 20+ holders`;
+        embedHot.title = `🔥👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m}+ buys in first min · 20+ holders`;
       } else if (hotByBuys) {
-        embed.title = `🔥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buysFirstMin}+ buys in first minute`;
+        embedHot.title = `🔥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m}+ buys in first minute`;
       } else {
-        embed.title = `👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — 20+ holders`;
+        embedHot.title = `👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — 20+ holders`;
       }
-      embed.color = 0xff6600;
+      embedTrending.title = `📈 Trending: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m} buys (5m) · ${buys1h} (1h)`;
       const hotSuffix = "🔥 **Hot token**";
       const trendingSuffix = "📈 **Trending**";
-      function getPingContent(guildId, channelId) {
+      function getPingContent(guildId, channelId, forTrending) {
         const config = hasPerGuildConfig && guildId ? hotPingConfigByGuildId[guildId] : null;
         const roleIds = config?.roleIds ?? [];
         const hasRoles = roleIds.length > 0;
-        if (allLaunchesSet.has(channelId)) {
-          return buildRolePingContent(hasRoles ? roleIds : null, hotSuffix);
-        }
         if (config && hasRoles) {
-          if (channelId === config.hotAlertChannelId && config.pingOnHot) return buildRolePingContent(roleIds, hotSuffix);
-          if (channelId === config.trendingAlertChannelId && config.pingOnTrending) return buildRolePingContent(roleIds, trendingSuffix);
+          if (!forTrending && channelId === config.hotAlertChannelId && config.pingOnHot) return buildRolePingContent(roleIds, hotSuffix);
+          if (forTrending && channelId === config.trendingAlertChannelId && config.pingOnTrending) return buildRolePingContent(roleIds, trendingSuffix);
         }
         return null;
       }
       const posted = new Set();
-      for (const channelId of discordChannelIds) {
-        if (posted.has(channelId)) continue;
-        posted.add(channelId);
-        const ch = await client.channels.fetch(channelId).catch(() => null);
-        if (ch) {
-          const pingContent = getPingContent(ch.guildId, channelId);
-          await ch
-            .send({ content: pingContent, embeds: [embed] })
-            .catch((e) => console.error("Hot ping Discord:", e.message));
+      if (isHot) {
+        for (const channelId of discordHotChannelIds) {
+          if (posted.has(channelId)) continue;
+          posted.add(channelId);
+          const ch = await client.channels.fetch(channelId).catch(() => null);
+          if (ch) {
+            const pingContent = getPingContent(ch.guildId, channelId, false);
+            await ch.send({ content: pingContent, embeds: [embedHot] }).catch((e) => console.error("Hot ping Discord:", e.message));
+          }
+        }
+      }
+      if (isTrending) {
+        for (const channelId of discordTrendingChannelIds) {
+          if (posted.has(channelId)) continue;
+          posted.add(channelId);
+          const ch = await client.channels.fetch(channelId).catch(() => null);
+          if (ch) {
+            const pingContent = getPingContent(ch.guildId, channelId, true);
+            await ch.send({ content: pingContent, embeds: [embedTrending] }).catch((e) => console.error("Trending ping Discord:", e.message));
+          }
         }
       }
       const seenTg = new Set();
@@ -778,41 +814,51 @@ function scheduleHotLaunchCheck(launch, { discordChannelIds, telegramChatIds, te
         const key = `${chatId}`;
         if (seenTg.has(key)) continue;
         seenTg.add(key);
-        await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
+        if (isHot) await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
       }
-      const tgTopicTargets = (telegramHotTargets || []).length > 0 || (telegramTrendingTargets || []).length > 0;
+      const sendTgHot = isHot && (telegramHotTargets?.length > 0);
+      const sendTgTrending = isTrending && (telegramTrendingTargets?.length > 0);
+      const tgTopicTargets = sendTgHot || sendTgTrending;
       if (tgTopicTargets && telegramDelayMs > 0) {
         setTimeout(async () => {
           try {
             const seen = new Set();
-            for (const t of telegramHotTargets || []) {
-              const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+            if (sendTgHot) {
+              for (const t of telegramHotTargets || []) {
+                const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+              }
             }
-            for (const t of telegramTrendingTargets || []) {
-              const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+            if (sendTgTrending) {
+              for (const t of telegramTrendingTargets || []) {
+                const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId, trending: true }).catch(() => {});
+              }
             }
           } catch (e) {
             console.error("Telegram hot/trending delayed ping failed:", e.message);
           }
         }, telegramDelayMs);
       } else if (tgTopicTargets) {
-        for (const t of telegramHotTargets || []) {
-          const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-          if (seenTg.has(key)) continue;
-          seenTg.add(key);
-          await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+        if (sendTgHot) {
+          for (const t of telegramHotTargets || []) {
+            const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+            if (seenTg.has(key)) continue;
+            seenTg.add(key);
+            await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+          }
         }
-        for (const t of telegramTrendingTargets || []) {
-          const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-          if (seenTg.has(key)) continue;
-          seenTg.add(key);
-          await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+        if (sendTgTrending) {
+          for (const t of telegramTrendingTargets || []) {
+            const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+            if (seenTg.has(key)) continue;
+            seenTg.add(key);
+            await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId, trending: true }).catch(() => {});
+          }
         }
       }
     } catch (e) {
@@ -867,23 +913,23 @@ async function runNotify() {
       if (
         HOT_LAUNCH_ENABLED &&
         newLaunches.length > 0 &&
-        (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)
+        (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0 || TRENDING_MIN_BUYS_5M > 0 || TRENDING_MIN_BUYS_1H > 0)
       ) {
-        const discordIds = [allChannel?.id, alertChannel?.id, watchChannel?.id, HOT_LAUNCH_ALERT_CHANNEL_ID, TRENDING_ENABLED ? TRENDING_ALERT_CHANNEL_ID : null].filter(Boolean);
+        const discordHotIds = HOT_LAUNCH_ALERT_CHANNEL_ID ? [HOT_LAUNCH_ALERT_CHANNEL_ID] : [];
+        const discordTrendingIds = TRENDING_ENABLED && TRENDING_ALERT_CHANNEL_ID ? [TRENDING_ALERT_CHANNEL_ID] : [];
         const envChat = process.env.TELEGRAM_CHAT_ID;
         const envHot = process.env.TELEGRAM_TOPIC_HOT;
         const envTrend = process.env.TELEGRAM_TOPIC_TRENDING;
         const telegramIds = envChat && envHot == null && envTrend == null ? [envChat] : [];
         const telegramHotTargets = envChat && envHot != null ? [{ chatId: envChat, messageThreadId: envHot }] : [];
         const telegramTrendingTargets = envChat && envTrend != null ? [{ chatId: envChat, messageThreadId: envTrend }] : [];
-        const allLaunchesIds = allChannel?.id ? [allChannel.id] : [];
         for (const launch of newLaunches) {
           scheduleHotLaunchCheck(launch, {
-            discordChannelIds: [...new Set(discordIds)],
+            discordHotChannelIds: discordHotIds,
+            discordTrendingChannelIds: discordTrendingIds,
             telegramChatIds: telegramIds,
             telegramHotTargets,
             telegramTrendingTargets,
-            allLaunchesChannelIds: allLaunchesIds,
             bankrApiKey: process.env.BANKR_API_KEY,
           });
         }
@@ -960,13 +1006,13 @@ async function runNotify() {
         if (
           anyHotEnabled &&
           newLaunches.length > 0 &&
-          (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0)
+          (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0 || TRENDING_MIN_BUYS_5M > 0 || TRENDING_MIN_BUYS_1H > 0)
         ) {
-          const discordIds = new Set();
+          const discordHotChannelIds = [];
+          const discordTrendingChannelIds = [];
           const telegramIds = new Set();
           const telegramHotTargets = [];
           const telegramTrendingTargets = [];
-          const allLaunchesIds = [];
           const hotPingConfigByGuildId = {};
           let telegramDelayOverride = null;
           if (process.env.TELEGRAM_CHAT_ID) {
@@ -978,14 +1024,8 @@ async function runNotify() {
           }
           for (const tenant of tenantsWithChannels) {
             if (tenant.hotLaunchEnabled === false) continue;
-            if (tenant.allLaunchesChannelId) {
-              discordIds.add(tenant.allLaunchesChannelId);
-              allLaunchesIds.push(tenant.allLaunchesChannelId);
-            }
-            if (tenant.alertChannelId) discordIds.add(tenant.alertChannelId);
-            if (tenant.watchAlertChannelId) discordIds.add(tenant.watchAlertChannelId);
-            if (tenant.hotAlertChannelId) discordIds.add(tenant.hotAlertChannelId);
-            if (tenant.trendingEnabled && tenant.trendingAlertChannelId) discordIds.add(tenant.trendingAlertChannelId);
+            if (tenant.hotAlertChannelId) discordHotChannelIds.push(tenant.hotAlertChannelId);
+            if (tenant.trendingEnabled && tenant.trendingAlertChannelId) discordTrendingChannelIds.push(tenant.trendingAlertChannelId);
             if (tenant.telegramChatId) {
               const th = tenant.telegramTopicHot ?? null;
               const tr = tenant.telegramTopicTrending ?? null;
@@ -1006,11 +1046,11 @@ async function runNotify() {
           }
           for (const launch of newLaunches) {
             scheduleHotLaunchCheck(launch, {
-              discordChannelIds: [...discordIds],
+              discordHotChannelIds: [...new Set(discordHotChannelIds)],
+              discordTrendingChannelIds: [...new Set(discordTrendingChannelIds)],
               telegramChatIds: [...telegramIds],
               telegramHotTargets,
               telegramTrendingTargets,
-              allLaunchesChannelIds: allLaunchesIds,
               bankrApiKey: firstApiKey,
               hotPingConfigByGuildId,
               telegramHotPingDelayMs: telegramDelayOverride,
@@ -1047,7 +1087,7 @@ async function runClaimWatchCycle() {
     const tenant = await getTenant(guildId);
     const tokens = await getClaimWatchTokens(guildId);
     if (tokens.length === 0) continue;
-    const channelId = tenant?.watchAlertChannelId || tenant?.alertChannelId;
+    const channelId = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId;
     if (!channelId) continue;
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) continue;
@@ -1138,6 +1178,12 @@ client.once("ready", async () => {
   }
   if (!ALL_LAUNCHES_CHANNEL_ID && !ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
     console.log("No Discord channel IDs in env; alerts go to each server's /setup channels or notify.js webhook.");
+  }
+  const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
+  if (hasEnvChannels && (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID)) {
+    console.log("Telegram firehose: not sending — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (and TELEGRAM_TOPIC_FIREHOSE for a topic) to get the same launches on Telegram.");
+  } else if (hasEnvChannels && process.env.TELEGRAM_CHAT_ID) {
+    console.log(`Telegram firehose: enabled (chat ${String(process.env.TELEGRAM_CHAT_ID).slice(0, 12)}…${process.env.TELEGRAM_TOPIC_FIREHOSE != null ? ` topic ${process.env.TELEGRAM_TOPIC_FIREHOSE}` : ""}).`);
   }
 
   if (DEBUG_WEBHOOK_URL) {
@@ -1628,9 +1674,15 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
         {
+          name: "🔔 /claim-watch",
+          value:
+            "**Get notified when a token's fees are claimed.** **add** — Token address (0x…) + optional **name** (label). **remove** — By address or label. **list** — Shows tokens with symbol/label. Alerts post to the server's claim channel (or watch/alert channel). Run **/setup** first.",
+          inline: false,
+        },
+        {
           name: "📌 Channels & paste",
           value:
-            "**/setup** — **All launches** = firehose (every Bankr deploy). **Curated** = only launches that pass your rules (same X/FC on deployer + fee recipient, max deploys/day). **Watch** = only your **/watch** list.\n" +
+            "**/setup** — **All launches** = firehose (every Bankr deploy). **Curated** = only launches that pass your rules (same X/FC on deployer + fee recipient, max deploys/day). **Watch** = only your **/watch** list. **Claim channel** = fee-claim alerts only (else uses watch/alert).\n" +
             "**Paste a Bankr token** (any channel): address ending in **BA3** → bot replies with name, symbol, link, fees.",
           inline: false,
         },
@@ -1802,6 +1854,7 @@ client.on("interactionCreate", async (interaction) => {
       const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
       const alertChannel = interaction.options.getChannel("alert_channel");
       const watchChannel = interaction.options.getChannel("watch_channel");
+      const claimChannel = interaction.options.getChannel("claim_channel");
       const hotChannel = interaction.options.getChannel("hot_channel");
       const hotEnabled = interaction.options.getBoolean("hot_enabled");
       const hotPingRoleIdsRaw = interaction.options.getString("hot_ping_role_ids");
@@ -1834,6 +1887,7 @@ client.on("interactionCreate", async (interaction) => {
         allLaunchesChannelId: allLaunchesChannel?.id ?? null,
         alertChannelId: alertChannel?.id ?? null,
         watchAlertChannelId: watchChannel?.id ?? null,
+        claimAlertChannelId: claimChannel?.id ?? null,
         hotAlertChannelId: hotChannel?.id ?? null,
         hotLaunchEnabled: hotEnabled !== false,
         hotLaunchRoleIds: hotLaunchRoleIds ?? [],
@@ -1856,6 +1910,7 @@ client.on("interactionCreate", async (interaction) => {
         allLaunchesChannel ? `• **All launches** (firehose): ${allLaunchesChannel.name}` : "• All launches channel: (none)",
         alertChannel ? `• **Curated** (rules): ${alertChannel.name}` : "• Curated channel: (none)",
         watchChannel ? `• **Watch list**: ${watchChannel.name}` : "• Watch channel: (none)",
+        claimChannel ? `• **Claim alerts**: ${claimChannel.name}` : "• Claim alerts: (use watch/alert channel)",
         hotChannel ? `• **Hot tokens**: ${hotChannel.name} (${updates.hotLaunchEnabled ? "on" : "off"})` : "• Hot tokens: (none)",
         trendingChannel ? `• **Trending**: ${trendingChannel.name} (${updates.trendingEnabled ? "on" : "off"})` : "• Trending: (none)",
         updates.hotLaunchRoleIds?.length > 0 ? `• **Ping roles**: ${updates.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
@@ -1907,7 +1962,9 @@ client.on("interactionCreate", async (interaction) => {
           `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
           `• **Curated** (rules): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
           `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
+          `• **Claim alerts**: ${tenant.claimAlertChannelId ? `<#${tenant.claimAlertChannelId}>` : "—"} (or watch/alert)",
           `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
+          (tenant.claimWatchTokens?.length ?? 0) > 0 ? `• **Claim watch**: ${tenant.claimWatchTokens.length} token(s) — use **/claim-watch list**` : "• **Claim watch**: (none)",
           (tenant.hotLaunchRoleIds?.length ?? 0) > 0 ? `• **Ping roles**: ${tenant.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
           `• **Ping when:** hot ${tenant.pingOnHot !== false} · trending ${tenant.pingOnTrending !== false} · watch ${tenant.pingOnWatchMatch === true} · curated ${tenant.pingOnCurated === true}`,
           `• **Trending**: ${tenant.trendingAlertChannelId ? `<#${tenant.trendingAlertChannelId}>` : "—"} ${tenant.trendingEnabled ? "(on)" : "(off)"}`,
@@ -1983,6 +2040,7 @@ client.on("interactionCreate", async (interaction) => {
         const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
         const alertChannel = interaction.options.getChannel("alert_channel");
         const watchChannel = interaction.options.getChannel("watch_channel");
+        const claimChannel = interaction.options.getChannel("claim_channel");
         const hotChannel = interaction.options.getChannel("hot_channel");
         const hotEnabled = interaction.options.getBoolean("hot_enabled");
         const hotPingRoleIdsRaw = interaction.options.getString("hot_ping_role_ids");
@@ -1993,6 +2051,9 @@ client.on("interactionCreate", async (interaction) => {
         if (alertChannel) updates.alertChannelId = alertChannel.id;
         if (interaction.options.data.options?.find((o) => o.name === "watch_channel")) {
           updates.watchAlertChannelId = watchChannel?.id ?? null;
+        }
+        if (interaction.options.data.options?.find((o) => o.name === "claim_channel")) {
+          updates.claimAlertChannelId = claimChannel?.id ?? null;
         }
         if (interaction.options.data.options?.find((o) => o.name === "hot_channel")) {
           updates.hotAlertChannelId = hotChannel?.id ?? null;
@@ -2012,7 +2073,7 @@ client.on("interactionCreate", async (interaction) => {
         if (Object.keys(updates).length === 0) {
           await interaction.editReply({
             content:
-              "Pick at least one channel to set. **all_launches_channel** = every deploy; **alert_channel** = curated; **watch_channel** / **hot_channel** / **trending_channel** optional.",
+              "Pick at least one channel to set. **all_launches_channel** = every deploy; **alert_channel** = curated; **watch_channel** / **claim_channel** / **hot_channel** / **trending_channel** optional.",
           });
           return;
         }
@@ -2065,23 +2126,26 @@ client.on("interactionCreate", async (interaction) => {
     try {
       if (sub === "add") {
         const tokenAddress = interaction.options.getString("token_address");
+        const name = interaction.options.getString("name")?.trim();
         const addr = tokenAddress && /^0x[a-fA-F0-9]{40}$/.test(tokenAddress.trim()) ? tokenAddress.trim().toLowerCase() : null;
         if (!addr) {
           await interaction.reply({ content: "Invalid token address. Use 0x followed by 40 hex characters.", flags: MessageFlags.Ephemeral });
           return;
         }
-        const added = await addClaimWatchToken(guildId, addr);
+        const added = await addClaimWatchToken(guildId, addr, name || undefined);
+        const channelHint = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId ? " in this server's claim/watch/alert channel" : "";
         await interaction.reply({
           content: added
-            ? `Added \`${addr}\` to the claim watch list. You'll be notified in this server's watch/alert channel when its fees are claimed.`
-            : "That token is already on the claim watch list.",
+            ? (name ? `Added **${name}** (\`${addr}\`) to the claim watch list.` : `Added \`${addr}\` to the claim watch list.`)
+            + ` You'll be notified when its fees are claimed${channelHint}.`
+            : (name ? `**${name}** (\`${addr}\`) is already on the claim watch list; label updated.` : "That token is already on the claim watch list."),
           flags: MessageFlags.Ephemeral,
         });
       } else if (sub === "remove") {
-        const tokenAddress = interaction.options.getString("token_address");
-        const ok = await removeClaimWatchToken(guildId, tokenAddress);
+        const tokenAddressOrLabel = interaction.options.getString("token_address")?.trim();
+        const ok = tokenAddressOrLabel ? await removeClaimWatchToken(guildId, tokenAddressOrLabel) : false;
         await interaction.reply({
-          content: ok ? "Removed that token from the claim watch list." : "Token not found or invalid address.",
+          content: ok ? "Removed that token from the claim watch list." : "Token not found. Use the exact address (0x...) or the label you set when adding.",
           flags: MessageFlags.Ephemeral,
         });
       } else if (sub === "list") {
@@ -2090,9 +2154,20 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.reply({ content: "Claim watch list is empty. Use **/claim-watch add** with a token address.", flags: MessageFlags.Ephemeral });
           return;
         }
-        const lines = list.map((a) => `• \`${a}\``);
+        const tenant = await getTenant(guildId);
+        const labels = tenant?.claimWatchLabels || {};
+        const withSymbol = await Promise.all(
+          list.map(async (addr) => {
+            const state = await getClaimState(guildId, addr);
+            const symbol = state?.symbol ?? "—";
+            const label = labels[addr];
+            if (label) return `• **${label}** ($${symbol}) · \`${addr}\``;
+            if (symbol !== "—") return `• $${symbol} · \`${addr}\``;
+            return `• \`${addr}\``;
+          })
+        );
         await interaction.reply({
-          content: `**Claim watch list** (${list.length} token${list.length === 1 ? "" : "s"}):\n\n${lines.join("\n")}\n\nYou'll be notified when fees are claimed for any of these tokens.`,
+          content: `**Claim watch list** (${list.length} token${list.length === 1 ? "" : "s"}):\n\n${withSymbol.join("\n")}\n\nYou'll be notified when fees are claimed for any of these tokens. Use **/claim-watch remove** with address or label.`,
           flags: MessageFlags.Ephemeral,
         });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/claim-watch list", `${list.length} tokens`);
