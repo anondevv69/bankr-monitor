@@ -470,7 +470,7 @@ async function registerCommands(appId) {
       .addStringOption((o) =>
         o
           .setName("hot_ping_role_ids")
-          .setDescription("Comma-separated role IDs to ping (e.g. 123,456). No @everyone — assign who gets tagged.")
+          .setDescription("Roles to ping: type @ and select roles, or paste role IDs (e.g. 123,456). No @everyone.")
           .setRequired(false)
       )
       .addBooleanOption((o) =>
@@ -562,7 +562,7 @@ async function registerCommands(appId) {
             o.setName("hot_enabled").setDescription("Enable hot token alerts").setRequired(false)
           )
           .addStringOption((o) =>
-            o.setName("hot_ping_role_ids").setDescription("Comma-separated role IDs to ping on hot/trending (no @everyone)").setRequired(false)
+            o.setName("hot_ping_role_ids").setDescription("Roles to ping: @mention roles or paste role IDs (no @everyone)").setRequired(false)
           )
           .addChannelOption((o) =>
             o.setName("trending_channel").setDescription("Channel for trending alerts").setRequired(false)
@@ -674,6 +674,26 @@ function isWatchMatchForTenant(launch, watchList) {
   const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
   const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some((kw) => searchText.includes(String(kw).toLowerCase().trim()));
   return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
+}
+
+/** Parse role IDs from string: comma/space-separated numeric IDs and/or Discord role mentions <@&id>. */
+function parseRoleIdsFromInput(raw) {
+  if (raw == null || String(raw).trim() === "") return [];
+  const seen = new Set();
+  const ids = [];
+  const str = String(raw).trim();
+  // Collect all <@&id> mentions (Discord may insert these when you @role)
+  for (const m of str.matchAll(/<@&(\d+)>/g)) ids.push(m[1]);
+  // Also collect comma/space-separated bare numeric IDs
+  for (const s of str.split(/[\s,]+/)) {
+    const t = s.trim();
+    if (t && /^\d+$/.test(t) && !t.startsWith("<")) ids.push(t);
+  }
+  return ids.filter((id) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 /** Build role mention string for ping (hot/trending/watch/curated). Uses tenant config or env. */
@@ -1808,13 +1828,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
-      const hotLaunchRoleIds =
-        hotPingRoleIdsRaw != null
-          ? String(hotPingRoleIdsRaw)
-              .split(",")
-              .map((s) => s.trim())
-              .filter((s) => /^\d+$/.test(s))
-          : undefined;
+      const hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
       const updates = {
         bankrApiKey: apiKey,
         allLaunchesChannelId: allLaunchesChannel?.id ?? null,
@@ -1987,13 +2001,7 @@ client.on("interactionCreate", async (interaction) => {
           updates.hotLaunchEnabled = hotEnabled !== false;
         }
         if (interaction.options.data.options?.find((o) => o.name === "hot_ping_role_ids") !== undefined) {
-          updates.hotLaunchRoleIds =
-            hotPingRoleIdsRaw != null && String(hotPingRoleIdsRaw).trim() !== ""
-              ? String(hotPingRoleIdsRaw)
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter((s) => /^\d+$/.test(s))
-              : [];
+          updates.hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
         }
         if (interaction.options.data.options?.find((o) => o.name === "trending_channel")) {
           updates.trendingAlertChannelId = trendingChannel?.id ?? null;
