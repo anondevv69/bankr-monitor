@@ -620,6 +620,52 @@ function telegramThreadId(v) {
   return Number.isNaN(n) ? undefined : n;
 }
 
+/** Build Token / CA / Launcher / Fee recipient block for Telegram (Markdown), matching Discord embed.
+ * @param {object} launch - Launch object (name, symbol, tokenAddress, launcher, launcherX, beneficiaries).
+ * @param {{ skipToken?: boolean }} [opts] - If skipToken true, omit Token line (caller adds link separately).
+ */
+function formatLaunchBodyForTelegram(launch, opts = {}) {
+  const name = escapeMarkdown(launch.name || "—");
+  const symbol = escapeMarkdown(launch.symbol || "—");
+  const ca = launch.tokenAddress ? String(launch.tokenAddress) : "—";
+  const lines = [];
+  if (!opts.skipToken) {
+    lines.push("*Token*", `${name} ($${symbol})`, "", "");
+  }
+  lines.push("*CA*", `\`${ca}\``, "");
+  let launcherValue = "—";
+  if (launch.launcher) {
+    const parts = [];
+    if (launch.launcherX) {
+      const xUrl = xProfileUrl(launch.launcherX);
+      const handle = String(launch.launcherX).replace(/^@/, "");
+      parts.push(xUrl ? `X: [@${handle}](${xUrl})` : `X: @${handle}`);
+    }
+    const wUrl = walletLink(launch.launcher);
+    parts.push(wUrl ? `Wallet: [${launch.launcher}](${wUrl})` : `Wallet: ${launch.launcher}`);
+    launcherValue = parts.join("\n");
+  }
+  lines.push("*Launcher*", launcherValue, "");
+  if (launch.beneficiaries && launch.beneficiaries.length) {
+    const b = launch.beneficiaries[0];
+    const addr = typeof b === "object" ? b.beneficiary || b.address : b;
+    const parts = [];
+    if (b.xUsername) {
+      const xUrl = xProfileUrl(b.xUsername);
+      const handle = String(b.xUsername).replace(/^@/, "");
+      parts.push(xUrl ? `X: [@${handle}](${xUrl})` : `X: @${handle}`);
+    }
+    if (addr) {
+      const wUrl = walletLink(addr);
+      parts.push(wUrl ? `Wallet: [${addr}](${wUrl})` : `Wallet: ${addr}`);
+    }
+    lines.push("*Fee recipient*", parts.length ? parts.join("\n") : "—", "");
+  } else {
+    lines.push("*Fee recipient*", "—", "");
+  }
+  return lines.join("\n");
+}
+
 export async function sendTelegram(launch, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
@@ -704,7 +750,9 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     line = parts.join(" · ");
     title = "🔔 *HOT TOKEN*";
   }
-  const text = `${title}\n\n[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})\n${line}`;
+  const body = formatLaunchBodyForTelegram(launch, { skipToken: true });
+  const tokenLink = `[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})`;
+  const text = `${title}\n\n${tokenLink}\n\n${body}\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payload = {
     chat_id: chatId,
