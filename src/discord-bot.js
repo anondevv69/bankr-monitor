@@ -1962,7 +1962,7 @@ client.on("interactionCreate", async (interaction) => {
           `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
           `• **Curated** (rules): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
           `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
-          `• **Claim alerts**: ${tenant.claimAlertChannelId ? `<#${tenant.claimAlertChannelId}>` : "—"} (or watch/alert)",
+          `• **Claim alerts**: ${tenant.claimAlertChannelId ? `<#${tenant.claimAlertChannelId}>` : "—"} (or watch/alert)`,
           `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
           (tenant.claimWatchTokens?.length ?? 0) > 0 ? `• **Claim watch**: ${tenant.claimWatchTokens.length} token(s) — use **/claim-watch list**` : "• **Claim watch**: (none)",
           (tenant.hotLaunchRoleIds?.length ?? 0) > 0 ? `• **Ping roles**: ${tenant.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
