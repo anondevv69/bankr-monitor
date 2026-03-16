@@ -786,6 +786,36 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   }
 }
 
+/** Send a Bankr fee-claim alert to Telegram (same idea as Discord claim firehose).
+ * @param {{ poolSymbol?: string, poolToken?: string, amountFormatted?: string, amount?: string, txHash?: string }} claim
+ * @param {{ chatId?: string, messageThreadId?: number | string }} [options] - Default chatId from TELEGRAM_CLAIM_CHAT_ID or TELEGRAM_CHAT_ID
+ */
+export async function sendTelegramClaim(claim, options = {}) {
+  const chatId = options.chatId ?? process.env.TELEGRAM_CLAIM_CHAT_ID ?? TELEGRAM_CHAT;
+  if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
+  const messageThreadId = telegramThreadId(options.messageThreadId ?? process.env.TELEGRAM_CLAIM_TOPIC_ID);
+  const symbol = escapeMarkdown((claim.poolSymbol ?? "Token").trim());
+  const tokenAddr = (claim.poolToken ?? "").trim();
+  const amt = claim.amountFormatted ?? claim.amount ?? "0";
+  const bankrUrl = tokenAddr ? bankrLaunchUrl(tokenAddr) : null;
+  const txUrl = claim.txHash ? `${BASESCAN}/tx/${claim.txHash}` : null;
+  let text = `💰 *$${symbol} claimed*\n\n`;
+  if (bankrUrl) text += `Token page: [Bankr](${bankrUrl})\n`;
+  text += `Fees: ${amt} WETH\n`;
+  if (txUrl) text += `TX: [BaseScan](${txUrl})`;
+  const payload = { chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true };
+  if (messageThreadId != null) payload.message_thread_id = messageThreadId;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("Telegram claim send error:", e.message);
+  }
+}
+
 /** Run one notify cycle: fetch, filter, update seen. Returns new launches (enriched) and totalCount.
  * @param {{ bankrApiKey?: string }} [options] - When provided (e.g. from Discord tenant), use this key for Bankr API so cycle works without env key.
  */

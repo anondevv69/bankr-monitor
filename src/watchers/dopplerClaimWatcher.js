@@ -40,8 +40,35 @@ const TRANSFER_EVENT = parseAbiItem(
 /** ERC-20 Transfer topic for parsing receipt logs. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-/** Minimal EntryPoint ABI to decode handleOps and get ops[0].sender. */
-const ENTRYPOINT_ABI = [
+/** EntryPoint handleOps: (address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[], address — ops[0].sender is first field. */
+const ENTRYPOINT_ABI_HANDLEOPS_LEGACY = [
+  {
+    inputs: [
+      {
+        components: [
+          { name: "sender", type: "address" },
+          { type: "uint256" },
+          { type: "bytes" },
+          { type: "bytes" },
+          { type: "bytes32" },
+          { type: "uint256" },
+          { type: "bytes32" },
+          { type: "bytes" },
+          { type: "bytes" },
+        ],
+        name: "ops",
+        type: "tuple[]",
+      },
+      { name: "beneficiary", type: "address" },
+    ],
+    name: "handleOps",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+];
+/** EntryPoint v0.6 handleOps — try if legacy decode fails. */
+const ENTRYPOINT_ABI_V06 = [
   {
     inputs: [
       {
@@ -87,6 +114,10 @@ function getWsUrl() {
   return null;
 }
 
+function getRpcUrl() {
+  return process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
+}
+
 /**
  * Fetch symbol and decimals for an ERC20 (optional; best-effort).
  * @param {import('viem').PublicClient} client
@@ -121,13 +152,16 @@ async function enrichClaim(client, txHash, feeLocker) {
     ]);
     if (!tx) return out;
     out.claimer = (tx.from ?? "").toLowerCase();
-    if (tx.to && tx.input && String(tx.to).toLowerCase() === ENTRYPOINT_V06) {
-      try {
-        const decoded = decodeFunctionData({ abi: ENTRYPOINT_ABI, data: tx.input });
-        if (decoded.functionName === "handleOps" && decoded.args?.ops?.length > 0 && decoded.args.ops[0]?.sender) {
-          out.claimer = String(decoded.args.ops[0].sender).toLowerCase();
-        }
-      } catch (_) {}
+    if (tx.input) {
+      for (const abi of [ENTRYPOINT_ABI_HANDLEOPS_LEGACY, ENTRYPOINT_ABI_V06]) {
+        try {
+          const decoded = decodeFunctionData({ abi, data: tx.input });
+          if (decoded.functionName === "handleOps" && decoded.args?.ops?.length > 0 && decoded.args.ops[0]?.sender) {
+            out.claimer = String(decoded.args.ops[0].sender).toLowerCase();
+            break;
+          }
+        } catch (_) {}
+      }
     }
     if (!receipt?.logs?.length) return out;
     const wethLower = WETH_BASE.toLowerCase();
@@ -266,4 +300,62 @@ function onFeeClaim(fn) {
   emitter.on("claim", fn);
 }
 
-export { start, stop, onFeeClaim, getWsUrl };
+/**
+ * Historical check: which Bankr tokens has a wallet claimed? Uses RPC getLogs (no WebSocket).
+ * @param {string} wallet - Address to check (0x...).
+ * @param {number | bigint} [fromBlock=0] - Start block.
+ * @returns {Promise<Array<{ tokenAddress: string, poolSymbol: string | null, wethAmount: string, txHash: string }>>}
+ */
+async function getWalletClaims(wallet, fromBlock = 0) {
+  const w = (wallet ?? "").trim().toLowerCase();
+  if (!w || !/^0x[a-f0-9]{40}$/.test(w)) return [];
+  if (CHAIN_ID !== 8453) return [];
+  const results = [];
+  try {
+    const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+    const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: [getRpcUrl()] } } };
+    const client = viem.createPublicClient({
+      chain,
+      transport: viem.http(getRpcUrl()),
+    });
+    const pad = (addr) => viem.zeroPadValue(addr, 32);
+    const wethLower = WETH_BASE.toLowerCase();
+    for (const locker of FEE_LOCKERS) {
+      const logs = await client.getLogs({
+        fromBlock: BigInt(fromBlock),
+        toBlock: "latest",
+        topics: [TRANSFER_TOPIC, pad(locker), pad(w)],
+      });
+      for (const log of logs) {
+        const tokenAddr = (log.address ?? "").toLowerCase();
+        if (tokenAddr !== wethLower) continue;
+        const value = log.data ? BigInt(log.data) : 0n;
+        if (value === 0n) continue;
+        const txHash = log.transactionHash ?? "";
+        if (!txHash) continue;
+        try {
+          const receipt = await client.getTransactionReceipt({ hash: txHash });
+          if (!receipt?.logs?.length) continue;
+          const lockerPadded = "0x" + locker.slice(2).padStart(64, "0");
+          for (const l of receipt.logs) {
+            if (l.topics?.[0] !== TRANSFER_TOPIC) continue;
+            if ((l.topics[1] ?? "").toLowerCase() !== lockerPadded) continue;
+            const addr = (l.address ?? "").toLowerCase();
+            if (addr === wethLower || !addr.endsWith(BANKR_TOKEN_SUFFIX)) continue;
+            const meta = await getTokenMeta(client, addr);
+            results.push({
+              tokenAddress: addr,
+              poolSymbol: meta?.symbol ?? null,
+              wethAmount: (Number(value) / 1e18).toFixed(4),
+              txHash,
+            });
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return results;
+}
+
+export { start, stop, onFeeClaim, getWsUrl, getWalletClaims };
