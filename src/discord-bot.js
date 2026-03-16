@@ -55,6 +55,7 @@ import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
 import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
+import { start as startDopplerClaimWatcher, onFeeClaim } from "./watchers/dopplerClaimWatcher.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +69,8 @@ const HOT_LAUNCH_ALERT_CHANNEL_ID = process.env.DISCORD_HOT_LAUNCH_ALERT_CHANNEL
 const HOT_LAUNCH_ENABLED = process.env.HOT_LAUNCH_ENABLED !== "false" && process.env.HOT_LAUNCH_ENABLED !== "0";
 const TRENDING_ALERT_CHANNEL_ID = process.env.DISCORD_TRENDING_ALERT_CHANNEL_ID || null;
 const TRENDING_ENABLED = process.env.TRENDING_ENABLED === "true" || process.env.TRENDING_ENABLED === "1";
+/** Optional: real-time Doppler fee-claim firehose (Alchemy WebSocket). Set ALCHEMY_KEY + this channel to post every claim. */
+const CLAIM_FIREHOSE_CHANNEL_ID = process.env.DISCORD_CLAIM_FIREHOSE_CHANNEL_ID || null;
 const DEBUG_WEBHOOK_URL = process.env.DISCORD_DEBUG_WEBHOOK_URL;
 const INTERVAL = parseInt(process.env.POLL_INTERVAL_MS || "60000", 10);
 const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE || "5", 10), 3), 25);
@@ -1210,6 +1213,32 @@ client.once("ready", async () => {
     debugLogError(e, "runNotify");
   });
 
+  // Real-time Doppler fee-claim firehose (Alchemy WebSocket)
+  await startDopplerClaimWatcher();
+  if (CLAIM_FIREHOSE_CHANNEL_ID) {
+    onFeeClaim(async (claim) => {
+      const ch = await client.channels.fetch(CLAIM_FIREHOSE_CHANNEL_ID).catch(() => null);
+      if (!ch) return;
+      const sym = claim.symbol ?? "?";
+      const amt = claim.amountFormatted ?? claim.amount;
+      const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
+      const desc = [
+        `**Beneficiary** \`${claim.beneficiary}\``,
+        `**Token** ${sym} \`${claim.token}\``,
+        `**Amount** ${amt} ${sym}`,
+        txUrl ? `**TX** [BaseScan](${txUrl})` : "",
+      ].filter(Boolean).join("\n");
+      await ch.send({
+        embeds: [{
+          title: "💰 Doppler fee claim",
+          description: desc,
+          color: 0x00aa00,
+          timestamp: new Date().toISOString(),
+        }],
+      }).catch((e) => console.error("Claim firehose send:", e.message));
+    });
+    console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
+  }
 });
 
 // Prune stale lookup cache entries
