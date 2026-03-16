@@ -1,6 +1,7 @@
 /**
  * Doppler fee claim watcher — real-time detection via Alchemy WebSocket.
  * Listens for ERC20 Transfer(from = feeLocker, to = beneficiary) and emits claim events.
+ * Only WETH transfers are treated as fee claims (pool init/launch sends other tokens; collectFees pays WETH).
  * No polling; uses eth_subscribe over WebSocket only.
  *
  * Env: ALCHEMY_KEY or ALCHEMY_WS_URL (Base mainnet). If unset, watcher does not start.
@@ -12,6 +13,9 @@ import { base } from "viem/chains";
 import { DOPPLER_CONTRACTS_BASE } from "../config.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
+
+/** WETH on Base. Only transfers of this token from the fee locker are real fee claims (collectFees); others are pool init. */
+const WETH_BASE = "0x4200000000000000000000000000000000000006";
 
 const FEE_LOCKERS =
   CHAIN_ID === 8453
@@ -75,6 +79,9 @@ emitter.setMaxListeners(50);
 let publicClient = null;
 let unwatchers = [];
 let running = false;
+/** One alert per tx; avoids duplicate messages when one claim tx has multiple transfers. */
+const recentTxHashes = new Set();
+const RECENT_TX_MAX = 5000;
 
 /**
  * Start the claim watcher. Subscribes to Transfer events from each fee locker.
@@ -98,25 +105,31 @@ async function start() {
         args: { from: locker },
         poll: false,
         onLogs: async (logs) => {
+          // Only WETH transfers = real fee claims; other tokens are pool init/launch distributions
+          const wethLower = WETH_BASE.toLowerCase();
           for (const log of logs) {
+            const tokenAddr = (log.address ?? "").toLowerCase();
+            if (tokenAddr !== wethLower) continue;
+            const value = log.args?.value ?? 0n;
+            if (value === 0n) continue;
+            const txHash = log.transactionHash ?? "";
+            if (!txHash) continue;
+            if (recentTxHashes.has(txHash)) continue;
+            recentTxHashes.add(txHash);
+            if (recentTxHashes.size > RECENT_TX_MAX) {
+              const first = recentTxHashes.values().next().value;
+              if (first) recentTxHashes.delete(first);
+            }
             const payload = {
               beneficiary: (log.args?.to ?? "").toLowerCase(),
-              token: (log.address ?? "").toLowerCase(),
-              amount: String(log.args?.value ?? "0"),
-              txHash: log.transactionHash ?? "",
+              token: tokenAddr,
+              amount: String(value),
+              txHash,
               feeLocker: (log.args?.from ?? locker).toLowerCase(),
+              symbol: "WETH",
+              decimals: 18,
+              amountFormatted: (Number(value) / 1e18).toFixed(4),
             };
-            try {
-              const meta = await getTokenMeta(publicClient, payload.token);
-              if (meta) {
-                payload.symbol = meta.symbol;
-                payload.decimals = meta.decimals;
-                const divisor = 10 ** meta.decimals;
-                payload.amountFormatted = (Number(payload.amount) / divisor).toFixed(4);
-              }
-            } catch (_) {
-              /* ignore */
-            }
             emitter.emit("claim", payload);
           }
         },
@@ -127,7 +140,7 @@ async function start() {
       unwatchers.push(unwatch);
     }
     running = true;
-    console.log("[dopplerClaimWatcher] Started: listening for Transfer from", FEE_LOCKERS.length, "locker(s).");
+    console.log("[dopplerClaimWatcher] Started: WETH transfers only from", FEE_LOCKERS.length, "locker(s) (real fee claims).");
   } catch (err) {
     console.error("[dopplerClaimWatcher] Failed to start:", err?.message ?? err);
   }
