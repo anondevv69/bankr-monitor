@@ -1219,18 +1219,23 @@ client.once("ready", async () => {
     onFeeClaim(async (claim) => {
       const ch = await client.channels.fetch(CLAIM_FIREHOSE_CHANNEL_ID).catch(() => null);
       if (!ch) return;
-      const sym = claim.symbol ?? "?";
       const amt = claim.amountFormatted ?? claim.amount;
       const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
+      const claimer = claim.claimer || claim.beneficiary;
+      const poolLabel = claim.poolSymbol
+        ? `$${claim.poolSymbol} ${claim.poolToken ? `\`${claim.poolToken}\`` : ""}`.trim()
+        : claim.poolToken
+          ? `\`${claim.poolToken}\``
+          : null;
       const desc = [
-        `**Beneficiary** \`${claim.beneficiary}\``,
-        `**Token** ${sym} \`${claim.token}\``,
-        `**Amount** ${amt} ${sym}`,
+        `**Claimer** \`${claimer}\``,
+        poolLabel ? `**Token** ${poolLabel}` : null,
+        `**Fees** ${amt} WETH`,
         txUrl ? `**TX** [BaseScan](${txUrl})` : "",
       ].filter(Boolean).join("\n");
       await ch.send({
         embeds: [{
-          title: "💰 Doppler fee claim",
+          title: "💰 Bankr fee claim",
           description: desc,
           color: 0x00aa00,
           timestamp: new Date().toISOString(),
