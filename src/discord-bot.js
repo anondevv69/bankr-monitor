@@ -39,6 +39,9 @@ import {
   getClaimWatchTokens,
   addClaimWatchToken,
   removeClaimWatchToken,
+  getClaimTokenChannels,
+  addClaimTokenChannel,
+  removeClaimTokenChannel,
   getTenantStats,
 } from "./tenant-store.js";
 import {
@@ -56,7 +59,7 @@ import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
 import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
-import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims } from "./watchers/dopplerClaimWatcher.js";
+import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims, getTokenClaims } from "./watchers/dopplerClaimWatcher.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -391,6 +394,37 @@ async function registerCommands(appId) {
       .addStringOption((o) =>
         o.setName("wallet").setDescription("Wallet address (0x...)").setRequired(true)
       )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("claims-for-token")
+      .setDescription("List wallets that have claimed this token (historical RPC + optional BaseScan)")
+      .addStringOption((o) =>
+        o.setName("token").setDescription("Token address (0x...ba3) or Bankr launch URL").setRequired(true)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("claim-channel")
+      .setDescription("Send claim alerts for a specific token to a channel (filter firehose by token)")
+      .addSubcommand((s) =>
+        s
+          .setName("add")
+          .setDescription("When this token is claimed, post to the chosen channel")
+          .addStringOption((o) =>
+            o.setName("token").setDescription("Token contract address (0x...ba3)").setRequired(true)
+          )
+          .addChannelOption((o) =>
+            o.setName("channel").setDescription("Channel to post claim alerts").setRequired(true)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("remove")
+          .setDescription("Stop sending claim alerts for this token to a channel")
+          .addStringOption((o) =>
+            o.setName("token").setDescription("Token address (0x...) or label").setRequired(true)
+          )
+      )
+      .addSubcommand((s) => s.setName("list").setDescription("List token → channel mappings"))
       .toJSON(),
     ...(HIDE_DEPLOY_COMMAND ? [] : [
       new SlashCommandBuilder()
@@ -1185,10 +1219,32 @@ async function runClaimWatchCycle() {
   }
 }
 
-/** Telegram long-poll for /claims <wallet> command. Runs in background when TELEGRAM_BOT_TOKEN is set. */
+/** True when current time is in the claim quiet window (e.g. 8–9pm EST) to avoid pings and Alchemy load. */
+function isInClaimQuietWindow() {
+  const start = parseInt(process.env.CLAIM_QUIET_START_EST ?? "", 10);
+  const end = parseInt(process.env.CLAIM_QUIET_END_EST ?? "", 10);
+  if (Number.isNaN(start) || Number.isNaN(end)) return false;
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false });
+  const hour = parseInt(formatter.format(now), 10);
+  if (start <= end) return hour >= start && hour < end;
+  return hour >= start || hour < end;
+}
+
+/** Telegram long-poll for /claims <wallet> and /topicid. Runs in background when TELEGRAM_BOT_TOKEN is set. */
 function startTelegramClaimsPolling(token, allowedChatIds) {
   let offset = 0;
-  const regex = /^\/claims\s+(0x[a-fA-F0-9]{40})$/;
+  const claimsRegex = /^\/claims\s+(0x[a-fA-F0-9]{40})$/;
+  const topicIdRegex = /^\/(topicid|id)$/i;
+  async function sendTg(chatId, text, opts = {}) {
+    const body = { chat_id: chatId, text, ...opts };
+    if (opts.message_thread_id != null) body.message_thread_id = opts.message_thread_id;
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  }
   async function poll() {
     try {
       const res = await fetch(
@@ -1200,9 +1256,19 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
         offset = Math.max(offset, (u.update_id ?? 0) + 1);
         const text = u?.message?.text?.trim();
         const chatId = u?.message?.chat?.id;
+        const threadId = u?.message?.message_thread_id;
         if (!text || chatId == null) continue;
+        // /topicid or /id — always reply (ignore allowedChatIds) so you can discover chat + topic IDs
+        if (topicIdRegex.test(text)) {
+          const threadPart = threadId != null
+            ? `Topic ID: \`${threadId}\`\n\nFor claim alerts in this topic set:\nTELEGRAM_CLAIM_TOPIC_ID=${threadId}`
+            : "Topic ID: (General — no topic)\n\nGo into the topic you want and send /topicid there to get its ID.";
+          const msg = `Chat ID: \`${chatId}\`\n${threadPart}`;
+          await sendTg(chatId, msg, { message_thread_id: threadId ?? undefined, parse_mode: "Markdown" });
+          continue;
+        }
         if (allowedChatIds?.length && !allowedChatIds.includes(String(chatId))) continue;
-        const m = text.match(regex);
+        const m = text.match(claimsRegex);
         if (!m) continue;
         const wallet = m[1].toLowerCase();
         try {
@@ -1219,32 +1285,16 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
             });
             reply = `*Bankr claims for* \`${wallet}\` (${claims.length}):\n\n${lines.join("\n")}`;
           }
-          await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              chat_id: chatId,
-              text: reply,
-              parse_mode: "Markdown",
-              disable_web_page_preview: true,
-            }),
-          });
+          await sendTg(chatId, reply, { parse_mode: "Markdown", disable_web_page_preview: true, message_thread_id: threadId ?? undefined });
         } catch (e) {
-          await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              chat_id: chatId,
-              text: `Failed to fetch claims: ${e.message}`,
-            }),
-          }).catch(() => {});
+          await sendTg(chatId, `Failed to fetch claims: ${e.message}`, { message_thread_id: threadId ?? undefined });
         }
       }
     } catch (_) {}
     setTimeout(poll, 500);
   }
   poll();
-  console.log("Telegram /claims <wallet> command enabled");
+  console.log("Telegram /claims <wallet> and /topicid (or /id) enabled — use /topicid in a topic to get its ID for TELEGRAM_CLAIM_TOPIC_ID");
 }
 
 client.once("ready", async () => {
@@ -1299,6 +1349,8 @@ client.once("ready", async () => {
   // claim-watch is just "when this token gets claimed" — same event, filtered by server watch lists.
   await startDopplerClaimWatcher();
   onFeeClaim(async (claim) => {
+    if (isInClaimQuietWindow()) return; // skip all pings during quiet window (e.g. 8–9pm EST)
+
     const amt = claim.amountFormatted ?? claim.amount;
     const symbol = claim.poolSymbol ?? "Token";
     const tokenAddr = (claim.poolToken ?? "").toLowerCase();
@@ -1318,32 +1370,30 @@ client.once("ready", async () => {
       timestamp: new Date().toISOString(),
     };
 
-    // Firehose + token-specific Discord channels
     const channelIds = new Set();
     if (CLAIM_FIREHOSE_CHANNEL_ID) channelIds.add(CLAIM_FIREHOSE_CHANNEL_ID);
     const tokenChannelId = tokenAddr ? CLAIM_TOKEN_CHANNELS[tokenAddr] : null;
     if (tokenChannelId) channelIds.add(tokenChannelId);
+
+    const guildIds = await listActiveTenantGuildIds();
+    for (const guildId of guildIds) {
+      const tenant = await getTenant(guildId);
+      const map = tenant?.claimTokenChannels ?? {};
+      const chId = tokenAddr ? map[tokenAddr] : null;
+      if (chId) channelIds.add(chId);
+      // Claim-watch: server has this token on watch list → post to claim channel and update state
+      const watchList = (tenant?.claimWatchTokens ?? []).map((a) => a.toLowerCase());
+      if (watchList.includes(tokenAddr)) {
+        const claimCh = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId;
+        if (claimCh) channelIds.add(claimCh);
+        await setClaimState(guildId, tokenAddr, { lastClaimableToken: 0, lastClaimableWeth: 0, symbol }).catch(() => {});
+      }
+    }
     for (const cid of channelIds) {
       const ch = await client.channels.fetch(cid).catch(() => null);
       if (ch) await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim send:", e.message));
     }
 
-    // Claim-watch: servers watching this token get the same alert (only fee recipient can claim, so token = who)
-    const guildIds = await listActiveTenantGuildIds();
-    for (const guildId of guildIds) {
-      const tenant = await getTenant(guildId);
-      const watchList = (tenant?.claimWatchTokens ?? []).map((a) => a.toLowerCase());
-      if (!watchList.includes(tokenAddr)) continue;
-      const channelId = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId;
-      if (!channelId) continue;
-      const ch = await client.channels.fetch(channelId).catch(() => null);
-      if (ch) {
-        await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim-watch send:", e.message));
-        await setClaimState(guildId, tokenAddr, { lastClaimableToken: 0, lastClaimableWeth: 0, symbol }).catch(() => {});
-      }
-    }
-
-    // Telegram claim channel (optional)
     const tgClaimChat = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
     if (process.env.TELEGRAM_BOT_TOKEN && tgClaimChat) {
       await sendTelegramClaim(claim, {
@@ -1354,6 +1404,15 @@ client.once("ready", async () => {
   });
   if (CLAIM_FIREHOSE_CHANNEL_ID) console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
   if (Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) console.log(`Claim token channels: ${Object.keys(CLAIM_TOKEN_CHANNELS).length} token(s)`);
+  const tgClaimChatId = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+  const tgClaimTopic = process.env.TELEGRAM_CLAIM_TOPIC_ID;
+  if (process.env.TELEGRAM_BOT_TOKEN && tgClaimChatId) {
+    if (tgClaimTopic != null && String(tgClaimTopic).trim() !== "") {
+      console.log(`Telegram claim alerts → chat ${String(tgClaimChatId).slice(0, 12)}… topic ${tgClaimTopic}`);
+    } else {
+      console.log(`Telegram claim alerts → chat ${String(tgClaimChatId).slice(0, 12)}… topic: (not set — posts to General; set TELEGRAM_CLAIM_TOPIC_ID or send /topicid in the topic)`);
+    }
+  }
   // Telegram /claims <wallet> command (optional)
   const tgToken = process.env.TELEGRAM_BOT_TOKEN;
   const tgAllowedIds = process.env.TELEGRAM_ALLOWED_CHAT_IDS
@@ -1840,6 +1899,18 @@ client.on("interactionCreate", async (interaction) => {
           inline: false,
         },
         {
+          name: "🔎 /claims-for-token",
+          value:
+            "**List wallets that have claimed this token** (historical RPC getLogs). **token** — Address (0x…ba3) or Bankr URL. If RPC finds none, checks BaseScan for fee recipient claim txs.",
+          inline: false,
+        },
+        {
+          name: "📢 /claim-channel",
+          value:
+            "**Send claim alerts for a token to a specific channel.** **add** — Token (0x…ba3) + channel; when that token is claimed, post to that channel. **remove** / **list** — Manage mappings. Firehose filter by token.",
+          inline: false,
+        },
+        {
           name: "📌 Channels & paste",
           value:
             "**/setup** — **All launches** = firehose (every Bankr deploy). **Curated** = only launches that pass your rules (same X/FC on deployer + fee recipient, max deploys/day). **Watch** = only your **/watch** list. **Claim channel** = fee-claim alerts only (else uses watch/alert).\n" +
@@ -2125,6 +2196,7 @@ client.on("interactionCreate", async (interaction) => {
           `• **Claim alerts**: ${tenant.claimAlertChannelId ? `<#${tenant.claimAlertChannelId}>` : "—"} (or watch/alert)`,
           `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
           (tenant.claimWatchTokens?.length ?? 0) > 0 ? `• **Claim watch**: ${tenant.claimWatchTokens.length} token(s) — use **/claim-watch list**` : "• **Claim watch**: (none)",
+          (Object.keys(tenant.claimTokenChannels || {}).length > 0) ? `• **Claim channel** (token→channel): ${Object.keys(tenant.claimTokenChannels).length} — **/claim-channel list**` : "• **Claim channel** (token→channel): (none)",
           (tenant.hotLaunchRoleIds?.length ?? 0) > 0 ? `• **Ping roles**: ${tenant.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
           `• **Ping when:** hot ${tenant.pingOnHot !== false} · trending ${tenant.pingOnTrending !== false} · watch ${tenant.pingOnWatchMatch === true} · curated ${tenant.pingOnCurated === true}`,
           `• **Trending**: ${tenant.trendingAlertChannelId ? `<#${tenant.trendingAlertChannelId}>` : "—"} ${tenant.trendingEnabled ? "(on)" : "(off)"}`,
@@ -2338,6 +2410,49 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === "claims-for-token") {
+    const tokenInput = interaction.options.getString("token")?.trim();
+    const match = tokenInput?.match(/0x[a-fA-F0-9]{40}/i);
+    const addr = tokenInput && /^0x[a-fA-F0-9]{40}$/i.test(tokenInput)
+      ? tokenInput.toLowerCase()
+      : match ? match[0].toLowerCase() : null;
+    if (!addr || !addr.endsWith("ba3")) {
+      await interaction.reply({
+        content: "Invalid token. Use a Bankr token address (0x…ba3) or a Bankr launch URL.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      let claims = await getTokenClaims(addr);
+      if (claims.length === 0) {
+        const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
+        const out = await getTokenFees(addr, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+        const feeWallet = out.feeWallet;
+        if (feeWallet && process.env.CHAIN_ID === "8453") {
+          const { getClaimTxsFromBaseScan } = await import("./basescan-claims.js");
+          const { count, latestTxHash } = await getClaimTxsFromBaseScan(feeWallet, undefined, { limit: 50 });
+          if (count > 0 && latestTxHash) {
+            await interaction.editReply({
+              content: `No claims found via RPC for \`${addr}\`.\n**BaseScan:** Fee recipient has **${count}** claim tx(s). Latest: https://basescan.org/tx/${latestTxHash}`,
+            });
+            return;
+          }
+        }
+        await interaction.editReply({ content: `No claims found for \`${addr}\` (RPC getLogs). Fee recipient may not have claimed yet.` });
+        return;
+      }
+      const lines = claims.map((c) => `• \`${c.beneficiary}\` · ${c.wethAmount} WETH · [TX](https://basescan.org/tx/${c.txHash})`);
+      await interaction.editReply({
+        content: `**Claims for** \`${addr}\` (${claims.length}):\n\n${lines.join("\n")}\n\n[Bankr](https://bankr.bot/launches/${addr})`,
+      });
+    } catch (e) {
+      await interaction.editReply({ content: `Failed: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
   if (interaction.commandName === "claims-for-wallet") {
     const wallet = interaction.options.getString("wallet")?.trim();
     const addr = wallet && /^0x[a-fA-F0-9]{40}$/.test(wallet) ? wallet.toLowerCase() : null;
@@ -2363,6 +2478,72 @@ client.on("interactionCreate", async (interaction) => {
       });
     } catch (e) {
       await interaction.editReply({ content: `Failed to fetch claims: ${e.message}` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.commandName === "claim-channel") {
+    const guildId = interaction.guildId ?? null;
+    const tenant = guildId ? await getTenant(guildId) : null;
+    if (!guildId || !tenant) {
+      await interaction.reply({
+        content: "Run **/setup** first, then use **/claim-channel add** with a token address and channel.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (!canManageServer(interaction)) {
+      await interaction.reply({
+        content: "Only server admins (Manage Server) can add or remove claim-channel mappings.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const sub = interaction.options.getSubcommand();
+    try {
+      if (sub === "add") {
+        const token = interaction.options.getString("token")?.trim();
+        const channel = interaction.options.getChannel("channel");
+        const addr = token && /^0x[a-fA-F0-9]{40}$/.test(token) ? token.toLowerCase() : null;
+        if (!addr || !addr.endsWith("ba3")) {
+          await interaction.reply({ content: "Invalid token. Use a Bankr token address (0x...ba3).", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        if (!channel) {
+          await interaction.reply({ content: "Please choose a channel.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await addClaimTokenChannel(guildId, addr, channel.id);
+        await interaction.reply({
+          content: `When **\`${addr}\`** is claimed, alerts will post to ${channel}. Use **/claim-channel list** or **remove** to change.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      } else if (sub === "remove") {
+        const token = interaction.options.getString("token")?.trim();
+        const addr = token && /^0x[a-fA-F0-9]{40}$/.test(token) ? token.toLowerCase() : null;
+        const ok = addr ? await removeClaimTokenChannel(guildId, addr) : false;
+        await interaction.reply({
+          content: ok ? `Stopped sending claim alerts for \`${addr}\` to a channel.` : "Token not found. Use the exact address from **/claim-channel list**.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else if (sub === "list") {
+        const map = await getClaimTokenChannels(guildId);
+        const entries = Object.entries(map);
+        if (entries.length === 0) {
+          await interaction.reply({
+            content: "No token → channel mappings. Use **/claim-channel add** with a token (0x...ba3) and a channel.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        const lines = entries.map(([t, cid]) => `• \`${t}\` → <#${cid}>`);
+        await interaction.reply({
+          content: `**Claim-channel** (${entries.length}):\n\n${lines.join("\n")}\n\nUse **/claim-channel remove** with the token address to stop.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    } catch (e) {
+      await interaction.reply({ content: `Claim-channel failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return;
   }

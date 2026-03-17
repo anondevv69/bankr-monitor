@@ -358,4 +358,60 @@ async function getWalletClaims(wallet, fromBlock = 0) {
   return results;
 }
 
-export { start, stop, onFeeClaim, getWsUrl, getWalletClaims };
+/**
+ * Historical: which wallets have claimed this Bankr token? Uses RPC getLogs (WETH from fee lockers, then receipt has token).
+ * @param {string} tokenAddress - Bankr token (0x...ba3).
+ * @param {number | bigint} [fromBlock=0] - Start block.
+ * @param {number} [maxLogs=200] - Max WETH transfer logs to process (then stop to avoid rate limits).
+ * @returns {Promise<Array<{ beneficiary: string, wethAmount: string, txHash: string }>>}
+ */
+async function getTokenClaims(tokenAddress, fromBlock = 0, maxLogs = 200) {
+  const token = (tokenAddress ?? "").trim().toLowerCase();
+  if (!token || !/^0x[a-f0-9]{40}$/.test(token) || !token.endsWith(BANKR_TOKEN_SUFFIX)) return [];
+  if (CHAIN_ID !== 8453) return [];
+  const results = [];
+  try {
+    const [viem, chains] = await Promise.all([import("viem"), import("viem/chains")]);
+    const chain = chains.base?.id === CHAIN_ID ? chains.base : { id: CHAIN_ID, name: "Base", nativeCurrency: { decimals: 18, name: "Ether", symbol: "ETH" }, rpcUrls: { default: { http: [getRpcUrl()] } } };
+    const client = viem.createPublicClient({
+      chain,
+      transport: viem.http(getRpcUrl()),
+    });
+    const pad = (addr) => viem.zeroPadValue(addr, 32);
+    const wethLower = WETH_BASE.toLowerCase();
+    let totalProcessed = 0;
+    for (const locker of FEE_LOCKERS) {
+      if (totalProcessed >= maxLogs) break;
+      const logs = await client.getLogs({
+        address: wethLower,
+        fromBlock: BigInt(fromBlock),
+        toBlock: "latest",
+        topics: [TRANSFER_TOPIC, pad(locker)],
+      });
+      for (const log of logs) {
+        if (totalProcessed >= maxLogs) break;
+        totalProcessed++;
+        const value = log.data ? BigInt(log.data) : 0n;
+        if (value === 0n) continue;
+        const txHash = log.transactionHash ?? "";
+        const toTopic = log.topics?.[2];
+        const beneficiary = toTopic ? "0x" + String(toTopic).slice(-40).toLowerCase() : "";
+        if (!txHash || !beneficiary) continue;
+        try {
+          const receipt = await client.getTransactionReceipt({ hash: txHash });
+          if (!receipt?.logs?.length) continue;
+          const hasToken = receipt.logs.some((l) => (l.address ?? "").toLowerCase() === token);
+          if (!hasToken) continue;
+          results.push({
+            beneficiary,
+            wethAmount: (Number(value) / 1e18).toFixed(4),
+            txHash,
+          });
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return results;
+}
+
+export { start, stop, onFeeClaim, getWsUrl, getWalletClaims, getTokenClaims };

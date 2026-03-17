@@ -80,6 +80,8 @@ export async function getTenant(guildId) {
     claimWatchLabels: typeof t.claimWatchLabels === "object" && t.claimWatchLabels !== null ? t.claimWatchLabels : {},
     /** Optional channel for fee-claim alerts only; falls back to watch then alert channel. */
     claimAlertChannelId: t.claimAlertChannelId ?? null,
+    /** Optional: route claim alerts for specific tokens to a channel. { "0x...ba3": "channelId" } */
+    claimTokenChannels: typeof t.claimTokenChannels === "object" && t.claimTokenChannels !== null ? t.claimTokenChannels : {},
     dopplerIndexerUrl: t.dopplerIndexerUrl ?? null,
     rpcUrl: t.rpcUrl ?? null,
     createdAt: t.createdAt ?? null,
@@ -119,6 +121,9 @@ export async function setTenant(guildId, updates) {
   }
   if (updates.claimAlertChannelId !== undefined) {
     next.claimAlertChannelId = updates.claimAlertChannelId ?? null;
+  }
+  if (updates.claimTokenChannels !== undefined && typeof updates.claimTokenChannels === "object" && updates.claimTokenChannels !== null) {
+    next.claimTokenChannels = updates.claimTokenChannels;
   }
   if (Array.isArray(updates.hotLaunchRoleIds)) {
     next.hotLaunchRoleIds = updates.hotLaunchRoleIds;
@@ -318,5 +323,35 @@ export async function removeClaimWatchToken(guildId, tokenAddressOrLabel) {
   const nextLabels = { ...labels };
   delete nextLabels[addr];
   await setTenant(guildId, { claimWatchTokens: next, claimWatchLabels: nextLabels });
+  return true;
+}
+
+/** Get per-server token → channel mapping for claim alerts (token address → Discord channel ID). */
+export async function getClaimTokenChannels(guildId) {
+  const tenant = await getTenant(guildId);
+  const map = tenant?.claimTokenChannels;
+  return typeof map === "object" && map !== null ? map : {};
+}
+
+/** Map a token to a Discord channel for claim alerts. When this token is claimed, post to that channel. */
+export async function addClaimTokenChannel(guildId, tokenAddress, channelId) {
+  const addr = parseTokenAddress(tokenAddress);
+  if (!addr || !guildId || typeof guildId !== "string" || !channelId || typeof channelId !== "string") return false;
+  const tenant = await getTenant(guildId);
+  const next = { ...(tenant?.claimTokenChannels || {}), [addr]: String(channelId).trim() };
+  await setTenant(guildId, { claimTokenChannels: next });
+  return true;
+}
+
+/** Remove a token from the server's claim-channel mapping. */
+export async function removeClaimTokenChannel(guildId, tokenAddress) {
+  const addr = parseTokenAddress(tokenAddress);
+  if (!addr || !guildId || typeof guildId !== "string") return false;
+  const tenant = await getTenant(guildId);
+  const map = tenant?.claimTokenChannels || {};
+  if (!(addr in map)) return false;
+  const next = { ...map };
+  delete next[addr];
+  await setTenant(guildId, { claimTokenChannels: next });
   return true;
 }
