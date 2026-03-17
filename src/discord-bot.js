@@ -1295,47 +1295,65 @@ client.once("ready", async () => {
     debugLogError(e, "runNotify");
   });
 
-  // Real-time Doppler fee-claim firehose (Alchemy WebSocket)
+  // Real-time Doppler fee-claim firehose (Alchemy WebSocket). Every claim carries the token address;
+  // claim-watch is just "when this token gets claimed" — same event, filtered by server watch lists.
   await startDopplerClaimWatcher();
-  if (CLAIM_FIREHOSE_CHANNEL_ID || Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) {
-    onFeeClaim(async (claim) => {
-      const amt = claim.amountFormatted ?? claim.amount;
-      const symbol = claim.poolSymbol ?? "Token";
-      const tokenAddr = (claim.poolToken ?? "").toLowerCase();
-      const bankrUrl = tokenAddr ? `https://bankr.bot/launches/${claim.poolToken}` : null;
-      const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
-      const desc = [
-        bankrUrl ? `**Token page:** [Bankr](${bankrUrl})` : null,
-        `**Fees:** ${amt} WETH`,
-        txUrl ? `**TX:** [BaseScan](${txUrl})` : null,
-      ].filter(Boolean).join("\n");
-      const embed = {
-        title: `💰 $${symbol} claimed`,
-        description: desc,
-        url: bankrUrl || undefined,
-        color: 0x00aa00,
-        timestamp: new Date().toISOString(),
-      };
-      const channelIds = new Set();
-      if (CLAIM_FIREHOSE_CHANNEL_ID) channelIds.add(CLAIM_FIREHOSE_CHANNEL_ID);
-      const tokenChannelId = tokenAddr ? CLAIM_TOKEN_CHANNELS[tokenAddr] : null;
-      if (tokenChannelId) channelIds.add(tokenChannelId);
-      for (const cid of channelIds) {
-        const ch = await client.channels.fetch(cid).catch(() => null);
-        if (ch) await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim send:", e.message));
+  onFeeClaim(async (claim) => {
+    const amt = claim.amountFormatted ?? claim.amount;
+    const symbol = claim.poolSymbol ?? "Token";
+    const tokenAddr = (claim.poolToken ?? "").toLowerCase();
+    const tokenCa = claim.poolToken ?? ""; // full CA for copy/search
+    const bankrUrl = tokenAddr ? `https://bankr.bot/launches/${tokenCa}` : null;
+    const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
+    const desc = [
+      tokenCa ? `**Token CA:** \`${tokenCa}\`` : null,
+      `**Fees:** ${amt} WETH`,
+      txUrl ? `**TX:** [BaseScan](${txUrl})` : null,
+    ].filter(Boolean).join("\n");
+    const embed = {
+      title: `💰 $${symbol} claimed`,
+      description: desc,
+      url: bankrUrl || undefined, // title clicks through to Bankr launch page
+      color: 0x00aa00,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Firehose + token-specific Discord channels
+    const channelIds = new Set();
+    if (CLAIM_FIREHOSE_CHANNEL_ID) channelIds.add(CLAIM_FIREHOSE_CHANNEL_ID);
+    const tokenChannelId = tokenAddr ? CLAIM_TOKEN_CHANNELS[tokenAddr] : null;
+    if (tokenChannelId) channelIds.add(tokenChannelId);
+    for (const cid of channelIds) {
+      const ch = await client.channels.fetch(cid).catch(() => null);
+      if (ch) await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim send:", e.message));
+    }
+
+    // Claim-watch: servers watching this token get the same alert (only fee recipient can claim, so token = who)
+    const guildIds = await listActiveTenantGuildIds();
+    for (const guildId of guildIds) {
+      const tenant = await getTenant(guildId);
+      const watchList = (tenant?.claimWatchTokens ?? []).map((a) => a.toLowerCase());
+      if (!watchList.includes(tokenAddr)) continue;
+      const channelId = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId;
+      if (!channelId) continue;
+      const ch = await client.channels.fetch(channelId).catch(() => null);
+      if (ch) {
+        await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim-watch send:", e.message));
+        await setClaimState(guildId, tokenAddr, { lastClaimableToken: 0, lastClaimableWeth: 0, symbol }).catch(() => {});
       }
-      // Telegram claim channel (optional): same format as Discord — token name + claimed, Bankr link, WETH
-      const tgClaimChat = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
-      if (process.env.TELEGRAM_BOT_TOKEN && tgClaimChat) {
-        await sendTelegramClaim(claim, {
-          chatId: tgClaimChat,
-          messageThreadId: process.env.TELEGRAM_CLAIM_TOPIC_ID,
-        }).catch((e) => console.error("Telegram claim send:", e.message));
-      }
-    });
-    if (CLAIM_FIREHOSE_CHANNEL_ID) console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
-    if (Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) console.log(`Claim token channels: ${Object.keys(CLAIM_TOKEN_CHANNELS).length} token(s)`);
-  }
+    }
+
+    // Telegram claim channel (optional)
+    const tgClaimChat = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+    if (process.env.TELEGRAM_BOT_TOKEN && tgClaimChat) {
+      await sendTelegramClaim(claim, {
+        chatId: tgClaimChat,
+        messageThreadId: process.env.TELEGRAM_CLAIM_TOPIC_ID,
+      }).catch((e) => console.error("Telegram claim send:", e.message));
+    }
+  });
+  if (CLAIM_FIREHOSE_CHANNEL_ID) console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
+  if (Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) console.log(`Claim token channels: ${Object.keys(CLAIM_TOKEN_CHANNELS).length} token(s)`);
   // Telegram /claims <wallet> command (optional)
   const tgToken = process.env.TELEGRAM_BOT_TOKEN;
   const tgAllowedIds = process.env.TELEGRAM_ALLOWED_CHAT_IDS

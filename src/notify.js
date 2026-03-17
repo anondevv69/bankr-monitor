@@ -794,13 +794,15 @@ export async function sendTelegramClaim(claim, options = {}) {
   const chatId = options.chatId ?? process.env.TELEGRAM_CLAIM_CHAT_ID ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId ?? process.env.TELEGRAM_CLAIM_TOPIC_ID);
-  const symbol = escapeMarkdown((claim.poolSymbol ?? "Token").trim());
+  const symbol = (claim.poolSymbol ?? "Token").trim();
   const tokenAddr = (claim.poolToken ?? "").trim();
   const amt = claim.amountFormatted ?? claim.amount ?? "0";
   const bankrUrl = tokenAddr ? bankrLaunchUrl(tokenAddr) : null;
   const txUrl = claim.txHash ? `${BASESCAN}/tx/${claim.txHash}` : null;
-  let text = `💰 *$${symbol} claimed*\n\n`;
-  if (bankrUrl) text += `Token page: [Bankr](${bankrUrl})\n`;
+  // Token name links to Bankr; Token CA full address for search/copy
+  const titleLink = bankrUrl ? `[$${escapeMarkdown(symbol)}](${bankrUrl})` : `*$${escapeMarkdown(symbol)}*`;
+  let text = `💰 ${titleLink} claimed\n\n`;
+  if (tokenAddr) text += `Token CA: \`${tokenAddr}\`\n`;
   text += `Fees: ${amt} WETH\n`;
   if (txUrl) text += `TX: [BaseScan](${txUrl})`;
   const payload = { chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true };
