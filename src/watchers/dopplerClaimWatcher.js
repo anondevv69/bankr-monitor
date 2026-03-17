@@ -360,12 +360,14 @@ async function getWalletClaims(wallet, fromBlock = 0) {
 
 /**
  * Historical: which wallets have claimed this Bankr token? Uses RPC getLogs (WETH from fee lockers, then receipt has token).
+ * Queries recent blocks first (last BLOCK_CHUNK) so we don't hit RPC log limits from block 0.
  * @param {string} tokenAddress - Bankr token (0x...ba3).
- * @param {number | bigint} [fromBlock=0] - Start block.
- * @param {number} [maxLogs=200] - Max WETH transfer logs to process (then stop to avoid rate limits).
+ * @param {number | bigint} [fromBlock] - Start block (optional; default = latest - BLOCK_CHUNK).
+ * @param {number} [maxLogs=300] - Max WETH transfer logs to process (then stop to avoid rate limits).
  * @returns {Promise<Array<{ beneficiary: string, wethAmount: string, txHash: string }>>}
  */
-async function getTokenClaims(tokenAddress, fromBlock = 0, maxLogs = 200) {
+const BLOCK_CHUNK = 150_000;
+async function getTokenClaims(tokenAddress, fromBlock, maxLogs = 300) {
   const token = (tokenAddress ?? "").trim().toLowerCase();
   if (!token || !/^0x[a-f0-9]{40}$/.test(token) || !token.endsWith(BANKR_TOKEN_SUFFIX)) return [];
   if (CHAIN_ID !== 8453) return [];
@@ -377,6 +379,9 @@ async function getTokenClaims(tokenAddress, fromBlock = 0, maxLogs = 200) {
       chain,
       transport: viem.http(getRpcUrl()),
     });
+    const blockNumber = await client.getBlockNumber();
+    const toBlock = blockNumber;
+    const from = fromBlock != null ? BigInt(fromBlock) : (blockNumber > BLOCK_CHUNK ? blockNumber - BigInt(BLOCK_CHUNK) : 0n);
     const pad = (addr) => viem.zeroPadValue(addr, 32);
     const wethLower = WETH_BASE.toLowerCase();
     let totalProcessed = 0;
@@ -384,8 +389,8 @@ async function getTokenClaims(tokenAddress, fromBlock = 0, maxLogs = 200) {
       if (totalProcessed >= maxLogs) break;
       const logs = await client.getLogs({
         address: wethLower,
-        fromBlock: BigInt(fromBlock),
-        toBlock: "latest",
+        fromBlock: from,
+        toBlock,
         topics: [TRANSFER_TOPIC, pad(locker)],
       });
       for (const log of logs) {

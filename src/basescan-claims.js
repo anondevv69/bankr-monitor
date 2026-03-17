@@ -61,8 +61,8 @@ export async function getClaimTxsFromBaseScan(wallet, feeLockers = FEE_LOCKER_AD
   const limit = Math.min(1000, Math.max(1, opts.limit ?? 100));
   const lockers = (feeLockers || FEE_LOCKER_ADDRESSES).map((a) => String(a).toLowerCase());
   const set = new Set(lockers);
-  const txs = await fetchAccountTxList(wallet, { offset: limit });
-  const claimTxs = txs.filter((tx) => tx.to && set.has(String(tx.to).toLowerCase()));
+  const txs = await fetchAccountTxList(wallet, { offset: 0 });
+  const claimTxs = txs.filter((tx) => tx.to && set.has(String(tx.to).toLowerCase())).slice(0, limit);
   const latest = claimTxs[0] ?? null;
   return {
     count: claimTxs.length,
