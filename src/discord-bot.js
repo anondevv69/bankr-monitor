@@ -787,8 +787,11 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         (TRENDING_MIN_BUYS_5M > 0 && buys5m >= TRENDING_MIN_BUYS_5M) ||
         (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H);
       if (!isHot && !isTrending) return;
-      const launchForEmbed =
-        (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
+      const fetched = (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
+      const launchForEmbed = {
+        ...fetched,
+        deployCount: launch.deployCount ?? fetched.deployCount,
+      };
       const deployedMs =
         launchForEmbed.deployedAtMsFromBankr ??
         stats.deployedAtMs ??

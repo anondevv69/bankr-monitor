@@ -27,7 +27,7 @@ import { getWatchList } from "./watch-store.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchNewLaunches } from "./fetch-from-chain.js";
-import { formatUsd } from "./token-stats.js";
+import { formatUsd, getHotTokenStats } from "./token-stats.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -783,11 +783,29 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     line = parts.join(" · ");
     title = "🔔 *HOT TOKEN*";
   }
+  const fresh = await getHotTokenStats(launch.tokenAddress).catch(() => null);
+  const bankrMs =
+    launch.deployedAtMsFromBankr != null && Number.isFinite(launch.deployedAtMsFromBankr)
+      ? launch.deployedAtMsFromBankr
+      : null;
+  const deployedMs =
+    bankrMs ??
+    fresh?.deployedAtMs ??
+    (stats.deployedAtMs != null && Number.isFinite(stats.deployedAtMs) ? stats.deployedAtMs : null);
+  const mcStr =
+    stats.marketCapFormatted ||
+    (fresh?.marketCap != null && Number.isFinite(fresh.marketCap) ? formatUsd(fresh.marketCap) : null);
+
   const body = formatLaunchBodyForTelegram(launch, { skipToken: true });
   const tokenLink = `[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})`;
   const extras = [];
-  if (stats.marketCapFormatted) extras.push(`💰 MC: ${escapeMarkdown(stats.marketCapFormatted)}`);
-  if (stats.deployedTelegram) extras.push(`🕐 Deployed: ${escapeMarkdown(stats.deployedTelegram)}`);
+  if (mcStr) extras.push(`💰 MC: ${escapeMarkdown(mcStr)}`);
+  if (deployedMs != null) {
+    extras.push(`🕐 Deployed: \`${new Date(deployedMs).toISOString()}\``);
+  }
+  if (launch.deployCount != null && launch.deployCount > 1) {
+    extras.push(`📊 Deploys in feed: ${launch.deployCount}`);
+  }
   const extraBlock = extras.length ? `${extras.join("\n")}\n\n` : "";
   const text = `${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
