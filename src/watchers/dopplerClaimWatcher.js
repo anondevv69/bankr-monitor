@@ -16,8 +16,15 @@ const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 
 /** WETH on Base. Only transfers of this token from the fee locker are real fee claims (collectFees); others are pool init. */
 const WETH_BASE = "0x4200000000000000000000000000000000000006";
-/** Minimum WETH amount to count as a claim; filters dust, AA bundler artifacts, rounding. 0.0001 WETH. */
-const MIN_WETH_CLAIM = 100000000000000n;
+/** Minimum WETH to emit a claim alert (default 0.01). Claims below this are ignored. Override: CLAIM_MIN_WETH=0.01 */
+const MIN_WETH_CLAIM = (() => {
+  const raw = process.env.CLAIM_MIN_WETH;
+  if (raw != null && String(raw).trim() !== "") {
+    const n = parseFloat(String(raw).trim());
+    if (!Number.isNaN(n) && n >= 0) return BigInt(Math.round(n * 1e18));
+  }
+  return 10n ** 16n; // 0.01 WETH
+})();
 
 /** ERC-4337 EntryPoint (v0.6) on Base; handleOps(tuple[], beneficiary) — use ops[0].sender as claimer when tx goes through AA. */
 const ENTRYPOINT_V06 = "0x0000000071727De22E5E9d8BAf0edAc6f37da032".toLowerCase();
@@ -274,7 +281,14 @@ async function start() {
       unwatchers.push(unwatch);
     }
     running = true;
-    console.log("[dopplerClaimWatcher] Started: WETH transfers only from", FEE_LOCKERS.length, "locker(s) (real fee claims).");
+    const minEth = Number(MIN_WETH_CLAIM) / 1e18;
+    console.log(
+      "[dopplerClaimWatcher] Started: WETH from",
+      FEE_LOCKERS.length,
+      "locker(s); min alert",
+      minEth,
+      "WETH"
+    );
   } catch (err) {
     console.error("[dopplerClaimWatcher] Failed to start:", err?.message ?? err);
   }

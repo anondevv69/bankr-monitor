@@ -52,6 +52,7 @@ import {
   sendTelegramHotPing,
   sendTelegramClaim,
   fetchLaunchByTokenAddress,
+  buildGmgnBbTradeMarkdown,
 } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
@@ -786,6 +787,17 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         (TRENDING_MIN_BUYS_5M > 0 && buys5m >= TRENDING_MIN_BUYS_5M) ||
         (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H);
       if (!isHot && !isTrending) return;
+      const launchForEmbed =
+        (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
+      const deployedMs =
+        launchForEmbed.deployedAtMsFromBankr ??
+        stats.deployedAtMs ??
+        null;
+      const mcFormatted = stats.marketCap != null ? formatUsd(stats.marketCap) : null;
+      const deployedTelegram =
+        deployedMs != null && Number.isFinite(deployedMs)
+          ? new Date(deployedMs).toUTCString().replace(" GMT", " UTC")
+          : null;
       const hotStats = {
         hotByBuys,
         hotByHolders,
@@ -794,11 +806,33 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         isTrending,
         buys5m,
         buys1h,
+        marketCapFormatted: mcFormatted || null,
+        deployedTelegram: deployedTelegram || null,
       };
-      const launchForEmbed =
-        (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
       const embedHot = buildLaunchEmbed(launchForEmbed);
       const embedTrending = buildLaunchEmbed(launchForEmbed);
+      const tradeFieldIdx = embedHot.fields.findIndex((f) => f.name === "\u200b");
+      const insertIdx = tradeFieldIdx >= 0 ? tradeFieldIdx : embedHot.fields.length;
+      const hotExtraFields = [];
+      if (mcFormatted) hotExtraFields.push({ name: "Market cap", value: mcFormatted, inline: true });
+      const embedAlreadyHasDeployed = embedHot.fields.some((f) => f.name === "Deployed");
+      if (
+        !embedAlreadyHasDeployed &&
+        deployedMs != null &&
+        Number.isFinite(deployedMs)
+      ) {
+        const sec = Math.floor(deployedMs / 1000);
+        hotExtraFields.push({
+          name: "Deployed",
+          value: `<t:${sec}:F> · <t:${sec}:R>`,
+          inline: true,
+        });
+      }
+      if (hotExtraFields.length) {
+        embedHot.fields.splice(insertIdx, 0, ...hotExtraFields);
+        const tIdx = embedTrending.fields.findIndex((f) => f.name === "\u200b");
+        embedTrending.fields.splice(tIdx >= 0 ? tIdx : embedTrending.fields.length, 0, ...hotExtraFields);
+      }
       embedHot.color = 0xff6600;
       embedTrending.color = 0x5865f2;
       if (hotByBuys && hotByHolders) {
@@ -1335,11 +1369,32 @@ client.once("ready", async () => {
     const tokenCa = claim.poolToken ?? ""; // full CA for copy/search
     const bankrUrl = tokenAddr ? `https://bankr.bot/launches/${tokenCa}` : null;
     const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
+    const tradeMd =
+      tokenCa && /^0x[a-fA-F0-9]{40}$/.test(tokenCa.trim())
+        ? `**Trade:** ${buildGmgnBbTradeMarkdown(tokenCa.trim().toLowerCase())}`
+        : null;
     const desc = [
       tokenCa ? `**Token CA:** \`${tokenCa}\`` : null,
+      tradeMd,
       `**Fees:** ${amt} WETH`,
       txUrl ? `**TX:** [BaseScan](${txUrl})` : null,
     ].filter(Boolean).join("\n");
+    const claimTradeRow =
+      tokenCa && /^0x[a-fA-F0-9]{40}$/.test(tokenCa.trim())
+        ? (() => {
+            const a = tokenCa.trim().toLowerCase();
+            return new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setLabel("GMGN")
+                .setStyle(ButtonStyle.Link)
+                .setURL(`https://t.me/GMGN_swap_bot?start=i_infobot_c_${a}`),
+              new ButtonBuilder()
+                .setLabel("BB")
+                .setStyle(ButtonStyle.Link)
+                .setURL(`https://t.me/based_eth_bot?start=r_infobot_b_${a}`)
+            );
+          })()
+        : null;
     const embed = {
       title: `💰 $${symbol} claimed`,
       description: desc,
@@ -1369,7 +1424,10 @@ client.once("ready", async () => {
     }
     for (const cid of channelIds) {
       const ch = await client.channels.fetch(cid).catch(() => null);
-      if (ch) await ch.send({ embeds: [embed] }).catch((e) => console.error("Claim send:", e.message));
+      if (ch) {
+        const payload = { embeds: [embed], ...(claimTradeRow ? { components: [claimTradeRow] } : {}) };
+        await ch.send(payload).catch((e) => console.error("Claim send:", e.message));
+      }
     }
 
     const tgClaimChat = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;

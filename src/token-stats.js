@@ -52,6 +52,8 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
       return bLiq > aLiq ? b : a;
     }, basePairs[0]);
     const marketCap = best.fdv ?? best.liquidity?.usd ?? null;
+    const pairCreatedAt =
+      best.pairCreatedAt != null ? Number(best.pairCreatedAt) : null;
     const txns = best.txns ?? best.transactions;
     const h24 = txns?.h24;
     const buys = h24?.buys ?? 0;
@@ -62,6 +64,9 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
       marketCap: marketCap != null ? Number(marketCap) : null,
       trades24h: { buys: Number(buys), sells: Number(sells) },
     };
+    if (Number.isFinite(pairCreatedAt) && pairCreatedAt > 0) {
+      result.pairCreatedAt = pairCreatedAt;
+    }
     if (m5 && typeof m5.buys === "number") result.buys5m = m5.buys;
     if (h1 && typeof h1.buys === "number") result.buys1h = h1.buys;
     return result;
@@ -72,7 +77,8 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
 
 /**
  * Fetch stats used for "hot launch" alerts: buys in last 5m/1h and holder count.
- * @returns {{ buys5m: number, buys1h: number, holderCount: number|null } | null}
+ * Deploy time (Bankr API still preferred in bot): Doppler token.pool.createdAt → firstSeenAt → Dex pairCreatedAt.
+ * @returns {{ buys5m: number, buys1h: number, holderCount: number|null, marketCap: number|null, deployedAtMs: number|null } | null}
  */
 export async function getHotTokenStats(tokenAddress) {
   const addr = normalizeAddress(tokenAddress);
@@ -85,7 +91,22 @@ export async function getHotTokenStats(tokenAddress) {
     const buys5m = dex?.buys5m ?? dex?.trades24h?.buys ?? 0;
     const buys1h = dex?.buys1h ?? dex?.trades24h?.buys ?? 0;
     const holderCount = doppler?.holderCount != null ? Number(doppler.holderCount) : null;
-    return { buys5m: Number(buys5m), buys1h: Number(buys1h), holderCount };
+    const marketCap = dex?.marketCap != null && Number.isFinite(dex.marketCap) ? dex.marketCap : null;
+    const poolCreatedMs = ponderTimestampToMs(doppler?.pool?.createdAt);
+    const firstSeenMs = ponderTimestampToMs(doppler?.firstSeenAt);
+    let deployedAtMs = null;
+    if (poolCreatedMs != null) deployedAtMs = poolCreatedMs;
+    else if (firstSeenMs != null) deployedAtMs = firstSeenMs;
+    else if (dex?.pairCreatedAt != null && Number.isFinite(dex.pairCreatedAt) && dex.pairCreatedAt > 0) {
+      deployedAtMs = dex.pairCreatedAt;
+    }
+    return {
+      buys5m: Number(buys5m),
+      buys1h: Number(buys1h),
+      holderCount,
+      marketCap,
+      deployedAtMs,
+    };
   } catch {
     return null;
   }
@@ -96,6 +117,24 @@ function normalizeAddress(addr) {
   const s = addr.trim();
   if (!/^0x[a-fA-F0-9]{40}$/.test(s)) return null;
   return s.toLowerCase();
+}
+
+/** Normalize Ponder/indexer timestamps (unix seconds, ms, BigInt string, or ISO). */
+function ponderTimestampToMs(v) {
+  if (v == null) return null;
+  if (typeof v === "bigint") {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : null;
+  }
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    return v < 1e12 ? v * 1000 : v;
+  }
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) {
+    const n = Number(v.trim());
+    return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : null;
+  }
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) && t > 0 ? t : null;
 }
 
 async function fetchBankrLaunch(tokenAddress, apiKey = BANKR_API_KEY) {
@@ -147,7 +186,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
     query Token($id: String!) {
       token(id: $id) {
         address name symbol volumeUsd holderCount firstSeenAt
-        pool { address }
+        pool { address createdAt }
       }
     }
   `;
@@ -172,7 +211,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
   // 2) GraphQL list with filter (Ponder/Doppler: tokens where address + chainId)
   // Inline values: some indexers don't support variables inside where
   const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address } } } }`;
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address createdAt } } } }`;
   try {
     const res = await fetch(`${base}/graphql`, {
       method: "POST",
@@ -207,6 +246,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
         symbol: match.symbol,
         volumeUsd: match.volumeUsd ?? match.volume,
         holderCount: match.holderCount,
+        firstSeenAt: match.firstSeenAt ?? match.first_seen_at ?? null,
         pool: match.pool,
       };
     }

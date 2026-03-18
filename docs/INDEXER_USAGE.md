@@ -23,7 +23,14 @@ Used by `/fees-token`, paste detection, and token embeds.
 
 ### fetchDopplerTokenVolume(tokenAddress)
 
-Gets one token’s `volumeUsd`, `holderCount`, `pool`, etc.
+Gets one token’s `volumeUsd`, `holderCount`, `pool`, `firstSeenAt`, etc.
+
+**Time fields (Doppler / Bankr indexer):**
+
+- **`token.pool.createdAt`** — pool creation (Unix seconds, often a string in JSON). Best proxy for “when the token went live” on the curve.
+- **`token.firstSeenAt`** — when the indexer first saw the token. Fallback if `pool` is missing or has no `createdAt`.
+
+Hot/trending deploy time uses Bankr API first (if present), then `pool.createdAt`, then `firstSeenAt`, then DexScreener pair age.
 
 - **GraphQL by id:** `token(id: $id)` with ids `"8453-0x..."`, `"0x..."`, `"base-0x..."`.
 - **GraphQL list:** `tokens(where: { chainId, address }, limit: 1) { items { ... } }`.

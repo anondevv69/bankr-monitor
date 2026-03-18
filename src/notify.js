@@ -27,6 +27,7 @@ import { getWatchList } from "./watch-store.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchNewLaunches } from "./fetch-from-chain.js";
+import { formatUsd } from "./token-stats.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -143,10 +144,25 @@ function formatBankrLaunch(l) {
   const launcherWallet = walletAddr(l.deployer) ?? walletAddr(l.deployerWallet ?? l.deployerWalletAddress);
   const feeWallet = walletAddr(l.feeRecipient) ?? walletAddr(l.feeRecipientWallet ?? l.feeRecipientWalletAddress ?? l.feeRecipientAddress);
   const tokenAddress = pickTokenAddress(l) ?? (l.tokenAddress ? String(l.tokenAddress).trim().toLowerCase() : null);
+  const deployRaw =
+    l.deployedAt ??
+    l.createdAt ??
+    l.completedAt ??
+    l.deployed_at ??
+    l.created_at ??
+    l.completed_at ??
+    l.timestamp ??
+    l.blockTimestamp;
+  let deployedAtMsFromBankr = null;
+  if (deployRaw != null) {
+    const ms = new Date(deployRaw).getTime();
+    if (Number.isFinite(ms)) deployedAtMsFromBankr = ms;
+  }
   return {
     name: l.tokenName,
     symbol: l.tokenSymbol,
     tokenAddress,
+    deployedAtMsFromBankr,
     launcher: launcherWallet,
     launcherX: rawDeployerX,
     launcherFarcaster: rawDeployerFc,
@@ -450,6 +466,15 @@ function bankrLaunchUrl(tokenAddress) {
 
 const GMGN_REFERRAL = "infobot";
 
+/** GMGN + BB only (Markdown), for claim alerts. */
+export function buildGmgnBbTradeMarkdown(tokenAddress) {
+  const addr = (tokenAddress || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
+  const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
+  const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  return `[GMGN](${gmgnUrl}) • [BB](${bbUrl})`;
+}
+
 /** Trade links for a Base token (GMGN Telegram, BB, FCW). Used in token detail embed. GMGN uses referral i_infobot. */
 function buildTradeLinks(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
@@ -579,6 +604,14 @@ export function buildLaunchEmbed(launch) {
 
   if (launch.deployCount != null && launch.deployCount > 1) {
     fields.push({ name: "Deploys (in feed)", value: `${launch.deployCount}`, inline: true });
+  }
+  if (launch.deployedAtMsFromBankr != null && Number.isFinite(launch.deployedAtMsFromBankr)) {
+    const sec = Math.floor(launch.deployedAtMsFromBankr / 1000);
+    fields.push({
+      name: "Deployed",
+      value: `<t:${sec}:F> · <t:${sec}:R>`,
+      inline: true,
+    });
   }
   if (launch.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch.website) fields.push({ name: "Website", value: launch.website, inline: true });
@@ -752,7 +785,11 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   }
   const body = formatLaunchBodyForTelegram(launch, { skipToken: true });
   const tokenLink = `[${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})](${launchUrl})`;
-  const text = `${title}\n\n${tokenLink}\n\n${body}\n${line}`;
+  const extras = [];
+  if (stats.marketCapFormatted) extras.push(`💰 MC: ${escapeMarkdown(stats.marketCapFormatted)}`);
+  if (stats.deployedTelegram) extras.push(`🕐 Deployed: ${escapeMarkdown(stats.deployedTelegram)}`);
+  const extraBlock = extras.length ? `${extras.join("\n")}\n\n` : "";
+  const text = `${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payload = {
     chat_id: chatId,
@@ -805,7 +842,14 @@ export async function sendTelegramClaim(claim, options = {}) {
   if (tokenAddr) text += `Token CA: \`${tokenAddr}\`\n`;
   text += `Fees: ${amt} WETH\n`;
   if (txUrl) text += `TX: [BaseScan](${txUrl})`;
-  const payload = { chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true };
+  const replyMarkup = tokenAddr ? telegramTradeKeyboard(tokenAddr) : null;
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  };
   if (messageThreadId != null) payload.message_thread_id = messageThreadId;
   try {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
