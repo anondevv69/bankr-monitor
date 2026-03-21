@@ -570,10 +570,32 @@ function formatDeployerOrFeeForEmbed(obj) {
 }
 
 /**
+ * @typedef {{
+ *   vol24h: number, vol1h: number, buyTx24h: number, sellTx24h: number,
+ *   buys1h: number, sells1h: number, trades24h: number, traders24h: number,
+ *   mcapUsd: number, lpUsd: number, priceChange24hPct: number,
+ *   change1hPct: number, change2hPct: number, change4hPct: number,
+ *   trendScore: number, trendLabel: string, buySellRatio24h: number, price: number,
+ * }} IndexerTradingSnapshot
+ */
+
+function formatTrendPctLine(n) {
+  if (!Number.isFinite(n)) return "—";
+  const icon = n >= 0 ? "🚀" : "📉";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%${icon}`;
+}
+
+/**
  * Build rich embed for a single Bankr token (paste address, etc.).
  * @param {object} out - getTokenFees result
  * @param {string} tokenAddress
- * @param {{ deployerFeedCount?: number|null, feeRecipientFeedCount?: number|null, bankrDeployCount?: number|null, bankrFeeRecipientCount?: number|null }} [options]
+ * @param {{
+ *   deployerFeedCount?: number|null,
+ *   feeRecipientFeedCount?: number|null,
+ *   bankrDeployCount?: number|null,
+ *   bankrFeeRecipientCount?: number|null,
+ *   indexerSnapshot?: IndexerTradingSnapshot | null,
+ * }} [options]
  */
 export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const launchUrl = bankrLaunchUrl(tokenAddress);
@@ -594,13 +616,25 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
     const mc = out.formatUsd(out.dexMetrics.marketCap);
     if (mc) tokenLines.push(`**Market Cap:** ${mc}`);
   }
+  const idx = options.indexerSnapshot;
   if (out.volumeUsd != null && out.formatUsd) {
     const vol = out.formatUsd(out.volumeUsd);
     if (vol) tokenLines.push(`**Volume:** ${vol}`);
   }
+  if (idx?.vol24h > 0 && out.formatUsd) {
+    const iv = out.formatUsd(idx.vol24h);
+    const dexZ = out.volumeUsd == null || !(Number(out.volumeUsd) > 0);
+    if (iv && dexZ) {
+      const v1 = idx.vol1h > 0 ? ` · 1h: ${out.formatUsd(idx.vol1h)}` : "";
+      tokenLines.push(`**Volume (Doppler):** ${iv}${v1}`);
+    }
+  }
   const trades = out.dexMetrics?.trades24h;
-  if (trades && (trades.buys > 0 || trades.sells > 0)) {
+  const dexHasTrades = trades && (trades.buys > 0 || trades.sells > 0);
+  if (dexHasTrades) {
     tokenLines.push(`**24H:** 🟢 ${trades.buys} buys • 🔴 ${trades.sells} sells`);
+  } else if (idx && idx.buyTx24h + idx.sellTx24h > 0) {
+    tokenLines.push(`**24H:** 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells _(Doppler)_`);
   }
 
   let deployerVal = formatDeployerOrFeeForEmbed(launch?.deployer);
@@ -622,6 +656,47 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
 
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
+
+  if (idx && out.formatUsd) {
+    const fmt = out.formatUsd;
+    const lines = [];
+    lines.push("📊 **Token Stats**");
+    const priceStr =
+      idx.price > 0 && idx.price < 0.01
+        ? `$${idx.price.toExponential(2)}`
+        : idx.price > 0
+          ? `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`
+          : "—";
+    lines.push(`├ Price: ${priceStr} (${formatTrendPctLine(idx.priceChange24hPct)})`);
+    if (idx.mcapUsd > 0) lines.push(`├ MC: ${fmt(idx.mcapUsd)}`);
+    lines.push(
+      `├ Vol: ${idx.vol24h > 0 ? fmt(idx.vol24h) : "—"}${idx.vol1h > 0 ? ` (1h: ${fmt(idx.vol1h)})` : ""}`
+    );
+    if (idx.lpUsd > 0) lines.push(`└ LP: ${fmt(idx.lpUsd)}`);
+    else lines.push("└ LP: —");
+    lines.push("");
+    lines.push("📈 **Price Action**");
+    lines.push(`├ 1H: ${formatTrendPctLine(idx.change1hPct)} (B:${idx.buys1h}/S:${idx.sells1h})`);
+    lines.push(`├ 2H: ${formatTrendPctLine(idx.change2hPct)}`);
+    lines.push(`├ 4H: ${formatTrendPctLine(idx.change4hPct)}`);
+    lines.push("");
+    lines.push("👥 **Trading Activity (24H)**");
+    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "N/A";
+    lines.push(`├ Traders: ${tr}`);
+    lines.push(`├ Trades: ${idx.trades24h > 0 ? idx.trades24h : "—"}`);
+    const b = idx.buyTx24h;
+    const se = idx.sellTx24h;
+    const total = b + se;
+    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
+    lines.push(`└ B/S: ${pctB}% (${b}/${se})`);
+    if (idx.trendLabel && idx.trendLabel !== "NOT_TRENDING") {
+      lines.push("");
+      lines.push(`**Trend:** ${idx.trendLabel} · ${idx.trendScore}/100`);
+    }
+    const value = lines.join("\n").slice(0, 1024);
+    fields.push({ name: "Doppler indexer", value, inline: false });
+  }
+
   fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
 
   const embed = {
@@ -880,21 +955,43 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !stats || !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId);
-  const { hotByBuys, hotByHolders, buysFirstMin, holderCount, isTrending, buys5m, buys1h } = stats;
+  const {
+    hotByBuys,
+    hotByHolders,
+    hotByIndexerVol,
+    trendingByIndexerVol,
+    buysFirstMin,
+    holderCount,
+    isTrending,
+    buys5m,
+    buys1h,
+    indexerVol1h,
+    indexerVol24h,
+  } = stats;
   const trending = options.trending === true || isTrending === true;
   if (trending) {
-    if (buys5m == null && buys1h == null) return;
-  } else if (!hotByBuys && !hotByHolders) return;
+    const hasDexTrend = (buys5m ?? 0) > 0 || (buys1h ?? 0) > 0;
+    if (!hasDexTrend && !trendingByIndexerVol) return;
+  } else if (!hotByBuys && !hotByHolders && !hotByIndexerVol) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   let line;
   let title;
   if (trending) {
     title = "📈 *TRENDING*";
-    line = `📈 ${buys5m ?? 0} buys (5m) · ${buys1h ?? 0} (1h)`;
+    const parts = [`📈 ${buys5m ?? 0} buys (5m) · ${buys1h ?? 0} (1h)`];
+    if (trendingByIndexerVol && indexerVol24h != null && Number(indexerVol24h) > 0) {
+      const v = formatUsd(indexerVol24h) ?? String(indexerVol24h);
+      parts.push(`Doppler 24h vol ${v}`);
+    }
+    line = parts.join(" · ");
   } else {
     const parts = [];
     if (hotByBuys) parts.push(`🔥 ${buysFirstMin ?? 0}+ buys in first minute`);
     if (hotByHolders) parts.push(`👥 ${holderCount ?? 0}+ holders`);
+    if (hotByIndexerVol && indexerVol1h != null && Number(indexerVol1h) > 0) {
+      const v = formatUsd(indexerVol1h) ?? String(indexerVol1h);
+      parts.push(`📊 Doppler ~1h vol ${v}`);
+    }
     line = parts.join(" · ");
     title = "🔔 *HOT TOKEN*";
   }

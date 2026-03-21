@@ -65,6 +65,7 @@ import {
 } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
+import { fetchIndexerTradingSnapshot } from "./token-trend-card.js";
 import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
@@ -116,6 +117,10 @@ const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_H
 const TRENDING_MIN_BUYS_5M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_5M || "15", 10));
 /** Trending: min buys in 1h to post to trending (API has 5m/1h only; 1h used for "50 in 30m" style). Set to 0 to disable. Default 50. */
 const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "50", 10));
+/** Min Doppler-indexed pool volume (USD, ~1h from 15m buckets) to count as hot. 0 = off. */
+const HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD = Math.max(0, parseFloat(process.env.HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD || "0"));
+/** Min Doppler 24h bucket volume (USD) to count as trending. 0 = off. */
+const TRENDING_MIN_INDEXER_VOL_24H_USD = Math.max(0, parseFloat(process.env.TRENDING_MIN_INDEXER_VOL_24H_USD || "0"));
 /** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
 /** Extra delay (ms) before sending hot/trending pings to Telegram (after Discord). Default 60s so Telegram is ~1 min after Discord. */
@@ -852,7 +857,12 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
   const hasTelegram = (telegramChatIds?.length > 0) || hasHotDest || hasTrendingDest;
   const telegramDelayMs = overrideDelayMs != null ? Math.max(0, Number(overrideDelayMs)) : TELEGRAM_HOT_PING_DELAY_MS;
   if (
-    (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 && HOT_LAUNCH_MIN_HOLDERS <= 0 && TRENDING_MIN_BUYS_5M <= 0 && TRENDING_MIN_BUYS_1H <= 0) ||
+    (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 &&
+      HOT_LAUNCH_MIN_HOLDERS <= 0 &&
+      TRENDING_MIN_BUYS_5M <= 0 &&
+      TRENDING_MIN_BUYS_1H <= 0 &&
+      HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD <= 0 &&
+      TRENDING_MIN_INDEXER_VOL_24H_USD <= 0) ||
     (!hasHotDest && !hasTrendingDest && !hasTelegram)
   ) {
     return;
@@ -868,10 +878,17 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       const hotByBuys = HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 && buys5m >= HOT_LAUNCH_MIN_BUYS_FIRST_MIN;
       const hotByHolders =
         HOT_LAUNCH_MIN_HOLDERS > 0 && stats.holderCount != null && stats.holderCount >= HOT_LAUNCH_MIN_HOLDERS;
-      const isHot = hotByBuys || hotByHolders;
+      const iv1 = stats.indexerVol1h ?? 0;
+      const iv24 = stats.indexerVol24h ?? 0;
+      const hotByIndexerVol =
+        HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 && iv1 >= HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD;
+      const trendingByIndexerVol =
+        TRENDING_MIN_INDEXER_VOL_24H_USD > 0 && iv24 >= TRENDING_MIN_INDEXER_VOL_24H_USD;
+      const isHot = hotByBuys || hotByHolders || hotByIndexerVol;
       const isTrending =
         (TRENDING_MIN_BUYS_5M > 0 && buys5m >= TRENDING_MIN_BUYS_5M) ||
-        (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H);
+        (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H) ||
+        trendingByIndexerVol;
       if (!isHot && !isTrending) return;
       const fetched = (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
       let launchForEmbed = {
@@ -892,6 +909,8 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       const hotStats = {
         hotByBuys,
         hotByHolders,
+        hotByIndexerVol,
+        trendingByIndexerVol,
         buysFirstMin: buys5m,
         holderCount: stats.holderCount,
         isTrending,
@@ -899,6 +918,8 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         buys1h,
         marketCapFormatted: mcFormatted || null,
         deployedTelegram: deployedTelegram || null,
+        indexerVol1h: iv1,
+        indexerVol24h: iv24,
       };
       const embedHot = buildLaunchEmbed(launchForEmbed);
       const embedTrending = buildLaunchEmbed(launchForEmbed);
@@ -930,10 +951,18 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         embedHot.title = `🔥👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m}+ buys in first min · 20+ holders`;
       } else if (hotByBuys) {
         embedHot.title = `🔥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m}+ buys in first minute`;
+      } else if (hotByIndexerVol) {
+        const v1 = formatUsd(iv1) ?? `$${iv1.toFixed(0)}`;
+        embedHot.title = `🔥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — Doppler ~1h vol ${v1}`;
       } else {
         embedHot.title = `👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — 20+ holders`;
       }
-      embedTrending.title = `📈 Trending: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${buys5m} buys (5m) · ${buys1h} (1h)`;
+      const trendTitleParts = [`${buys5m} buys (5m) · ${buys1h} (1h)`];
+      if (trendingByIndexerVol) {
+        const v24 = formatUsd(iv24) ?? `$${iv24.toFixed(0)}`;
+        trendTitleParts.push(`24h vol ${v24} (indexer)`);
+      }
+      embedTrending.title = `📈 Trending: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — ${trendTitleParts.join(" · ")}`;
       const hotSuffix = "🔥 **Hot token**";
       const trendingSuffix = "📈 **Trending**";
       function getPingContent(guildId, channelId, forTrending) {
@@ -1075,7 +1104,12 @@ async function runNotify() {
       if (
         HOT_LAUNCH_ENABLED &&
         newLaunches.length > 0 &&
-        (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0 || TRENDING_MIN_BUYS_5M > 0 || TRENDING_MIN_BUYS_1H > 0)
+        (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
+          HOT_LAUNCH_MIN_HOLDERS > 0 ||
+          TRENDING_MIN_BUYS_5M > 0 ||
+          TRENDING_MIN_BUYS_1H > 0 ||
+          HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
+          TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
       ) {
         const discordHotIds = HOT_LAUNCH_ALERT_CHANNEL_ID ? [HOT_LAUNCH_ALERT_CHANNEL_ID] : [];
         const discordTrendingIds = TRENDING_ENABLED && TRENDING_ALERT_CHANNEL_ID ? [TRENDING_ALERT_CHANNEL_ID] : [];
@@ -1173,7 +1207,12 @@ async function runNotify() {
         if (
           anyHotEnabled &&
           newLaunches.length > 0 &&
-          (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 || HOT_LAUNCH_MIN_HOLDERS > 0 || TRENDING_MIN_BUYS_5M > 0 || TRENDING_MIN_BUYS_1H > 0)
+          (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
+          HOT_LAUNCH_MIN_HOLDERS > 0 ||
+          TRENDING_MIN_BUYS_5M > 0 ||
+          TRENDING_MIN_BUYS_1H > 0 ||
+          HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
+          TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
         ) {
           const discordHotChannelIds = [];
           const discordTrendingChannelIds = [];
@@ -1834,7 +1873,10 @@ client.on("messageCreate", async (message) => {
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
     const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
-    const out = await getTokenFees(tokenAddress, { bankrApiKey });
+    const [out, indexerSnap] = await Promise.all([
+      getTokenFees(tokenAddress, { bankrApiKey }),
+      fetchIndexerTradingSnapshot(tokenAddress).catch(() => null),
+    ]);
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
     const deployWallet = launchWallet(out.launch, "deployer");
     const [deployFeedN, feeFeedN, bankrRole] = await Promise.all([
@@ -1847,7 +1889,7 @@ client.on("messageCreate", async (message) => {
     else if (deployFeedN != null && deployFeedN >= 1) feedCountOpts.deployerFeedCount = deployFeedN;
     if (bankrRole.bankrFee != null) feedCountOpts.bankrFeeRecipientCount = bankrRole.bankrFee;
     else if (feeFeedN != null && feeFeedN >= 1) feedCountOpts.feeRecipientFeedCount = feeFeedN;
-    const embed = buildTokenDetailEmbed(out, tokenAddress, feedCountOpts);
+    const embed = buildTokenDetailEmbed(out, tokenAddress, { ...feedCountOpts, indexerSnapshot: indexerSnap });
     const feesValue = buildPasteTokenFeesEmbedValue(out);
     if (feesValue && embed.fields) {
       const tradeIdx = embed.fields.findIndex((f) => f.name === "\u200b");

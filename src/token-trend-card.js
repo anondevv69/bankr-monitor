@@ -442,6 +442,52 @@ export async function buildTokenTrendCard(tokenAddress, options = {}) {
   return { card, text: formatTrendCardText(card) };
 }
 
+/**
+ * Slim snapshot for Discord embeds / monitoring (same GraphQL + swap path as {@link buildTokenTrendCard}).
+ * @param {string} tokenAddress
+ * @param {{ dopplerIndexerUrl?: string, chainId?: number }} [options]
+ * @returns {Promise<IndexerTradingSnapshot | null>}
+ */
+export async function fetchIndexerTradingSnapshot(tokenAddress, options = {}) {
+  try {
+    const { card } = await buildTokenTrendCard(tokenAddress, options);
+    if (!card?.ca) return null;
+    const has =
+      card.vol_24h > 0 ||
+      card.vol_1h > 0 ||
+      card.trades_24h > 0 ||
+      card.mcap > 0 ||
+      card.lp_usd > 0 ||
+      card.buy_tx_24h + card.sell_tx_24h > 0 ||
+      card.buys_1h + card.sells_1h > 0 ||
+      Math.abs(card.change_1h_pct) > 1e-9 ||
+      card.trend_score > 0;
+    if (!has) return null;
+    return {
+      vol24h: card.vol_24h,
+      vol1h: card.vol_1h,
+      buyTx24h: card.buy_tx_24h,
+      sellTx24h: card.sell_tx_24h,
+      buys1h: card.buys_1h,
+      sells1h: card.sells_1h,
+      trades24h: card.trades_24h,
+      traders24h: card.traders_24h,
+      mcapUsd: card.mcap,
+      lpUsd: card.lp_usd,
+      priceChange24hPct: card.price_change_24h_pct,
+      change1hPct: card.change_1h_pct,
+      change2hPct: card.change_2h_pct,
+      change4hPct: card.change_4h_pct,
+      trendScore: card.trend_score,
+      trendLabel: card.trend_label,
+      buySellRatio24h: card.buy_sell_ratio_24h,
+      price: card.price,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function roundOrZero(n, d) {
   if (!Number.isFinite(n)) return 0;
   const p = 10 ** d;

@@ -31,6 +31,40 @@ const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
 
+/** Same scale as swap / 24h bucket `volumeUsd` on bankr.indexer.doppler.lol (see token-trend-card). */
+const INDEXER_BUCKET_USD_SCALE = 1e12;
+
+/**
+ * @param {any} pool
+ * @returns {{ indexerVol24h: number, indexerVol1h: number, indexerBuyTx24h: number, indexerSellTx24h: number, indexerTxCount24h: number, indexerUniqueUsers24h: number }}
+ */
+function parseIndexerPoolBucketMetrics(pool) {
+  const z = {
+    indexerVol24h: 0,
+    indexerVol1h: 0,
+    indexerBuyTx24h: 0,
+    indexerSellTx24h: 0,
+    indexerTxCount24h: 0,
+    indexerUniqueUsers24h: 0,
+  };
+  if (!pool) return z;
+  const vb = pool.volumeBuckets24h?.items?.[0];
+  if (vb) {
+    if (vb.volumeUsd != null) z.indexerVol24h = Number(vb.volumeUsd) / INDEXER_BUCKET_USD_SCALE;
+    if (vb.buyCount != null) z.indexerBuyTx24h = Number(vb.buyCount);
+    if (vb.sellCount != null) z.indexerSellTx24h = Number(vb.sellCount);
+    if (vb.txCount != null) z.indexerTxCount24h = Number(vb.txCount);
+    if (vb.uniqueUsers != null) z.indexerUniqueUsers24h = Number(vb.uniqueUsers);
+  }
+  const fifteen = pool.fifteenMinuteBucketUsds?.items ?? [];
+  let vol1h = 0;
+  for (const b of fifteen.slice(0, 4)) {
+    if (b?.volumeUsd != null) vol1h += Number(b.volumeUsd) / INDEXER_BUCKET_USD_SCALE;
+  }
+  z.indexerVol1h = vol1h;
+  return z;
+}
+
 /**
  * Fetch Base token metrics from DexScreener (market cap, 24h buys/sells, optional m5/h1). No API key required.
  * @returns {{ marketCap: number, trades24h: { buys: number, sells: number }, buys5m?: number, buys1h?: number } | null}
@@ -100,12 +134,14 @@ export async function getHotTokenStats(tokenAddress) {
     else if (dex?.pairCreatedAt != null && Number.isFinite(dex.pairCreatedAt) && dex.pairCreatedAt > 0) {
       deployedAtMs = dex.pairCreatedAt;
     }
+    const bucket = parseIndexerPoolBucketMetrics(doppler?.pool);
     return {
       buys5m: Number(buys5m),
       buys1h: Number(buys1h),
       holderCount,
       marketCap,
       deployedAtMs,
+      ...bucket,
     };
   } catch {
     return null;
@@ -178,6 +214,32 @@ async function fetchBankrAgentProfile(tokenAddress, apiKey = BANKR_API_KEY) {
   return null;
 }
 
+async function mergePoolBucketsFromListQuery(tokenAddress, token) {
+  if (token?.pool?.volumeBuckets24h?.items?.length) return token;
+  const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
+  const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address createdAt volumeBuckets24h(limit: 1, orderBy: "timestamp", orderDirection: "desc") { items { volumeUsd buyCount sellCount uniqueUsers txCount } } fifteenMinuteBucketUsds(limit: 8, orderBy: "minuteId", orderDirection: "desc") { items { minuteId volumeUsd } } } } } }`;
+  try {
+    const res = await fetch(`${base}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: listQuery }),
+    });
+    if (!res.ok) return token;
+    const json = await res.json();
+    if (json.errors?.length) return token;
+    const row = json.data?.tokens?.items?.[0];
+    const richPool = row?.pool;
+    if (!richPool) return token;
+    return {
+      ...token,
+      pool: { ...(token.pool || {}), ...richPool },
+    };
+  } catch {
+    return token;
+  }
+}
+
 async function fetchDopplerTokenVolume(tokenAddress) {
   const base = DOPPLER_INDEXER_URL.replace(/\/$/, "");
 
@@ -202,7 +264,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
       const json = await res.json();
       if (json.errors?.length) continue;
       const token = json.data?.token;
-      if (token) return token;
+      if (token) return mergePoolBucketsFromListQuery(tokenAddress, token);
     } catch {
       /* try next id */
     }
@@ -211,7 +273,7 @@ async function fetchDopplerTokenVolume(tokenAddress) {
   // 2) GraphQL list with filter (Ponder/Doppler: tokens where address + chainId)
   // Inline values: some indexers don't support variables inside where
   const addrEscaped = tokenAddress.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address createdAt } } } }`;
+  const listQuery = `query { tokens(where: { chainId: ${CHAIN_ID}, address: "${addrEscaped}" }, limit: 1) { items { address name symbol volumeUsd holderCount firstSeenAt pool { address createdAt volumeBuckets24h(limit: 1, orderBy: "timestamp", orderDirection: "desc") { items { volumeUsd buyCount sellCount uniqueUsers txCount } } fifteenMinuteBucketUsds(limit: 8, orderBy: "minuteId", orderDirection: "desc") { items { minuteId volumeUsd } } } } } }`;
   try {
     const res = await fetch(`${base}/graphql`, {
       method: "POST",
