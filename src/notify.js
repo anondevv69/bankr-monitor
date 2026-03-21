@@ -474,6 +474,15 @@ export async function getFeeRecipientFeedCount(walletAddress) {
   return n != null && n > 0 ? n : null;
 }
 
+/** Unique Bankr tokens seen in the feed where this wallet is the launcher/deployer (from .bankr-deploy-counts.json). */
+export async function getDeployerFeedCount(walletAddress) {
+  const a = walletAddress && String(walletAddress).trim().toLowerCase();
+  if (!a || !/^0x[a-f0-9]{40}$/.test(a)) return null;
+  const counts = await loadDeployCounts();
+  const n = counts[a]?.size;
+  return n != null && n > 0 ? n : null;
+}
+
 function imageUrl(img) {
   if (!img) return null;
   if (img.startsWith("ipfs://"))
@@ -556,7 +565,7 @@ function formatDeployerOrFeeForEmbed(obj) {
 /**
  * @param {object} out - getTokenFees result
  * @param {string} tokenAddress
- * @param {{ feeRecipientFeedCount?: number|null }} [options]
+ * @param {{ deployerFeedCount?: number|null, feeRecipientFeedCount?: number|null }} [options]
  */
 export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const launchUrl = bankrLaunchUrl(tokenAddress);
@@ -565,6 +574,7 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const symbol = out.symbol ?? "—";
   const launch = out.launch ?? null;
   const img = (launch?.imageUri || launch?.image) ? imageUrl(launch.imageUri || launch.image) : null;
+  const deployFeed = options.deployerFeedCount;
   const feeFeed = options.feeRecipientFeedCount;
 
   const tokenLines = [
@@ -590,11 +600,18 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
     { name: "Deployer", value: formatDeployerOrFeeForEmbed(launch?.deployer), inline: false },
     { name: "Fee Recipient", value: formatDeployerOrFeeForEmbed(launch?.feeRecipient), inline: false },
   ];
+  const feedCountLines = [];
+  if (deployFeed != null && deployFeed >= 1) {
+    feedCountLines.push(`**Deployer / launcher:** ${deployFeed} token(s) in this bot's feed`);
+  }
   if (feeFeed != null && feeFeed >= 1) {
+    feedCountLines.push(`**Fee recipient:** ${feeFeed} token(s) in this bot's feed`);
+  }
+  if (feedCountLines.length > 0) {
     fields.push({
-      name: "Tokens (fee recipient in feed)",
-      value: `${feeFeed}`,
-      inline: true,
+      name: "In this bot's feed",
+      value: feedCountLines.join("\n"),
+      inline: false,
     });
   }
 

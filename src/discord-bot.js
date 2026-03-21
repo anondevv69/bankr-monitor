@@ -54,6 +54,7 @@ import {
   fetchLaunchByTokenAddress,
   buildTradeLinks,
   getFeeRecipientFeedCount,
+  getDeployerFeedCount,
 } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
@@ -1786,12 +1787,16 @@ client.on("messageCreate", async (message) => {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
     const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
-    const feeFeedOpts = {};
-    if (out.feeWallet) {
-      const n = await getFeeRecipientFeedCount(out.feeWallet).catch(() => null);
-      if (n != null && n >= 1) feeFeedOpts.feeRecipientFeedCount = n;
-    }
-    const embed = buildTokenDetailEmbed(out, tokenAddress, feeFeedOpts);
+    const deployWallet =
+      out.launch?.deployer?.walletAddress ?? out.launch?.deployer?.wallet ?? null;
+    const [deployFeedN, feeFeedN] = await Promise.all([
+      deployWallet ? getDeployerFeedCount(deployWallet).catch(() => null) : Promise.resolve(null),
+      out.feeWallet ? getFeeRecipientFeedCount(out.feeWallet).catch(() => null) : Promise.resolve(null),
+    ]);
+    const feedCountOpts = {};
+    if (deployFeedN != null && deployFeedN >= 1) feedCountOpts.deployerFeedCount = deployFeedN;
+    if (feeFeedN != null && feeFeedN >= 1) feedCountOpts.feeRecipientFeedCount = feeFeedN;
+    const embed = buildTokenDetailEmbed(out, tokenAddress, feedCountOpts);
     const feesValue = buildPasteTokenFeesEmbedValue(out);
     if (feesValue && embed.fields) {
       const tradeIdx = embed.fields.findIndex((f) => f.name === "\u200b");
