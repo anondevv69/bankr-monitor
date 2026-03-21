@@ -56,7 +56,11 @@ import {
   getFeeRecipientFeedCount,
   getDeployerFeedCount,
 } from "./notify.js";
-import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
+import {
+  lookupByDeployerOrFee,
+  resolveHandleToWallet,
+  getBankrWalletLaunchRoleCounts,
+} from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
 import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
@@ -791,6 +795,88 @@ function parseRoleIdsFromInput(raw) {
   });
 }
 
+function normalizeWalletAddr(addr) {
+  const s = addr && String(addr).trim().toLowerCase();
+  return s && /^0x[a-f0-9]{40}$/.test(s) ? s : null;
+}
+
+function feeWalletFromLaunch(launch) {
+  const b0 = launch?.beneficiaries?.[0];
+  if (!b0) return null;
+  const raw = typeof b0 === "object" ? b0.beneficiary ?? b0.address ?? b0.wallet : b0;
+  return normalizeWalletAddr(raw);
+}
+
+function deployWalletFromLaunch(launch) {
+  return normalizeWalletAddr(launch?.launcher);
+}
+
+/** Prefer env key, else first tenant key (for shared newLaunches embed enrichment). */
+function pickBankrApiKeyForRoleCounts(tenantsWithChannels) {
+  if (process.env.BANKR_API_KEY) return process.env.BANKR_API_KEY;
+  for (const t of tenantsWithChannels || []) {
+    if (t.bankrApiKey) return t.bankrApiKey;
+  }
+  return null;
+}
+
+/**
+ * Add bankrDeployCount / bankrFeeRecipientCount from Bankr launch index (same basis as bankr.bot/launches/search).
+ * Cached inside getBankrWalletLaunchRoleCounts. Requires bankrApiKey.
+ */
+async function enrichLaunchWithBankrRoleCounts(launch, bankrApiKey) {
+  if (!bankrApiKey || !launch) return launch;
+  const launcher = deployWalletFromLaunch(launch);
+  const fee = feeWalletFromLaunch(launch);
+  if (!launcher && !fee) return launch;
+  try {
+    if (launcher && fee && launcher === fee) {
+      const c = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey });
+      return {
+        ...launch,
+        ...(c.asDeployer != null && { bankrDeployCount: c.asDeployer }),
+        ...(c.asFeeRecipient != null && { bankrFeeRecipientCount: c.asFeeRecipient }),
+      };
+    }
+    let cLauncher = null;
+    let cFeeWallet = null;
+    if (launcher) cLauncher = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey }).catch(() => null);
+    if (fee && fee !== launcher) cFeeWallet = await getBankrWalletLaunchRoleCounts(fee, { bankrApiKey }).catch(() => null);
+    const bankrDeployCount = cLauncher?.asDeployer;
+    const bankrFeeRecipientCount = fee && fee !== launcher ? cFeeWallet?.asFeeRecipient : undefined;
+    return {
+      ...launch,
+      ...(bankrDeployCount != null && { bankrDeployCount }),
+      ...(bankrFeeRecipientCount != null && { bankrFeeRecipientCount: bankrFeeRecipientCount }),
+    };
+  } catch {
+    return launch;
+  }
+}
+
+/** For token detail embed: Bankr role counts for deployer + fee wallets (1–2 API-backed lookups, cached). */
+async function bankrRoleCountsForDeployerAndFee(deployWallet, feeWallet, bankrApiKey) {
+  const d = normalizeWalletAddr(deployWallet);
+  const f = normalizeWalletAddr(feeWallet);
+  if (!bankrApiKey) return { bankrDeploy: null, bankrFee: null };
+  try {
+    if (d && f && d === f) {
+      const c = await getBankrWalletLaunchRoleCounts(d, { bankrApiKey });
+      return { bankrDeploy: c.asDeployer ?? null, bankrFee: c.asFeeRecipient ?? null };
+    }
+    const [cDep, cFee] = await Promise.all([
+      d ? getBankrWalletLaunchRoleCounts(d, { bankrApiKey }).catch(() => null) : null,
+      f && f !== d ? getBankrWalletLaunchRoleCounts(f, { bankrApiKey }).catch(() => null) : null,
+    ]);
+    return {
+      bankrDeploy: cDep?.asDeployer ?? null,
+      bankrFee: f && f !== d ? cFee?.asFeeRecipient ?? null : null,
+    };
+  } catch {
+    return { bankrDeploy: null, bankrFee: null };
+  }
+}
+
 /** Build role mention string for ping (hot/trending/watch/curated). Uses tenant config or env. */
 function buildRolePingContent(roleIds, suffix = "🔥 **Hot token**") {
   const ids = Array.isArray(roleIds) ? roleIds.filter((id) => /^\d+$/.test(String(id))) : [];
@@ -831,11 +917,12 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H);
       if (!isHot && !isTrending) return;
       const fetched = (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
-      const launchForEmbed = {
+      let launchForEmbed = {
         ...fetched,
         deployCount: launch.deployCount ?? fetched.deployCount,
         feeRecipientDeployCount: launch.feeRecipientDeployCount ?? fetched.feeRecipientDeployCount,
       };
+      if (apiKey) launchForEmbed = await enrichLaunchWithBankrRoleCounts(launchForEmbed, apiKey);
       const deployedMs =
         launchForEmbed.deployedAtMsFromBankr ??
         stats.deployedAtMs ??
@@ -994,8 +1081,10 @@ async function runNotify() {
       const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
       const curatedLaunches = newLaunches.filter((l) => l.passedFilters !== false);
 
+      const envRoleCountKey = process.env.BANKR_API_KEY;
       for (const launch of newLaunches) {
-        const embed = buildLaunchEmbed(launch);
+        const launchForEmbeds = envRoleCountKey ? await enrichLaunchWithBankrRoleCounts(launch, envRoleCountKey) : launch;
+        const embed = buildLaunchEmbed(launchForEmbeds);
         const showInAll = true;
         const showInCurated = launch.passedFilters !== false;
         const showInWatch = launch.isWatchMatch;
@@ -1018,12 +1107,12 @@ async function runNotify() {
         if (watchChannel && showInWatch) await postOnce(watchChannel);
         const envFirehoseTopic = process.env.TELEGRAM_TOPIC_FIREHOSE;
         const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
-        await sendTelegram(launch, envFirehoseTopic != null ? { messageThreadId: envFirehoseTopic } : {}).catch(() => {});
+        await sendTelegram(launchForEmbeds, envFirehoseTopic != null ? { messageThreadId: envFirehoseTopic } : {}).catch(() => {});
         const sendToEnvCurated =
           envCuratedTopic != null &&
           (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : launch.passedFilters !== false);
         if (sendToEnvCurated) {
-          await sendTelegram(launch, { messageThreadId: envCuratedTopic }).catch(() => {});
+          await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
         }
       }
       if (
@@ -1068,8 +1157,10 @@ async function runNotify() {
         for (const tenant of tenantsWithChannels) {
           tenant._curatedLaunches = newLaunches.filter((l) => tenantPassesFilters(l, tenant.rules));
         }
+        const roleCountApiKey = pickBankrApiKeyForRoleCounts(tenantsWithChannels);
         for (const launch of newLaunches) {
-          const embed = buildLaunchEmbed(launch);
+          const launchForEmbeds = roleCountApiKey ? await enrichLaunchWithBankrRoleCounts(launch, roleCountApiKey) : launch;
+          const embed = buildLaunchEmbed(launchForEmbeds);
           for (const tenant of tenantsWithChannels) {
             const showInCurated = tenantPassesFilters(launch, tenant.rules);
             const curatedForTenant = tenant._curatedLaunches || [];
@@ -1081,7 +1172,7 @@ async function runNotify() {
             const showInWatch = isWatchMatchForTenant(launch, watchList);
             const watchReasons = showInWatch ? getWatchMatchReasons(launch, watchList) : [];
             const watchEmbed =
-              watchReasons.length > 0 ? buildLaunchEmbed({ ...launch, watchMatchReasons: watchReasons }) : embed;
+              watchReasons.length > 0 ? buildLaunchEmbed({ ...launchForEmbeds, watchMatchReasons: watchReasons }) : embed;
             const allCh = tenant.allLaunchesChannelId ? await client.channels.fetch(tenant.allLaunchesChannelId).catch(() => null) : null;
             const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
@@ -1103,21 +1194,21 @@ async function runNotify() {
               const tgChat = tenant.telegramChatId;
               const topicFirehose = tenant.telegramTopicFirehose ?? undefined;
               const topicCurated = tenant.telegramTopicCurated ?? undefined;
-              await sendTelegram(launch, { chatId: tgChat, messageThreadId: topicFirehose }).catch(() => {});
+              await sendTelegram(launchForEmbeds, { chatId: tgChat, messageThreadId: topicFirehose }).catch(() => {});
               if (showInCurated && topicCurated != null) {
-                await sendTelegram(launch, { chatId: tgChat, messageThreadId: topicCurated }).catch(() => {});
+                await sendTelegram(launchForEmbeds, { chatId: tgChat, messageThreadId: topicCurated }).catch(() => {});
               }
             }
           }
           if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
             const envTopicFirehose = process.env.TELEGRAM_TOPIC_FIREHOSE != null ? process.env.TELEGRAM_TOPIC_FIREHOSE : undefined;
             const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
-            await sendTelegram(launch, { messageThreadId: envTopicFirehose }).catch(() => {});
+            await sendTelegram(launchForEmbeds, { messageThreadId: envTopicFirehose }).catch(() => {});
             const sendToEnvCurated =
               envCuratedTopic != null &&
               (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : tenantPassesFilters(launch, {}));
             if (sendToEnvCurated) {
-              await sendTelegram(launch, { messageThreadId: envCuratedTopic }).catch(() => {});
+              await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
             }
           }
         }
@@ -1785,17 +1876,21 @@ client.on("messageCreate", async (message) => {
   await message.channel.sendTyping().catch(() => {});
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
-    const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+    const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+    const out = await getTokenFees(tokenAddress, { bankrApiKey });
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
     const deployWallet =
       out.launch?.deployer?.walletAddress ?? out.launch?.deployer?.wallet ?? null;
-    const [deployFeedN, feeFeedN] = await Promise.all([
+    const [deployFeedN, feeFeedN, bankrRole] = await Promise.all([
       deployWallet ? getDeployerFeedCount(deployWallet).catch(() => null) : Promise.resolve(null),
       out.feeWallet ? getFeeRecipientFeedCount(out.feeWallet).catch(() => null) : Promise.resolve(null),
+      bankrRoleCountsForDeployerAndFee(deployWallet, out.feeWallet, bankrApiKey),
     ]);
     const feedCountOpts = {};
-    if (deployFeedN != null && deployFeedN >= 1) feedCountOpts.deployerFeedCount = deployFeedN;
-    if (feeFeedN != null && feeFeedN >= 1) feedCountOpts.feeRecipientFeedCount = feeFeedN;
+    if (bankrRole.bankrDeploy != null) feedCountOpts.bankrDeployCount = bankrRole.bankrDeploy;
+    else if (deployFeedN != null && deployFeedN >= 1) feedCountOpts.deployerFeedCount = deployFeedN;
+    if (bankrRole.bankrFee != null) feedCountOpts.bankrFeeRecipientCount = bankrRole.bankrFee;
+    else if (feeFeedN != null && feeFeedN >= 1) feedCountOpts.feeRecipientFeedCount = feeFeedN;
     const embed = buildTokenDetailEmbed(out, tokenAddress, feedCountOpts);
     const feesValue = buildPasteTokenFeesEmbedValue(out);
     if (feesValue && embed.fields) {

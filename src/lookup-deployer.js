@@ -27,6 +27,9 @@ const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMI
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const DEPLOY_API = "https://api.bankr.bot/token-launches/deploy";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
+/** Cache for getBankrWalletLaunchRoleCounts (ms). Default 5m. */
+const BANKR_WALLET_ROLE_COUNT_TTL_MS = parseInt(process.env.BANKR_WALLET_ROLE_COUNT_TTL_MS || "300000", 10);
+const bankrWalletRoleCountCache = new Map();
 
 const BANKR_FETCH_HEADERS = {
   Accept: "application/json",
@@ -511,6 +514,62 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     resolvedWallet: resolvedWallet ?? null,
     matches: result,
   };
+}
+
+/**
+ * Count Bankr tokens where this wallet is deployer vs fee recipient (aligned with bankr.bot/launches/search + /lookup).
+ * Uses the same list/search merge as lookupByDeployerOrFee — needs BANKR_API_KEY (or options.bankrApiKey).
+ * Results cached per wallet (see BANKR_WALLET_ROLE_COUNT_TTL_MS).
+ * @returns {{ asDeployer: number|null, asFeeRecipient: number|null, source: 'bankr'|null, bankrSearchUrl: string|null, possiblyCapped?: boolean }}
+ */
+export async function getBankrWalletLaunchRoleCounts(walletAddress, options = {}) {
+  const w = walletAddress && String(walletAddress).trim().toLowerCase();
+  if (!w || !/^0x[a-f0-9]{40}$/.test(w)) {
+    return { asDeployer: null, asFeeRecipient: null, source: null, bankrSearchUrl: null };
+  }
+  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
+  if (!apiKey) {
+    return {
+      asDeployer: null,
+      asFeeRecipient: null,
+      source: null,
+      bankrSearchUrl: `https://bankr.bot/launches/search?q=${encodeURIComponent(w)}`,
+    };
+  }
+  const now = Date.now();
+  const cached = bankrWalletRoleCountCache.get(w);
+  if (cached && now - cached.t < BANKR_WALLET_ROLE_COUNT_TTL_MS) {
+    return cached.data;
+  }
+  try {
+    const result = await lookupByDeployerOrFee(w, "both", "newest", { bankrApiKey: apiKey });
+    const asDeployer = new Set();
+    const asFee = new Set();
+    for (const m of result.matches) {
+      const ca = m.tokenAddress?.toLowerCase();
+      if (!ca) continue;
+      if (m.deployerWallet?.toLowerCase() === w) asDeployer.add(ca);
+      if (m.feeRecipientWallet?.toLowerCase() === w) asFee.add(ca);
+    }
+    const nDep = asDeployer.size;
+    const nFee = asFee.size;
+    const data = {
+      asDeployer: nDep > 0 ? nDep : null,
+      asFeeRecipient: nFee > 0 ? nFee : null,
+      source: "bankr",
+      bankrSearchUrl: `https://bankr.bot/launches/search?q=${encodeURIComponent(w)}`,
+      possiblyCapped: result.possiblyCapped,
+    };
+    bankrWalletRoleCountCache.set(w, { t: now, data });
+    return data;
+  } catch {
+    return {
+      asDeployer: null,
+      asFeeRecipient: null,
+      source: null,
+      bankrSearchUrl: `https://bankr.bot/launches/search?q=${encodeURIComponent(w)}`,
+    };
+  }
 }
 
 async function main() {

@@ -16,7 +16,9 @@
     "notify": "node src/notify.js",
     "notify:loop": "node src/notify-loop.js",
     "bot": "node src/discord-bot.js",
-    "build": "echo 'No build step'"
+    "build": "echo 'No build step'",
+    "test": "node --test test/**/*.test.js",
+    "trend-card": "node src/token-trend-card.js"
   },
   "engines": {
     "node": ">=18 <22"

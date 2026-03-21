@@ -86,6 +86,15 @@ query TokenDetails {
 }
 ```
 
+### Token trend card (indexer-only JSON + text)
+
+[`src/token-trend-card.js`](src/token-trend-card.js) builds a compact **trend card** from the Bankr indexer: pool stats, 15m volume buckets, swap aggregates, a 0–100 **trend score** (momentum, volume acceleration, traders, buy pressure), and labels **NOT_TRENDING / WARM / TRENDING / HOT**. Use from code (`buildTokenTrendCard`) or CLI:
+
+```bash
+npm run trend-card -- 0xYourToken…ba3
+npm test   # includes test/token-trend-card.test.js
+```
+
 **REST** — search tokens by name, symbol, or address:
 
 ```bash

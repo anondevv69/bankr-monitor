@@ -557,15 +557,10 @@ function formatDeployerOrFeeForEmbed(obj) {
 }
 
 /**
- * Build rich embed for a single Bankr token (when user pastes address or uses /fees-token style reply).
- * @param {object} out - Result from getTokenFees(tokenAddress): { name, symbol, launch, volumeUsd, formatUsd }
- * @param {string} tokenAddress - Normalized token address.
- * @returns {object} Discord embed object.
- */
-/**
+ * Build rich embed for a single Bankr token (paste address, etc.).
  * @param {object} out - getTokenFees result
  * @param {string} tokenAddress
- * @param {{ deployerFeedCount?: number|null, feeRecipientFeedCount?: number|null }} [options]
+ * @param {{ deployerFeedCount?: number|null, feeRecipientFeedCount?: number|null, bankrDeployCount?: number|null, bankrFeeRecipientCount?: number|null }} [options]
  */
 export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const launchUrl = bankrLaunchUrl(tokenAddress);
@@ -574,8 +569,8 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const symbol = out.symbol ?? "—";
   const launch = out.launch ?? null;
   const img = (launch?.imageUri || launch?.image) ? imageUrl(launch.imageUri || launch.image) : null;
-  const deployFeed = options.deployerFeedCount;
-  const feeFeed = options.feeRecipientFeedCount;
+  const deployFeed = options.bankrDeployCount ?? options.deployerFeedCount;
+  const feeFeed = options.bankrFeeRecipientCount ?? options.feeRecipientFeedCount;
 
   const tokenLines = [
     `**Chain:** Base`,
@@ -640,8 +635,9 @@ export function buildLaunchEmbed(launch) {
     if (launch.launcherX) parts.push(`**X:** [@${launch.launcherX}](${xProfileUrl(launch.launcherX)})`);
     if (launch.launcherFarcaster) parts.push(`**Farcaster:** [${launch.launcherFarcaster}](${farcasterProfileUrl(launch.launcherFarcaster)})`);
     parts.push(`**Wallet:** ${launcherAddrLink}`);
-    if (launch.deployCount != null && launch.deployCount >= 1) {
-      parts.push(`**Deploys:** ${launch.deployCount}`);
+    const deployN = launch.bankrDeployCount ?? launch.deployCount;
+    if (deployN != null && deployN >= 1) {
+      parts.push(`**Deploys:** ${deployN}`);
     }
     launcherValue = parts.join("\n");
   }
@@ -671,8 +667,9 @@ export function buildLaunchEmbed(launch) {
       })
       .join("\n\n");
     let feeVal = bens.trim() ? bens : "—";
-    if (launch.feeRecipientDeployCount != null && launch.feeRecipientDeployCount >= 1) {
-      feeVal = `${feeVal}\n**Recipient:** ${launch.feeRecipientDeployCount}`;
+    const feeRecN = launch.bankrFeeRecipientCount ?? launch.feeRecipientDeployCount;
+    if (feeRecN != null && feeRecN >= 1) {
+      feeVal = `${feeVal}\n**Recipient:** ${feeRecN}`;
     }
     fields.push({ name: "Fee recipient", value: feeVal.slice(0, 1024), inline: false });
   }
