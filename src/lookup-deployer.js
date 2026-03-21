@@ -423,7 +423,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   let launches = [];
   let totalCount = 0;
 
-  // Wallet (or resolved wallet): skip search; use list + filter only when we have API key. Without key, one search call so exactMatch can return the single result.
+  // Wallet (or resolved wallet): with API key we merge list + search (search matches bankr.bot; list fills gaps). Without key, search-only path below.
   const useWalletOnlyPath = (isWalletQuery || !!resolvedWallet) && !!apiKey;
   let searchResult = null;
   if (!useWalletOnlyPath) {
@@ -465,13 +465,15 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     }
     mergeLaunchesWithoutDuplicates(launches, all.filter(matches));
     totalCount = Math.max(launches.length, totalCount);
-    // If wallet-only path returned 0, try search once (exactMatch can find tokens outside list window)
-    if (launches.length === 0 && useWalletOnlyPath && effectiveQuery) {
-      const fallbackSearch = await fetchSearch(effectiveQuery, apiKey);
-      if (fallbackSearch?.launches?.length > 0) {
-        const extra = fallbackSearch.launches.filter(matches);
+    // Always merge search for wallet queries: bankr.bot/launches/search can list tokens that are not in the
+    // newest-N list window we scan. Previously we only called search when the list returned 0 → under-counted
+    // fee recipient / deployer (e.g. Recipient: 1 while search shows 3 results).
+    if (useWalletOnlyPath && effectiveQuery) {
+      const walletSearch = await fetchSearch(effectiveQuery, apiKey);
+      if (walletSearch?.launches?.length) {
+        const extra = walletSearch.launches.filter(matches);
         mergeLaunchesWithoutDuplicates(launches, extra);
-        totalCount = Math.max(launches.length, fallbackSearch.totalCount ?? totalCount);
+        totalCount = Math.max(totalCount, walletSearch.totalCount ?? 0, launches.length);
       }
     }
   }
