@@ -595,25 +595,20 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
     tokenLines.push(`**24H:** 🟢 ${trades.buys} buys • 🔴 ${trades.sells} sells`);
   }
 
+  let deployerVal = formatDeployerOrFeeForEmbed(launch?.deployer);
+  if (deployFeed != null && deployFeed >= 1) {
+    deployerVal = deployerVal === "—" ? `**Deploys:** ${deployFeed}` : `${deployerVal}\n**Deploys:** ${deployFeed}`;
+  }
+  let feeRecipientVal = formatDeployerOrFeeForEmbed(launch?.feeRecipient);
+  if (feeFeed != null && feeFeed >= 1) {
+    feeRecipientVal =
+      feeRecipientVal === "—" ? `**Recipient:** ${feeFeed}` : `${feeRecipientVal}\n**Recipient:** ${feeFeed}`;
+  }
   const fields = [
     { name: "Token", value: tokenLines.join("\n"), inline: false },
-    { name: "Deployer", value: formatDeployerOrFeeForEmbed(launch?.deployer), inline: false },
-    { name: "Fee Recipient", value: formatDeployerOrFeeForEmbed(launch?.feeRecipient), inline: false },
+    { name: "Deployer", value: deployerVal.slice(0, 1024), inline: false },
+    { name: "Fee Recipient", value: feeRecipientVal.slice(0, 1024), inline: false },
   ];
-  const feedCountLines = [];
-  if (deployFeed != null && deployFeed >= 1) {
-    feedCountLines.push(`**Deployer / launcher:** ${deployFeed} token(s) in this bot's feed`);
-  }
-  if (feeFeed != null && feeFeed >= 1) {
-    feedCountLines.push(`**Fee recipient:** ${feeFeed} token(s) in this bot's feed`);
-  }
-  if (feedCountLines.length > 0) {
-    fields.push({
-      name: "In this bot's feed",
-      value: feedCountLines.join("\n"),
-      inline: false,
-    });
-  }
 
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
@@ -645,6 +640,9 @@ export function buildLaunchEmbed(launch) {
     if (launch.launcherX) parts.push(`**X:** [@${launch.launcherX}](${xProfileUrl(launch.launcherX)})`);
     if (launch.launcherFarcaster) parts.push(`**Farcaster:** [${launch.launcherFarcaster}](${farcasterProfileUrl(launch.launcherFarcaster)})`);
     parts.push(`**Wallet:** ${launcherAddrLink}`);
+    if (launch.deployCount != null && launch.deployCount >= 1) {
+      parts.push(`**Deploys:** ${launch.deployCount}`);
+    }
     launcherValue = parts.join("\n");
   }
 
@@ -672,19 +670,11 @@ export function buildLaunchEmbed(launch) {
         return parts.join("\n");
       })
       .join("\n\n");
-    fields.push({ name: "Fee recipient", value: bens.slice(0, 1024) || "—", inline: false });
-  }
-
-  if (launch.feeRecipientDeployCount != null && launch.feeRecipientDeployCount >= 1) {
-    fields.push({
-      name: "Tokens (fee recipient in feed)",
-      value: `${launch.feeRecipientDeployCount}`,
-      inline: true,
-    });
-  }
-
-  if (launch.deployCount != null && launch.deployCount > 1) {
-    fields.push({ name: "Deploys (in feed)", value: `${launch.deployCount}`, inline: true });
+    let feeVal = bens.trim() ? bens : "—";
+    if (launch.feeRecipientDeployCount != null && launch.feeRecipientDeployCount >= 1) {
+      feeVal = `${feeVal}\n**Recipient:** ${launch.feeRecipientDeployCount}`;
+    }
+    fields.push({ name: "Fee recipient", value: feeVal.slice(0, 1024), inline: false });
   }
   if (launch.deployedAtMsFromBankr != null && Number.isFinite(launch.deployedAtMsFromBankr)) {
     const sec = Math.floor(launch.deployedAtMsFromBankr / 1000);
