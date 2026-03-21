@@ -52,7 +52,8 @@ import {
   sendTelegramHotPing,
   sendTelegramClaim,
   fetchLaunchByTokenAddress,
-  buildGmgnBbTradeMarkdown,
+  buildTradeLinks,
+  getFeeRecipientFeedCount,
 } from "./notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
@@ -728,6 +729,47 @@ function isWatchMatchForTenant(launch, watchList) {
   return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
 }
 
+/** Human-readable lines for the embed: what on the watch list triggered this match. */
+function getWatchMatchReasons(launch, watchList) {
+  if (!watchList) return [];
+  const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
+  const normFc = (u) => (u && typeof u === "string" ? String(u).trim().toLowerCase() : null);
+  const normAddr = (a) => (a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null);
+  const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
+  const deployerFc = launch.launcherFarcaster ? normFc(String(launch.launcherFarcaster)) : null;
+  const launcherAddr = normAddr(launch.launcher);
+  const feeAddrs = (launch.beneficiaries || [])
+    .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
+    .map(normAddr)
+    .filter(Boolean);
+  const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
+  const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
+  const watchX = watchList?.x ?? new Set();
+  const watchFc = watchList?.fc ?? new Set();
+  const watchWallet = watchList?.wallet ?? new Set();
+  const watchKeywords = watchList?.keywords ?? new Set();
+  const reasons = [];
+  if (deployerX && watchX.has(deployerX)) {
+    reasons.push(`Launcher X (@${deployerX}) is on your watch list`);
+  }
+  if (deployerFc && watchFc.has(deployerFc)) {
+    reasons.push(`Launcher Farcaster (${deployerFc}) is on your watch list`);
+  }
+  for (const a of allWalletAddrs) {
+    if (!watchWallet.has(a)) continue;
+    const short = `${a.slice(0, 6)}…${a.slice(-4)}`;
+    const role = a === launcherAddr ? "launcher" : "fee recipient";
+    reasons.push(`Wallet \`${short}\` on your watch list (matched as ${role})`);
+  }
+  for (const kw of watchKeywords) {
+    const k = String(kw).toLowerCase().trim();
+    if (!k || !searchText.includes(k)) continue;
+    const displayKw = String(kw).trim();
+    reasons.push(`Keyword “${displayKw}” appears in token name or symbol`);
+  }
+  return reasons;
+}
+
 /** Parse role IDs from string: comma/space-separated numeric IDs and/or Discord role mentions <@&id>. */
 function parseRoleIdsFromInput(raw) {
   if (raw == null || String(raw).trim() === "") return [];
@@ -791,6 +833,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       const launchForEmbed = {
         ...fetched,
         deployCount: launch.deployCount ?? fetched.deployCount,
+        feeRecipientDeployCount: launch.feeRecipientDeployCount ?? fetched.feeRecipientDeployCount,
       };
       const deployedMs =
         launchForEmbed.deployedAtMsFromBankr ??
@@ -1035,6 +1078,9 @@ async function runNotify() {
                 : embed;
             const watchList = await getWatchListForGuild(tenant.guildId);
             const showInWatch = isWatchMatchForTenant(launch, watchList);
+            const watchReasons = showInWatch ? getWatchMatchReasons(launch, watchList) : [];
+            const watchEmbed =
+              watchReasons.length > 0 ? buildLaunchEmbed({ ...launch, watchMatchReasons: watchReasons }) : embed;
             const allCh = tenant.allLaunchesChannelId ? await client.channels.fetch(tenant.allLaunchesChannelId).catch(() => null) : null;
             const alertCh = tenant.alertChannelId ? await client.channels.fetch(tenant.alertChannelId).catch(() => null) : null;
             const watchCh = tenant.watchAlertChannelId ? await client.channels.fetch(tenant.watchAlertChannelId).catch(() => null) : null;
@@ -1051,7 +1097,7 @@ async function runNotify() {
             }
             if (allCh) await postOnce(allCh);
             if (alertCh && showInCurated) await postOnce(alertCh, curatedEmbed, curatedContent);
-            if (watchCh && showInWatch) await postOnce(watchCh, embed, watchContent);
+            if (watchCh && showInWatch) await postOnce(watchCh, watchEmbed, watchContent);
             if (tenant.telegramChatId) {
               const tgChat = tenant.telegramChatId;
               const topicFirehose = tenant.telegramTopicFirehose ?? undefined;
@@ -1372,37 +1418,25 @@ client.once("ready", async () => {
     const tokenCa = claim.poolToken ?? ""; // full CA for copy/search
     const bankrUrl = tokenAddr ? `https://bankr.bot/launches/${tokenCa}` : null;
     const txUrl = claim.txHash ? `https://basescan.org/tx/${claim.txHash}` : null;
-    const tradeMd =
-      tokenCa && /^0x[a-fA-F0-9]{40}$/.test(tokenCa.trim())
-        ? `**Trade:** ${buildGmgnBbTradeMarkdown(tokenCa.trim().toLowerCase())}`
-        : null;
     const desc = [
       tokenCa ? `**Token CA:** \`${tokenCa}\`` : null,
-      tradeMd,
       `**Fees:** ${amt} WETH`,
       txUrl ? `**TX:** [BaseScan](${txUrl})` : null,
     ].filter(Boolean).join("\n");
-    const claimTradeRow =
-      tokenCa && /^0x[a-fA-F0-9]{40}$/.test(tokenCa.trim())
-        ? (() => {
-            const a = tokenCa.trim().toLowerCase();
-            return new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setLabel("GMGN")
-                .setStyle(ButtonStyle.Link)
-                .setURL(`https://t.me/GMGN_swap_bot?start=i_infobot_c_${a}`),
-              new ButtonBuilder()
-                .setLabel("BB")
-                .setStyle(ButtonStyle.Link)
-                .setURL(`https://t.me/based_eth_bot?start=r_infobot_b_${a}`)
-            );
-          })()
-        : null;
+    const fields = [];
+    if (tokenCa && /^0x[a-fA-F0-9]{40}$/.test(tokenCa.trim())) {
+      fields.push({
+        name: "\u200b",
+        value: buildTradeLinks(tokenCa.trim().toLowerCase()),
+        inline: false,
+      });
+    }
     const embed = {
       title: `💰 $${symbol} claimed`,
       description: desc,
       url: bankrUrl || undefined, // title clicks through to Bankr launch page
       color: 0x00aa00,
+      fields: fields.length ? fields : undefined,
       timestamp: new Date().toISOString(),
     };
 
@@ -1428,7 +1462,7 @@ client.once("ready", async () => {
     for (const cid of channelIds) {
       const ch = await client.channels.fetch(cid).catch(() => null);
       if (ch) {
-        const payload = { embeds: [embed], ...(claimTradeRow ? { components: [claimTradeRow] } : {}) };
+        const payload = { embeds: [embed] };
         await ch.send(payload).catch((e) => console.error("Claim send:", e.message));
       }
     }
@@ -1588,8 +1622,8 @@ function formatFeesTokenReply(out, tokenAddress) {
       lines.push(`**Weekly revenue (est.)** • ${weeklyWeth.toFixed(4)} WETH`);
     }
     lines.push(`**Claims** • ${claimsCount}`);
-    if (out.feeWallet && out.claimedFromEvents != null) {
-      lines.push(`**Fee recipient has claimed for this pool:** ${out.claimedFromEvents.count > 0 ? "Yes" : "No"}`);
+    if (out.feeWallet && out.claimedFromEvents != null && out.claimedFromEvents.count > 0) {
+      lines.push(`**Fee recipient has claimed for this pool:** Yes`);
       if (out.lastClaimTxHash) lines.push(`**Claim tx:** https://basescan.org/tx/${out.lastClaimTxHash}`);
     }
     lines.push("");
@@ -1613,7 +1647,6 @@ function formatFeesTokenReply(out, tokenAddress) {
     } else if (totalAccrued >= eps) {
       if (totalClaimable >= eps) lines.push("**Status:** UNCLAIMED");
       else if (totalClaimable < eps) lines.push("**Status:** ALL CLAIMED");
-      else lines.push("**Status:** _Unknown (hook reports 0 claimable; no claim events yet)_");
     }
     lines.push("");
   }
@@ -1628,6 +1661,103 @@ function formatFeesTokenReply(out, tokenAddress) {
     lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
   }
   return lines.join("\n").trim();
+}
+
+/** Fees field for paste-token embed: indexer/hook signal only; omit empty “0 / unknown” claim noise. */
+function buildPasteTokenFeesEmbedValue(out) {
+  const feeParts = [];
+  const DEC = 18;
+  const claimableLine =
+    out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
+      ? formatClaimableOneLiner(out.hookFees, out.symbol)
+      : null;
+  const hasIndexerFees =
+    out.cumulatedFees &&
+    (out.cumulatedFees.token0Fees != null ||
+      out.cumulatedFees.token1Fees != null ||
+      out.cumulatedFees.totalFeesUsd != null);
+  const fmtT = (n) =>
+    n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
+
+  if (hasIndexerFees) {
+    const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
+    const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
+    if (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null) {
+      feeParts.push(`**Historical accrued:** WETH ${w.toFixed(4)} • ${out.symbol ?? "Token"} ${fmtT(t)}`);
+    }
+    if (out.cumulatedFees.totalFeesUsd != null && out.formatUsd) {
+      const usd = Number(out.cumulatedFees.totalFeesUsd);
+      if (!Number.isNaN(usd) && usd >= 0 && usd < 1e12) {
+        feeParts.push(`**Total (USD):** ${out.formatUsd(out.cumulatedFees.totalFeesUsd) ?? out.cumulatedFees.totalFeesUsd}`);
+      }
+    }
+  }
+
+  if (claimableLine) feeParts.push(`**Claimable:** ${claimableLine}`);
+
+  const ev = out.claimedFromEvents;
+  const eps = 1e-9;
+  if (ev != null) {
+    const claimedW = ev.claimedWeth ?? 0;
+    const claimedT = ev.claimedToken ?? 0;
+    if (claimedW > eps || claimedT > eps) {
+      feeParts.push(`**Already claimed (on-chain):** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+    }
+    if (ev.count > 0) {
+      feeParts.push("**Fee recipient has claimed for this pool:** Yes");
+      if (out.lastClaimTxHash) {
+        feeParts.push(`**Claim tx:** [BaseScan](https://basescan.org/tx/${out.lastClaimTxHash})`);
+      }
+    }
+  }
+
+  if (hasIndexerFees && out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
+    const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
+    const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
+    const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
+    const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
+    const totalAccrued = w + t;
+    const totalClaimable = cW + cT;
+    if (ev != null && ev.count > 0) {
+      if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
+      else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
+      else feeParts.push("**Status:** UNCLAIMED");
+    } else if (totalAccrued >= eps) {
+      if (totalClaimable >= eps) feeParts.push("**Status:** UNCLAIMED");
+      else if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
+    }
+  }
+
+  const retrievedAt = new Date().toLocaleString("en-US", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "America/New_York",
+  });
+  if (feeParts.length > 0) {
+    feeParts.push(`_Data retrieved: ${retrievedAt} ET_`);
+    return feeParts.join("\n");
+  }
+  if (out.launch) {
+    const fallback = [];
+    if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
+      fallback.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
+    }
+    const rpcSet = !!(process.env.RPC_URL_BASE || process.env.RPC_URL);
+    if (rpcSet && !out.hasPoolIdForHook) {
+      fallback.push(
+        "_RPC is set; this token's **pool ID** (bytes32) wasn't found in the Bankr API or indexer — claimable fees need it. It may appear after the pool is indexed._"
+      );
+    } else if (!rpcSet) {
+      fallback.push("_No fee data yet — set **RPC_URL_BASE** (Base RPC) in the bot env for on-chain claimable._");
+    } else {
+      fallback.push(
+        "_No fee data yet for this pool. Volume and historical fees usually appear in the indexer within a few minutes of the first swap; claimable uses on-chain data when RPC is set._"
+      );
+    }
+    fallback.push(`_Data retrieved: ${retrievedAt} ET_`);
+    return fallback.join("\n");
+  }
+  return "";
 }
 
 client.on("messageCreate", async (message) => {
@@ -1656,106 +1786,17 @@ client.on("messageCreate", async (message) => {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
     const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
-    const embed = buildTokenDetailEmbed(out, tokenAddress);
-    const feeParts = [];
-    const claimableLine = out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
-      ? formatClaimableOneLiner(out.hookFees, out.symbol)
-      : null;
-    if (claimableLine) feeParts.push(`**Claimable:** ${claimableLine}`);
-    if (out.cumulatedFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null || out.cumulatedFees.totalFeesUsd != null)) {
-      const DEC = 18;
-      const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
-      const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
-      const fmtT = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
-      if (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null) {
-        feeParts.push(`**Historical accrued:** WETH ${w.toFixed(4)} • ${out.symbol ?? "Token"} ${fmtT(t)}`);
-      }
-      if (out.cumulatedFees.totalFeesUsd != null && out.formatUsd) {
-        const usd = Number(out.cumulatedFees.totalFeesUsd);
-        if (!Number.isNaN(usd) && usd >= 0 && usd < 1e12) feeParts.push(`**Total (USD):** ${out.formatUsd(out.cumulatedFees.totalFeesUsd) ?? out.cumulatedFees.totalFeesUsd}`);
-      }
-      if (out.hookFees && claimableLine) {
-        const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
-        const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
-        const fromEvents = out.claimedFromEvents;
-        if (fromEvents != null) {
-          const claimedW = fromEvents.claimedWeth ?? 0;
-          const claimedT = fromEvents.claimedToken ?? 0;
-          if (claimedW > 0 || claimedT > 0) {
-            feeParts.push(`**Already claimed (on-chain):** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
-          } else {
-            feeParts.push("**Already claimed (on-chain):** 0 (no claim events detected).");
-          }
-        } else {
-          const claimedW = Math.max(0, w - cW);
-          const claimedT = Math.max(0, t - cT);
-          if (claimedW > 0 || claimedT > 0) {
-            feeParts.push(`**Already claimed:** WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
-          }
-        }
-      } else if (out.hookFees && !claimableLine && out.claimedFromEvents != null) {
-        const ev = out.claimedFromEvents;
-        if ((ev.claimedWeth ?? 0) > 0 || (ev.claimedToken ?? 0) > 0) {
-          feeParts.push(`**Already claimed (on-chain):** WETH ${(ev.claimedWeth ?? 0).toFixed(4)} • Token ${fmtT(ev.claimedToken ?? 0)}`);
-        } else {
-          feeParts.push("**Already claimed (on-chain):** 0 (no claim events detected).");
-        }
-      }
-      if (out.feeWallet && out.claimedFromEvents != null) {
-        feeParts.push(`**Fee recipient has claimed for this pool:** ${out.claimedFromEvents.count > 0 ? "Yes" : "No"}`);
-        if (out.lastClaimTxHash) feeParts.push(`**Claim tx:** [BaseScan](https://basescan.org/tx/${out.lastClaimTxHash})`);
-      }
-      if (out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
-        const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
-        const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
-        const eps = 1e-9;
-        const totalAccrued = w + t;
-        const totalClaimable = cW + cT;
-        const fromEvents = out.claimedFromEvents;
-        if (fromEvents != null) {
-          const claimedT = fromEvents.claimedToken ?? 0;
-          const claimedW = fromEvents.claimedWeth ?? 0;
-          const totalClaimed = claimedT + claimedW;
-          if (totalClaimed >= eps) {
-            if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
-            else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
-            else feeParts.push("**Status:** UNCLAIMED");
-          } else {
-            if (totalClaimable >= eps) feeParts.push("**Status:** UNCLAIMED");
-            else if (totalAccrued >= eps) feeParts.push("**Status:** _Unknown (no claim events; hook reports 0 claimable)_");
-          }
-        } else {
-          if (totalAccrued >= eps) {
-            if (totalClaimable < eps) feeParts.push("**Status:** ALL CLAIMED");
-            else if (totalClaimable < totalAccrued - eps) feeParts.push("**Status:** PARTIALLY CLAIMED");
-            else feeParts.push("**Status:** UNCLAIMED");
-          }
-        }
-      }
+    const feeFeedOpts = {};
+    if (out.feeWallet) {
+      const n = await getFeeRecipientFeedCount(out.feeWallet).catch(() => null);
+      if (n != null && n >= 1) feeFeedOpts.feeRecipientFeedCount = n;
     }
-    if (out.hookFees && !claimableLine) {
-      feeParts.push("**Claimable:** 0 WETH · 0 token (no unclaimed fees yet).");
-    }
-    if (feeParts.length > 0) {
-      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "America/New_York" });
-      feeParts.push(`_Data retrieved: ${retrievedAt} ET_`);
-    } else if (out.launch) {
-      if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
-        feeParts.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
-      }
-      const rpcSet = !!(process.env.RPC_URL_BASE || process.env.RPC_URL);
-      if (rpcSet && !out.hasPoolIdForHook) {
-        feeParts.push("_RPC is set; this token's **pool ID** (bytes32) wasn't found in the Bankr API or indexer — claimable fees need it. It may appear after the pool is indexed._");
-      } else if (!rpcSet) {
-        feeParts.push("_No fee data yet — set **RPC_URL_BASE** (Base RPC) in the bot env for on-chain claimable._");
-      } else {
-        feeParts.push("_No fee data yet for this pool. Volume and historical fees usually appear in the indexer within a few minutes of the first swap; claimable uses on-chain data when RPC is set._");
-      }
-      const retrievedAt = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short", timeZone: "America/New_York" });
-      feeParts.push(`_Data retrieved: ${retrievedAt} ET_`);
-    }
-    if (feeParts.length > 0 && embed.fields) {
-      embed.fields.splice(3, 0, { name: "Fees", value: feeParts.join("\n"), inline: false });
+    const embed = buildTokenDetailEmbed(out, tokenAddress, feeFeedOpts);
+    const feesValue = buildPasteTokenFeesEmbedValue(out);
+    if (feesValue && embed.fields) {
+      const tradeIdx = embed.fields.findIndex((f) => f.name === "\u200b");
+      const insertAt = tradeIdx >= 0 ? tradeIdx : embed.fields.length;
+      embed.fields.splice(insertAt, 0, { name: "Fees", value: feesValue.slice(0, 4096), inline: false });
     }
     await message.reply({ embeds: [embed] }).catch(() => {});
     debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste token", tokenAddress);

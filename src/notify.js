@@ -49,6 +49,8 @@ const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 const SEEN_FILE = process.env.SEEN_FILE || join(process.cwd(), ".bankr-seen.json");
 const SEEN_MAX_KEYS = process.env.SEEN_MAX_KEYS != null ? parseInt(process.env.SEEN_MAX_KEYS, 10) : null;
 const DEPLOY_COUNT_FILE = process.env.DEPLOY_COUNT_FILE || join(process.cwd(), ".bankr-deploy-counts.json");
+const FEE_RECIPIENT_COUNT_FILE =
+  process.env.FEE_RECIPIENT_COUNT_FILE || join(process.cwd(), ".bankr-fee-recipient-counts.json");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
@@ -436,6 +438,42 @@ async function saveDeployCounts(counts) {
   }
 }
 
+async function loadFeeRecipientCounts() {
+  try {
+    const data = await readFile(FEE_RECIPIENT_COUNT_FILE, "utf-8");
+    const raw = JSON.parse(data);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (Array.isArray(v)) out[k.toLowerCase()] = new Set(v);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function saveFeeRecipientCounts(counts) {
+  try {
+    await mkdir(dirname(FEE_RECIPIENT_COUNT_FILE), { recursive: true }).catch(() => {});
+    const out = {};
+    for (const [k, v] of Object.entries(counts)) {
+      out[k] = [...v];
+    }
+    await writeFile(FEE_RECIPIENT_COUNT_FILE, JSON.stringify(out));
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/** Unique Bankr tokens seen in the feed where this wallet is a fee recipient (from persisted counts). */
+export async function getFeeRecipientFeedCount(walletAddress) {
+  const a = walletAddress && String(walletAddress).trim().toLowerCase();
+  if (!a || !/^0x[a-f0-9]{40}$/.test(a)) return null;
+  const counts = await loadFeeRecipientCounts();
+  const n = counts[a]?.size;
+  return n != null && n > 0 ? n : null;
+}
+
 function imageUrl(img) {
   if (!img) return null;
   if (img.startsWith("ipfs://"))
@@ -475,8 +513,8 @@ export function buildGmgnBbTradeMarkdown(tokenAddress) {
   return `[GMGN](${gmgnUrl}) • [BB](${bbUrl})`;
 }
 
-/** Trade links for a Base token (GMGN Telegram, BB, FCW). Used in token detail embed. GMGN uses referral i_infobot. */
-function buildTradeLinks(tokenAddress) {
+/** Trade links for a Base token (GMGN Telegram, BB, FCW). Used in token detail + Discord claim embeds. */
+export function buildTradeLinks(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
@@ -515,13 +553,19 @@ function formatDeployerOrFeeForEmbed(obj) {
  * @param {string} tokenAddress - Normalized token address.
  * @returns {object} Discord embed object.
  */
-export function buildTokenDetailEmbed(out, tokenAddress) {
+/**
+ * @param {object} out - getTokenFees result
+ * @param {string} tokenAddress
+ * @param {{ feeRecipientFeedCount?: number|null }} [options]
+ */
+export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   const launchUrl = bankrLaunchUrl(tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${tokenAddress}`;
   const name = out.name ?? "—";
   const symbol = out.symbol ?? "—";
   const launch = out.launch ?? null;
   const img = (launch?.imageUri || launch?.image) ? imageUrl(launch.imageUri || launch.image) : null;
+  const feeFeed = options.feeRecipientFeedCount;
 
   const tokenLines = [
     `**Chain:** Base`,
@@ -546,6 +590,13 @@ export function buildTokenDetailEmbed(out, tokenAddress) {
     { name: "Deployer", value: formatDeployerOrFeeForEmbed(launch?.deployer), inline: false },
     { name: "Fee Recipient", value: formatDeployerOrFeeForEmbed(launch?.feeRecipient), inline: false },
   ];
+  if (feeFeed != null && feeFeed >= 1) {
+    fields.push({
+      name: "Tokens (fee recipient in feed)",
+      value: `${feeFeed}`,
+      inline: true,
+    });
+  }
 
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
@@ -583,8 +634,13 @@ export function buildLaunchEmbed(launch) {
   const fields = [
     { name: "Token", value: `${launch.name} ($${launch.symbol})`, inline: true },
     { name: "CA", value: `\`${launch.tokenAddress}\``, inline: true },
-    { name: "Launcher", value: launcherValue, inline: false },
   ];
+  if (Array.isArray(launch.watchMatchReasons) && launch.watchMatchReasons.length > 0) {
+    let v = launch.watchMatchReasons.map((r) => `• ${r}`).join("\n");
+    if (v.length > 1024) v = `${v.slice(0, 1021)}…`;
+    fields.push({ name: "Matched because", value: v, inline: false });
+  }
+  fields.push({ name: "Launcher", value: launcherValue, inline: false });
 
   if (launch.beneficiaries && launch.beneficiaries.length) {
     const bens = launch.beneficiaries
@@ -600,6 +656,14 @@ export function buildLaunchEmbed(launch) {
       })
       .join("\n\n");
     fields.push({ name: "Fee recipient", value: bens.slice(0, 1024) || "—", inline: false });
+  }
+
+  if (launch.feeRecipientDeployCount != null && launch.feeRecipientDeployCount >= 1) {
+    fields.push({
+      name: "Tokens (fee recipient in feed)",
+      value: `${launch.feeRecipientDeployCount}`,
+      inline: true,
+    });
   }
 
   if (launch.deployCount != null && launch.deployCount > 1) {
@@ -887,6 +951,7 @@ export async function runNotifyCycle(options = {}) {
   const cycleApiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const seenArr = await loadSeen();
   const deployCounts = await loadDeployCounts();
+  const feeRecipientCounts = await loadFeeRecipientCounts();
 
   const source = cycleApiKey && CHAIN_ID === 8453 ? "Bankr API" : `indexer=${DOPPLER_INDEXER_URL}`;
   console.log(`Fetching launches (chainId=${CHAIN_ID}, ${source})...`);
@@ -903,8 +968,21 @@ export async function runNotifyCycle(options = {}) {
       if (!deployCounts[addr]) deployCounts[addr] = new Set();
       deployCounts[addr].add(l.tokenAddress.toLowerCase());
     }
+    const feeAddrs = (l.beneficiaries || [])
+      .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
+      .map((a) =>
+        a && typeof a === "string" && /^0x[a-fA-F0-9]{40}$/.test(a.trim()) ? a.trim().toLowerCase() : null
+      )
+      .filter(Boolean);
+    for (const fa of feeAddrs) {
+      if (l.tokenAddress) {
+        if (!feeRecipientCounts[fa]) feeRecipientCounts[fa] = new Set();
+        feeRecipientCounts[fa].add(l.tokenAddress.toLowerCase());
+      }
+    }
   }
   await saveDeployCounts(deployCounts);
+  await saveFeeRecipientCounts(feeRecipientCounts);
 
   const { x: watchX, fc: watchFc, wallet: watchWallet, keywords: watchKeywords } = await getWatchList();
 
@@ -989,9 +1067,20 @@ export async function runNotifyCycle(options = {}) {
 
   const enriched = newLaunches.map((launch) => {
     const count = launch.launcher ? deployCounts[launch.launcher.toLowerCase()]?.size : null;
+    const b0 = launch.beneficiaries?.[0];
+    const feeW =
+      typeof b0 === "object" && b0
+        ? (b0.beneficiary ?? b0.address ?? b0.wallet)
+        : b0;
+    const feeAddr =
+      feeW && typeof feeW === "string" && /^0x[a-fA-F0-9]{40}$/.test(feeW.trim())
+        ? feeW.trim().toLowerCase()
+        : null;
+    const feeRecipientDeployCount = feeAddr ? feeRecipientCounts[feeAddr]?.size : null;
     return {
       ...launch,
       deployCount: count ?? undefined,
+      feeRecipientDeployCount: feeRecipientDeployCount != null && feeRecipientDeployCount >= 1 ? feeRecipientDeployCount : undefined,
       isWatchMatch: isWatchMatch(launch),
       passedFilters: passesFilters(launch),
     };
