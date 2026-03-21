@@ -61,6 +61,7 @@ import {
   resolveHandleToWallet,
   getBankrWalletLaunchRoleCounts,
   launchWallet,
+  enrichLaunchWithBankrRoleCounts,
 } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
@@ -801,17 +802,6 @@ function normalizeWalletAddr(addr) {
   return s && /^0x[a-f0-9]{40}$/.test(s) ? s : null;
 }
 
-function feeWalletFromLaunch(launch) {
-  const b0 = launch?.beneficiaries?.[0];
-  if (!b0) return null;
-  const raw = typeof b0 === "object" ? b0.beneficiary ?? b0.address ?? b0.wallet : b0;
-  return normalizeWalletAddr(raw);
-}
-
-function deployWalletFromLaunch(launch) {
-  return normalizeWalletAddr(launch?.launcher);
-}
-
 /** Prefer env key, else first tenant key (for shared newLaunches embed enrichment). */
 function pickBankrApiKeyForRoleCounts(tenantsWithChannels) {
   if (process.env.BANKR_API_KEY) return process.env.BANKR_API_KEY;
@@ -819,40 +809,6 @@ function pickBankrApiKeyForRoleCounts(tenantsWithChannels) {
     if (t.bankrApiKey) return t.bankrApiKey;
   }
   return null;
-}
-
-/**
- * Add bankrDeployCount / bankrFeeRecipientCount from Bankr launch index (same basis as bankr.bot/launches/search).
- * Cached inside getBankrWalletLaunchRoleCounts. Requires bankrApiKey.
- */
-async function enrichLaunchWithBankrRoleCounts(launch, bankrApiKey) {
-  if (!bankrApiKey || !launch) return launch;
-  const launcher = deployWalletFromLaunch(launch);
-  const fee = feeWalletFromLaunch(launch);
-  if (!launcher && !fee) return launch;
-  try {
-    if (launcher && fee && launcher === fee) {
-      const c = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey });
-      return {
-        ...launch,
-        ...(c.asDeployer != null && { bankrDeployCount: c.asDeployer }),
-        ...(c.asFeeRecipient != null && { bankrFeeRecipientCount: c.asFeeRecipient }),
-      };
-    }
-    let cLauncher = null;
-    let cFeeWallet = null;
-    if (launcher) cLauncher = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey }).catch(() => null);
-    if (fee && fee !== launcher) cFeeWallet = await getBankrWalletLaunchRoleCounts(fee, { bankrApiKey }).catch(() => null);
-    const bankrDeployCount = cLauncher?.asDeployer;
-    const bankrFeeRecipientCount = fee && fee !== launcher ? cFeeWallet?.asFeeRecipient : undefined;
-    return {
-      ...launch,
-      ...(bankrDeployCount != null && { bankrDeployCount }),
-      ...(bankrFeeRecipientCount != null && { bankrFeeRecipientCount: bankrFeeRecipientCount }),
-    };
-  } catch {
-    return launch;
-  }
 }
 
 /** For token detail embed: Bankr role counts for deployer + fee wallets (1–2 API-backed lookups, cached). */
@@ -923,7 +879,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         deployCount: launch.deployCount ?? fetched.deployCount,
         feeRecipientDeployCount: launch.feeRecipientDeployCount ?? fetched.feeRecipientDeployCount,
       };
-      if (apiKey) launchForEmbed = await enrichLaunchWithBankrRoleCounts(launchForEmbed, apiKey);
+      if (apiKey) launchForEmbed = await enrichLaunchWithBankrRoleCounts(launchForEmbed, { bankrApiKey: apiKey });
       const deployedMs =
         launchForEmbed.deployedAtMsFromBankr ??
         stats.deployedAtMs ??
@@ -1084,7 +1040,7 @@ async function runNotify() {
 
       const envRoleCountKey = process.env.BANKR_API_KEY;
       for (const launch of newLaunches) {
-        const launchForEmbeds = envRoleCountKey ? await enrichLaunchWithBankrRoleCounts(launch, envRoleCountKey) : launch;
+        const launchForEmbeds = envRoleCountKey ? await enrichLaunchWithBankrRoleCounts(launch, { bankrApiKey: envRoleCountKey }) : launch;
         const embed = buildLaunchEmbed(launchForEmbeds);
         const showInAll = true;
         const showInCurated = launch.passedFilters !== false;
@@ -1160,7 +1116,7 @@ async function runNotify() {
         }
         const roleCountApiKey = pickBankrApiKeyForRoleCounts(tenantsWithChannels);
         for (const launch of newLaunches) {
-          const launchForEmbeds = roleCountApiKey ? await enrichLaunchWithBankrRoleCounts(launch, roleCountApiKey) : launch;
+          const launchForEmbeds = roleCountApiKey ? await enrichLaunchWithBankrRoleCounts(launch, { bankrApiKey: roleCountApiKey }) : launch;
           const embed = buildLaunchEmbed(launchForEmbeds);
           for (const tenant of tenantsWithChannels) {
             const showInCurated = tenantPassesFilters(launch, tenant.rules);

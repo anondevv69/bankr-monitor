@@ -574,6 +574,54 @@ export async function getBankrWalletLaunchRoleCounts(walletAddress, options = {}
   }
 }
 
+function normLaunchWallet(addr) {
+  const s = addr && String(addr).trim().toLowerCase();
+  return s && /^0x[a-f0-9]{40}$/.test(s) ? s : null;
+}
+
+function feeWalletFromLaunchBeneficiary(launch) {
+  const b0 = launch?.beneficiaries?.[0];
+  if (!b0) return null;
+  const raw = typeof b0 === "object" ? b0.beneficiary ?? b0.address ?? b0.wallet : b0;
+  return normLaunchWallet(raw);
+}
+
+/**
+ * Add bankrDeployCount / bankrFeeRecipientCount (same basis as bankr.bot search). Used by Discord bot + notify/Telegram.
+ * @param {object} launch - Normalized launch { launcher, beneficiaries, ... }
+ * @param {{ bankrApiKey?: string }} [options]
+ */
+export async function enrichLaunchWithBankrRoleCounts(launch, options = {}) {
+  const bankrApiKey = options.bankrApiKey ?? BANKR_API_KEY;
+  if (!bankrApiKey || !launch) return launch;
+  const launcher = normLaunchWallet(launch?.launcher);
+  const fee = feeWalletFromLaunchBeneficiary(launch);
+  if (!launcher && !fee) return launch;
+  try {
+    if (launcher && fee && launcher === fee) {
+      const c = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey });
+      return {
+        ...launch,
+        ...(c.asDeployer != null && { bankrDeployCount: c.asDeployer }),
+        ...(c.asFeeRecipient != null && { bankrFeeRecipientCount: c.asFeeRecipient }),
+      };
+    }
+    let cLauncher = null;
+    let cFeeWallet = null;
+    if (launcher) cLauncher = await getBankrWalletLaunchRoleCounts(launcher, { bankrApiKey }).catch(() => null);
+    if (fee && fee !== launcher) cFeeWallet = await getBankrWalletLaunchRoleCounts(fee, { bankrApiKey }).catch(() => null);
+    const bankrDeployCount = cLauncher?.asDeployer;
+    const bankrFeeRecipientCount = fee && fee !== launcher ? cFeeWallet?.asFeeRecipient : undefined;
+    return {
+      ...launch,
+      ...(bankrDeployCount != null && { bankrDeployCount }),
+      ...(bankrFeeRecipientCount != null && { bankrFeeRecipientCount }),
+    };
+  } catch {
+    return launch;
+  }
+}
+
 async function main() {
   const query = process.argv[2];
   if (!query) {

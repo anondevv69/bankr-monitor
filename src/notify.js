@@ -28,6 +28,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { fetchNewLaunches } from "./fetch-from-chain.js";
 import { formatUsd, getHotTokenStats } from "./token-stats.js";
+import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -737,6 +738,16 @@ function telegramThreadId(v) {
   return Number.isNaN(n) ? undefined : n;
 }
 
+/** Bankr deploy count for launcher, else local feed count (notify cycle). */
+function telegramDeploysCountDisplay(launch) {
+  return formatBankrRoleCountDisplay(launch.bankrDeployCount ?? launch.deployCount);
+}
+
+/** Bankr fee-recipient token count, else local feed count. */
+function telegramRecipientCountDisplay(launch) {
+  return formatBankrRoleCountDisplay(launch.bankrFeeRecipientCount ?? launch.feeRecipientDeployCount);
+}
+
 /** Build Token / CA / Launcher / Fee recipient block for Telegram (Markdown), matching Discord embed.
  * @param {object} launch - Launch object (name, symbol, tokenAddress, launcher, launcherX, beneficiaries).
  * @param {{ skipToken?: boolean }} [opts] - If skipToken true, omit Token line (caller adds link separately).
@@ -758,8 +769,14 @@ function formatLaunchBodyForTelegram(launch, opts = {}) {
       const handle = String(launch.launcherX).replace(/^@/, "");
       parts.push(xUrl ? `X: [@${handle}](${xUrl})` : `X: @${handle}`);
     }
+    if (launch.launcherFarcaster) {
+      const fcUrl = farcasterProfileUrl(launch.launcherFarcaster);
+      parts.push(fcUrl ? `Farcaster: [${escapeMarkdown(launch.launcherFarcaster)}](${fcUrl})` : `Farcaster: ${escapeMarkdown(launch.launcherFarcaster)}`);
+    }
     const wUrl = walletLink(launch.launcher);
     parts.push(wUrl ? `Wallet: [${launch.launcher}](${wUrl})` : `Wallet: ${launch.launcher}`);
+    const dep = telegramDeploysCountDisplay(launch);
+    if (dep != null) parts.push(`*Deploys:* ${dep}`);
     launcherValue = parts.join("\n");
   }
   lines.push("*Launcher*", launcherValue, "");
@@ -772,10 +789,16 @@ function formatLaunchBodyForTelegram(launch, opts = {}) {
       const handle = String(b.xUsername).replace(/^@/, "");
       parts.push(xUrl ? `X: [@${handle}](${xUrl})` : `X: @${handle}`);
     }
+    if (b.farcaster) {
+      const fcUrl = farcasterProfileUrl(b.farcaster);
+      parts.push(fcUrl ? `Farcaster: [${escapeMarkdown(b.farcaster)}](${fcUrl})` : `Farcaster: ${escapeMarkdown(b.farcaster)}`);
+    }
     if (addr) {
       const wUrl = walletLink(addr);
       parts.push(wUrl ? `Wallet: [${addr}](${wUrl})` : `Wallet: ${addr}`);
     }
+    const rec = telegramRecipientCountDisplay(launch);
+    if (rec != null) parts.push(`*Recipient:* ${rec}`);
     lines.push("*Fee recipient*", parts.length ? parts.join("\n") : "—", "");
   } else {
     lines.push("*Fee recipient*", "—", "");
@@ -791,31 +814,38 @@ export async function sendTelegram(launch, options = {}) {
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
 
   let text = `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
-  text += `[View on Bankr](${launchUrl}) | [Basescan](${basescanTokenUrl})\n`;
-  text += `*CA:* \`${launch.tokenAddress}\`\n\n`;
+  text += `*Token*\n${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})\n\n`;
+  text += `[View on Bankr](${launchUrl}) | [Basescan](${basescanTokenUrl})\n\n`;
+  text += `*CA*\n\`${launch.tokenAddress}\`\n\n`;
 
   if (launch.launcher) {
-    text += `*Launcher:*\n`;
+    text += `*Launcher*\n`;
     if (launch.launcherX) text += `  X: [@${escapeMarkdown(launch.launcherX)}](${xProfileUrl(launch.launcherX)})\n`;
     if (launch.launcherFarcaster) text += `  Farcaster: [${escapeMarkdown(launch.launcherFarcaster)}](${farcasterProfileUrl(launch.launcherFarcaster)})\n`;
-    text += `  Wallet: [${launch.launcher}](${walletLink(launch.launcher)})\n\n`;
+    text += `  Wallet: [${launch.launcher}](${walletLink(launch.launcher)})\n`;
+    const dep = telegramDeploysCountDisplay(launch);
+    if (dep != null) text += `  *Deploys:* ${dep}\n`;
+    text += `\n`;
   }
 
   if (launch.beneficiaries?.length) {
-    text += `*Fee recipient:*\n`;
+    text += `*Fee recipient*\n`;
     for (const b of launch.beneficiaries) {
       const addr = typeof b === "object" ? b.beneficiary || b.address : b;
       if (b.xUsername) text += `  X: [@${escapeMarkdown(b.xUsername)}](${xProfileUrl(b.xUsername)})\n`;
       if (b.farcaster) text += `  Farcaster: [${escapeMarkdown(b.farcaster)}](${farcasterProfileUrl(b.farcaster)})\n`;
       text += `  Wallet: [${addr}](${walletLink(addr)})\n`;
     }
+    const rec = telegramRecipientCountDisplay(launch);
+    if (rec != null) text += `  *Recipient:* ${rec}\n`;
     text += `\n`;
   }
 
-  if (launch.deployCount != null && launch.deployCount > 1) {
-    const d = formatBankrRoleCountDisplay(launch.deployCount) ?? String(launch.deployCount);
-    text += `*Deploys (in feed):* ${d}\n`;
+  if (launch.deployedAtMsFromBankr != null && Number.isFinite(launch.deployedAtMsFromBankr)) {
+    const deployed = new Date(launch.deployedAtMsFromBankr);
+    text += `*Deployed*\n\`${deployed.toUTCString().replace(" GMT", " UTC")}\`\n\n`;
   }
+
   if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
   if (launch.website) text += `*Website:* ${launch.website}\n`;
 
@@ -887,10 +917,6 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   if (mcStr) extras.push(`💰 MC: ${escapeMarkdown(mcStr)}`);
   if (deployedMs != null) {
     extras.push(`🕐 Deployed: \`${new Date(deployedMs).toISOString()}\``);
-  }
-  if (launch.deployCount != null && launch.deployCount > 1) {
-    const d = formatBankrRoleCountDisplay(launch.deployCount) ?? String(launch.deployCount);
-    extras.push(`📊 Deploys in feed: ${d}`);
   }
   const extraBlock = extras.length ? `${extras.join("\n")}\n\n` : "";
   const text = `${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;
@@ -1108,16 +1134,22 @@ export async function runNotifyCycle(options = {}) {
     };
   });
 
+  /** Bankr API counts for Telegram/Discord parity (Deploys / Recipient). Cached in lookup-deployer. */
+  const withBankrCounts =
+    cycleApiKey && CHAIN_ID === 8453
+      ? await Promise.all(enriched.map((l) => enrichLaunchWithBankrRoleCounts(l, { bankrApiKey: cycleApiKey })))
+      : enriched;
+
   await saveSeen(seenArr);
-  for (const l of enriched) {
+  for (const l of withBankrCounts) {
     const fee0 = l.beneficiaries?.[0] && (typeof l.beneficiaries[0] === "object" ? (l.beneficiaries[0].beneficiary ?? l.beneficiaries[0].address) : l.beneficiaries[0]);
     const launcherShort = l.launcher ? `${l.launcher.slice(0, 6)}..${l.launcher.slice(-4)}` : "—";
     const feeShort = fee0 ? `${String(fee0).slice(0, 6)}..${String(fee0).slice(-4)}` : "—";
     if (hasWatchList) console.log(`Notifying: ${l.name} ($${l.symbol}) launcher=${launcherShort} fee=${feeShort}${l.isWatchMatch ? " [WATCH MATCH]" : ""}`);
     else console.log(`Notifying: ${l.name} ($${l.symbol})${l.isWatchMatch ? " [watch]" : ""}`);
   }
-  console.log(`Done. ${enriched.length} new, ${launches.length} total (seen: ${seenArr.length}). Set SEEN_FILE=/data/bankr-seen.json on a volume so seen list persists across deploys.`);
-  return { newLaunches: enriched, totalCount: launches.length };
+  console.log(`Done. ${withBankrCounts.length} new, ${launches.length} total (seen: ${seenArr.length}). Set SEEN_FILE=/data/bankr-seen.json on a volume so seen list persists across deploys.`);
+  return { newLaunches: withBankrCounts, totalCount: launches.length };
 }
 
 async function main() {
