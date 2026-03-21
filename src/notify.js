@@ -143,7 +143,8 @@ function formatBankrLaunch(l) {
   const deployerFc = normHandle(rawDeployerFc);
   const feeFc = normHandle(rawFeeFc);
   const x = deployerX || feeX || null;
-  const launcherWallet = walletAddr(l.deployer) ?? walletAddr(l.deployerWallet ?? l.deployerWalletAddress);
+  const launcherWallet =
+    walletAddr(l.deployerWallet ?? l.deployerWalletAddress) ?? walletAddr(l.deployer);
   const feeWallet = walletAddr(l.feeRecipient) ?? walletAddr(l.feeRecipientWallet ?? l.feeRecipientWalletAddress ?? l.feeRecipientAddress);
   const tokenAddress = pickTokenAddress(l) ?? (l.tokenAddress ? String(l.tokenAddress).trim().toLowerCase() : null);
   const deployRaw =
@@ -543,6 +544,17 @@ function telegramTradeKeyboard(tokenAddress) {
   };
 }
 
+/** Show exact count up to this value; above it show "5+" (wallet / X / Farcaster launch counts). */
+export const BANKR_ROLE_COUNT_DISPLAY_CAP = 5;
+
+/** @param {number|null|undefined} count */
+export function formatBankrRoleCountDisplay(count) {
+  if (count == null) return null;
+  const n = Math.trunc(Number(count));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n > BANKR_ROLE_COUNT_DISPLAY_CAP ? `${BANKR_ROLE_COUNT_DISPLAY_CAP}+` : String(n);
+}
+
 /** Format deployer or feeRecipient object for Discord embed value (wallet + X + Farcaster links). */
 function formatDeployerOrFeeForEmbed(obj) {
   if (!obj) return "—";
@@ -591,13 +603,15 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   }
 
   let deployerVal = formatDeployerOrFeeForEmbed(launch?.deployer);
-  if (deployFeed != null && deployFeed >= 1) {
-    deployerVal = deployerVal === "—" ? `**Deploys:** ${deployFeed}` : `${deployerVal}\n**Deploys:** ${deployFeed}`;
+  const deployDisp = formatBankrRoleCountDisplay(deployFeed);
+  if (deployDisp != null) {
+    deployerVal = deployerVal === "—" ? `**Deploys:** ${deployDisp}` : `${deployerVal}\n**Deploys:** ${deployDisp}`;
   }
   let feeRecipientVal = formatDeployerOrFeeForEmbed(launch?.feeRecipient);
-  if (feeFeed != null && feeFeed >= 1) {
+  const feeDisp = formatBankrRoleCountDisplay(feeFeed);
+  if (feeDisp != null) {
     feeRecipientVal =
-      feeRecipientVal === "—" ? `**Recipient:** ${feeFeed}` : `${feeRecipientVal}\n**Recipient:** ${feeFeed}`;
+      feeRecipientVal === "—" ? `**Recipient:** ${feeDisp}` : `${feeRecipientVal}\n**Recipient:** ${feeDisp}`;
   }
   const fields = [
     { name: "Token", value: tokenLines.join("\n"), inline: false },
@@ -636,8 +650,9 @@ export function buildLaunchEmbed(launch) {
     if (launch.launcherFarcaster) parts.push(`**Farcaster:** [${launch.launcherFarcaster}](${farcasterProfileUrl(launch.launcherFarcaster)})`);
     parts.push(`**Wallet:** ${launcherAddrLink}`);
     const deployN = launch.bankrDeployCount ?? launch.deployCount;
-    if (deployN != null && deployN >= 1) {
-      parts.push(`**Deploys:** ${deployN}`);
+    const deployDisp = formatBankrRoleCountDisplay(deployN);
+    if (deployDisp != null) {
+      parts.push(`**Deploys:** ${deployDisp}`);
     }
     launcherValue = parts.join("\n");
   }
@@ -668,8 +683,9 @@ export function buildLaunchEmbed(launch) {
       .join("\n\n");
     let feeVal = bens.trim() ? bens : "—";
     const feeRecN = launch.bankrFeeRecipientCount ?? launch.feeRecipientDeployCount;
-    if (feeRecN != null && feeRecN >= 1) {
-      feeVal = `${feeVal}\n**Recipient:** ${feeRecN}`;
+    const feeDisp = formatBankrRoleCountDisplay(feeRecN);
+    if (feeDisp != null) {
+      feeVal = `${feeVal}\n**Recipient:** ${feeDisp}`;
     }
     fields.push({ name: "Fee recipient", value: feeVal.slice(0, 1024), inline: false });
   }
@@ -797,7 +813,8 @@ export async function sendTelegram(launch, options = {}) {
   }
 
   if (launch.deployCount != null && launch.deployCount > 1) {
-    text += `*Deploys (in feed):* ${launch.deployCount}\n`;
+    const d = formatBankrRoleCountDisplay(launch.deployCount) ?? String(launch.deployCount);
+    text += `*Deploys (in feed):* ${d}\n`;
   }
   if (launch.tweetUrl) text += `*Tweet:* ${launch.tweetUrl}\n`;
   if (launch.website) text += `*Website:* ${launch.website}\n`;
@@ -872,7 +889,8 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     extras.push(`🕐 Deployed: \`${new Date(deployedMs).toISOString()}\``);
   }
   if (launch.deployCount != null && launch.deployCount > 1) {
-    extras.push(`📊 Deploys in feed: ${launch.deployCount}`);
+    const d = formatBankrRoleCountDisplay(launch.deployCount) ?? String(launch.deployCount);
+    extras.push(`📊 Deploys in feed: ${d}`);
   }
   const extraBlock = extras.length ? `${extras.join("\n")}\n\n` : "";
   const text = `${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;

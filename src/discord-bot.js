@@ -60,6 +60,7 @@ import {
   lookupByDeployerOrFee,
   resolveHandleToWallet,
   getBankrWalletLaunchRoleCounts,
+  launchWallet,
 } from "./lookup-deployer.js";
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
@@ -1879,8 +1880,7 @@ client.on("messageCreate", async (message) => {
     const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
     const out = await getTokenFees(tokenAddress, { bankrApiKey });
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(tokenAddress, out, "paste");
-    const deployWallet =
-      out.launch?.deployer?.walletAddress ?? out.launch?.deployer?.wallet ?? null;
+    const deployWallet = launchWallet(out.launch, "deployer");
     const [deployFeedN, feeFeedN, bankrRole] = await Promise.all([
       deployWallet ? getDeployerFeedCount(deployWallet).catch(() => null) : Promise.resolve(null),
       out.feeWallet ? getFeeRecipientFeedCount(out.feeWallet).catch(() => null) : Promise.resolve(null),

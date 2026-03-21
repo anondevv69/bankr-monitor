@@ -267,10 +267,10 @@ function walletFrom(obj) {
 }
 
 /** Get wallet from launch (nested deployer/fee or top-level deployerWallet/feeRecipientWallet). */
-function launchWallet(launch, role) {
+export function launchWallet(launch, role) {
   if (role === "deployer") {
-    const w = walletFrom(launch.deployer) ?? (launch.deployerWallet && /^0x[a-fA-F0-9]{40}$/.test(String(launch.deployerWallet).trim()) ? String(launch.deployerWallet).trim().toLowerCase() : null);
-    return w;
+    // Prefer API top-level launcher wallet (matches bankr.bot / search grouping); nested deployer can differ.
+    return walletFrom(launch.deployerWallet) ?? walletFrom(launch.deployerWalletAddress) ?? walletFrom(launch.deployer);
   }
   if (role === "fee") {
     const w = walletFrom(launch.feeRecipient) ?? (launch.feeRecipientWallet && /^0x[a-fA-F0-9]{40}$/.test(String(launch.feeRecipientWallet).trim()) ? String(launch.feeRecipientWallet).trim().toLowerCase() : null);
