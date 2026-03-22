@@ -279,6 +279,31 @@ export function launchWallet(launch, role) {
   return null;
 }
 
+/**
+ * When handle/FC search returns tokens but resolveHandleToWallet missed (e.g. not in list window),
+ * infer the wallet from match rows so Bankr search links use q=0x… like the site.
+ * @param {Array<{ deployerWallet?: string|null, feeRecipientWallet?: string|null, deployerX?: string|null, deployerFc?: string|null, feeRecipientX?: string|null, feeRecipientFc?: string|null }>} matches
+ * @param {string} normalizedHandle - from parseQuery (lowercase handle, no @)
+ * @returns {string|null}
+ */
+function inferWalletFromHandleMatches(matches, normalizedHandle) {
+  const q = norm(normalizedHandle);
+  if (!q || !Array.isArray(matches) || matches.length === 0) return null;
+  const wallets = new Set();
+  for (const m of matches) {
+    const dx = m.deployerX ? norm(String(m.deployerX).replace(/^@/, "")) : null;
+    const fx = m.feeRecipientX ? norm(String(m.feeRecipientX).replace(/^@/, "")) : null;
+    const df = m.deployerFc ? norm(String(m.deployerFc)) : null;
+    const ff = m.feeRecipientFc ? norm(String(m.feeRecipientFc)) : null;
+    if (dx === q && m.deployerWallet) wallets.add(String(m.deployerWallet).toLowerCase());
+    if (fx === q && m.feeRecipientWallet) wallets.add(String(m.feeRecipientWallet).toLowerCase());
+    if (df === q && m.deployerWallet) wallets.add(String(m.deployerWallet).toLowerCase());
+    if (ff === q && m.feeRecipientWallet) wallets.add(String(m.feeRecipientWallet).toLowerCase());
+  }
+  if (wallets.size === 1) return [...wallets][0];
+  return null;
+}
+
 /** Check if a launch matches the query. filter: "deployer" | "fee" | "both". */
 function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   const deployer = launch.deployer;
@@ -319,7 +344,7 @@ function extractFromUrl(raw) {
 }
 
 /** Resolve query to normalized form and whether it's a wallet. Accepts wallet, @username, x(username), F(username), or X/Farcaster profile URL. */
-function parseQuery(query) {
+export function parseQuery(query) {
   const raw = String(query).trim();
   if (!raw) return { normalized: null, isWallet: false };
   const fromUrl = extractFromUrl(raw);
@@ -509,13 +534,18 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     result.sort((a, b) => (sortOrder === "oldest" ? a.sortTime - b.sortTime : b.sortTime - a.sortTime));
   }
 
+  let finalResolvedWallet = resolvedWallet;
+  if (!finalResolvedWallet && !isWalletQuery && normalized && result.length > 0) {
+    finalResolvedWallet = inferWalletFromHandleMatches(result, normalized);
+  }
+
   return {
     query,
     normalized,
     totalCount,
     possiblyCapped,
     hasDates,
-    resolvedWallet: resolvedWallet ?? null,
+    resolvedWallet: finalResolvedWallet ?? null,
     matches: result,
   };
 }

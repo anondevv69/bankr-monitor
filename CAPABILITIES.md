@@ -4,20 +4,21 @@
 
 | Command | What it does |
 |--------|----------------|
-| **/watch add** | Add a user to the launch watch list by **X (Twitter)**, **Farcaster**, **wallet**, or **keyword**. New Bankr launches matching that user are posted to the watch channel. |
-| **/watch remove** | Remove a user from the watch list (by type + value). |
-| **/watch list** | Show the current watch list (X, FC, wallets, keywords). |
+| **/wallet-lookup** | Resolve an **X** or **Farcaster** account to its linked **wallet** (Bankr data). |
+| **/alert-watchlist** | **add** / **remove** / **edit** / **list** — **Wallet** (0x or X/FC URL → stored as wallet) or **keyword** (name/symbol text). Alerts go to the server’s watch channel. |
+| **/setup** | **full**, **api_key**, **channels** (includes ping toggles + roles), **rules**, **telegram**, **show**. |
+| **/claim-watch** | Claim watchlist: **add** / **remove** / **list** tokens; **check** / **wallet** lookups. |
 | **/lookup** | Search Bankr tokens by **deployer** or **fee recipient**. Query can be a **wallet** (0x…), **X handle** (@user or x.com link), or **Farcaster** (handle or warpcast link). Option **by**: Deployer / Fee recipient / Both. Returns token list (latest 5 we can show + link to full list on Bankr), with pagination when we have more than 5. |
 | **/deploy** | *(hidden by default)* Deploy a Bankr token from Discord. Re-enable by setting `HIDE_DEPLOY_COMMAND = false` in discord-bot.js. |
-| **/help** | Show this breakdown of how to use the bot. |
+| **/help** | In-bot help embed. |
 
 **Notification channels (optional, env or per-server /setup):**
 
 - **DISCORD_ALL_LAUNCHES_CHANNEL_ID** – **Firehose:** every Bankr launch (no filters).
 - **DISCORD_ALERT_CHANNEL_ID** – **Curated:** only launches that pass global filters (same as notify.js: X-match, max deploys).
-- **DISCORD_WATCH_ALERT_CHANNEL_ID** – Only launches that match your **/watch** list.
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** – Only launches that match your **/alert-watchlist**.
 
-Per-server **/setup**: set **all_launches_channel** and/or **alert_channel** (at least one), plus optional **watch_channel** for watch-list-only alerts.
+Per-server **/setup full** or **/setup channels**: set **all_launches_channel** and/or **alert_channel** (at least one on first full setup), plus optional **watch_channel** for alert-watchlist-only posts.
 
 ---
 
@@ -67,7 +68,7 @@ You can look up claimable-style fees for **any** Bankr/Rehype token — you don�
 
 | Route | Use when |
 |-------|----------|
-| **Discord `/fees-token`** | Quick check from Discord: paste token CA or Bankr launch URL. Shows fee recipient, indexer/hook fees, and estimated from volume. |
+| **Discord paste / mention** | Paste a Bankr token CA (or mention bot + CA). Shows fee recipient, indexer/hook fees, and estimated from volume (no `/fees-token` slash command). |
 | **Fee API `GET /claimable?token=<CA>`** | Automation, dashboards, or other apps. Stateless; 60s cache. Example: `curl "https://your-api/claimable?token=0x..."`. |
 | **CLI `npm run token-stats -- <CA>`** | One-off from terminal. Same data as above plus pool state. |
 

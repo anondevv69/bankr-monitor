@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import "dotenv/config";
 /**
- * Discord bot with /watch commands to manage the Bankr launch watch list.
- * Add/remove X, Farcaster, wallet, keyword watchers. Runs the notify loop in the background.
+ * Discord bot: /alert-watchlist (wallets + keywords), /claim-watch, /setup, /lookup, /wallet-lookup.
+ * Runs the notify loop in the background.
  * Launch alerts are posted by the bot to DISCORD_ALERT_CHANNEL_ID or DISCORD_WATCH_ALERT_CHANNEL_ID (not webhook).
  *
  * Env: DISCORD_BOT_TOKEN (required)
@@ -59,6 +59,7 @@ import {
 import {
   lookupByDeployerOrFee,
   resolveHandleToWallet,
+  parseQuery,
   getBankrWalletLaunchRoleCounts,
   launchWallet,
   enrichLaunchWithBankrRoleCounts,
@@ -66,7 +67,7 @@ import {
 import { buildDeployBody, callBankrDeploy } from "./deploy-token.js";
 import { getTokenFees, getHotTokenStats, formatUsd } from "./token-stats.js";
 import { fetchIndexerTradingSnapshot } from "./token-trend-card.js";
-import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
+import { fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims, getTokenClaims } from "./watchers/dopplerClaimWatcher.js";
@@ -144,7 +145,7 @@ function feeRecipientHasX(launch) {
   return x != null && String(x).trim().replace(/^@/, "").length > 0;
 }
 
-/** True if the user can change server config (setup, settings, watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
+/** True if the user can change server config (setup, alert-watchlist, claim-watch, deploy). Requires Manage Server or Administrator in the guild. */
 function canManageServer(interaction) {
   if (!interaction.guildId || !interaction.member) return false;
   const perms = interaction.member.permissions;
@@ -184,6 +185,21 @@ function debugLogClaimableUnavailable(tokenAddress, out, context = "fees") {
   fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
 }
 
+/** Resolve alert-watchlist wallet input: 0x address or X/Farcaster URL / @handle → lowercase wallet. */
+async function resolveWatchlistWalletInput(raw, bankrApiKey) {
+  const val = String(raw ?? "").trim();
+  if (!val) return { wallet: null, error: "Provide a wallet address or X/Farcaster profile/handle." };
+  const { normalized, isWallet } = parseQuery(val);
+  if (isWallet && normalized) return { wallet: normalized };
+  const { wallet, normalized: norm } = await resolveHandleToWallet(val, { bankrApiKey });
+  if (wallet) return { wallet, resolvedLabel: norm || val };
+  return {
+    wallet: null,
+    error:
+      "Could not resolve that to a wallet. Use **0x…** or an **X/Farcaster URL** / **@handle**. Ensure this server’s **Bankr API key** is set (**/setup api_key** or **/setup full**).",
+  };
+}
+
 function getLookupPagination(matches, page) {
   const totalPages = Math.ceil(matches.length / LOOKUP_PAGE_SIZE) || 1;
   const currentPage = Math.max(0, Math.min(page, totalPages - 1));
@@ -196,7 +212,11 @@ function buildLookupEmbed(data, page) {
   const total = totalCount > 0 ? totalCount : matches.length;
   const byLabel = by === "deployer" ? " (deployer)" : by === "fee" ? " (fee recipient)" : "";
   const { totalPages, currentPage, start, pageMatches } = getLookupPagination(matches, page);
-  const walletLine = resolvedWallet ? `**Wallet:** \`${resolvedWallet}\`\n\n` : "";
+  const queryStr = String(query ?? "").trim();
+  const isWalletLookup = /^0x[a-fA-F0-9]{40}$/i.test(queryStr);
+  const walletLine = resolvedWallet
+    ? `${isWalletLookup ? "**Searched wallet:**" : "**Matching wallet:**"} \`${resolvedWallet}\`\n\n`
+    : "";
   let description;
   let footer;
   if (total > matches.length) {
@@ -290,7 +310,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("wallet-lookup")
-      .setDescription("Wallet lookup: get the wallet address for an X or Farcaster account")
+      .setDescription("Wallet lookup: resolve an X or Farcaster account to its linked wallet")
       .addStringOption((o) =>
         o
           .setName("query")
@@ -299,89 +319,64 @@ async function registerCommands(appId) {
       )
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("fees-token")
-      .setDescription("Show accrued/claimable fees for a Bankr token (by address or launch URL)")
-      .addStringOption((o) =>
-        o
-          .setName("token")
-          .setDescription("Token address (0x...) or Bankr launch URL (e.g. bankr.bot/launches/0x...)")
-          .setRequired(true)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("bankr-whales")
-      .setDescription("Top Bankr fee earners leaderboard (all-time)")
-      .addIntegerOption((o) =>
-        o
-          .setName("limit")
-          .setDescription("Number of entries (default 10, max 50)")
-          .setRequired(false)
-          .setMinValue(1)
-          .setMaxValue(50)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("watch")
-      .setDescription("Manage Bankr launch watch list")
-      .addSubcommand((s) => s.setName("list").setDescription("Show current watch list"))
+      .setName("alert-watchlist")
+      .setDescription("Alert watchlist: wallets & keywords for launch pings")
+      .addSubcommand((s) => s.setName("list").setDescription("Show wallets and keywords on your alert watchlist"))
       .addSubcommand((s) =>
         s
           .setName("add")
-          .setDescription("Add user to watch list")
+          .setDescription("Add a wallet (0x or X/Farcaster URL/@handle → resolved) or a keyword")
           .addStringOption((o) =>
-            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
-              { name: "X (Twitter)", value: "x" },
-              { name: "Farcaster", value: "fc" },
-              { name: "Wallet", value: "wallet" },
-              { name: "Keyword", value: "keyword" }
+            o.setName("type").setDescription("Entry type").setRequired(true).addChoices(
+              { name: "Wallet (address or X/FC profile)", value: "wallet" },
+              { name: "Keyword (name/symbol text)", value: "keyword" }
             )
           )
           .addStringOption((o) =>
-            o.setName("value").setDescription("Handle, 0x address, or keyword").setRequired(true)
+            o
+              .setName("value")
+              .setDescription("0x address, X/Farcaster URL or @handle (wallet), or keyword text")
+              .setRequired(true)
           )
           .addStringOption((o) =>
-            o.setName("name").setDescription("Optional nickname/label for this entry (e.g. Vitalik)").setRequired(false)
+            o.setName("name").setDescription("Optional nickname/label for this entry").setRequired(false)
           )
       )
       .addSubcommand((s) =>
         s
           .setName("remove")
-          .setDescription("Remove user from watch list")
+          .setDescription("Remove a wallet or keyword from the alert watchlist")
           .addStringOption((o) =>
-            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
-              { name: "X (Twitter)", value: "x" },
-              { name: "Farcaster", value: "fc" },
-              { name: "Wallet", value: "wallet" },
+            o.setName("type").setDescription("Entry type").setRequired(true).addChoices(
+              { name: "Wallet (address or X/FC profile)", value: "wallet" },
               { name: "Keyword", value: "keyword" }
             )
           )
           .addStringOption((o) =>
-            o.setName("value").setDescription("Handle, address, or keyword to remove").setRequired(true)
+            o.setName("value").setDescription("Same value you used when adding (0x, URL/@handle, or keyword)").setRequired(true)
           )
       )
       .addSubcommand((s) =>
         s
           .setName("edit")
-          .setDescription("Edit the nickname of a watch list entry")
+          .setDescription("Edit the nickname of a wallet or keyword entry")
           .addStringOption((o) =>
-            o.setName("type").setDescription("Watch type").setRequired(true).addChoices(
-              { name: "X (Twitter)", value: "x" },
-              { name: "Farcaster", value: "fc" },
-              { name: "Wallet", value: "wallet" },
+            o.setName("type").setDescription("Entry type").setRequired(true).addChoices(
+              { name: "Wallet (address or X/FC profile)", value: "wallet" },
               { name: "Keyword", value: "keyword" }
             )
           )
           .addStringOption((o) =>
-            o.setName("value").setDescription("Handle, 0x address, or keyword (must match existing entry)").setRequired(true)
+            o.setName("value").setDescription("Must match existing entry (0x, URL/@handle, or keyword)").setRequired(true)
           )
           .addStringOption((o) =>
-            o.setName("name").setDescription("New nickname/label (leave empty to clear)").setRequired(false)
+            o.setName("name").setDescription("New nickname (leave empty to clear)").setRequired(false)
           )
       )
       .toJSON(),
     new SlashCommandBuilder()
-      .setName("claims")
-      .setDescription("Claim watch list + lookups (set claims channel in /setup)")
+      .setName("claim-watch")
+      .setDescription("Claim watchlist: add/remove tokens, list, check, wallet (set channel in /setup)")
       .addSubcommand((s) =>
         s
           .setName("add")
@@ -487,128 +482,120 @@ async function registerCommands(appId) {
     ]),
     new SlashCommandBuilder()
       .setName("setup")
-      .setDescription("Configure Bankr monitor for this server (API key, channels, rules)")
-      .addStringOption((o) =>
-        o
-          .setName("api_key")
-          .setDescription("Your Bankr API key (from bankr.bot/api)")
-          .setRequired(true)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("all_launches_channel")
-          .setDescription("Firehose: every Bankr launch (no filters). Optional if curated channel set.")
-          .setRequired(false)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("alert_channel")
-          .setDescription("Curated: only launches passing rules (X match, max deploys/day). Optional if firehose set.")
-          .setRequired(false)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("watch_channel")
-          .setDescription("Channel for watch-list matches only (optional)")
-          .setRequired(false)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("claim_channel")
-          .setDescription("Claims channel — where /claims add pings go (optional; else uses watch/alert)")
-          .setRequired(false)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("hot_channel")
-          .setDescription("Channel for hot token alerts (5+ buys in 1 min, 20+ holders). Optional.")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("hot_enabled")
-          .setDescription("Enable hot token alerts (default: true)")
-          .setRequired(false)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("hot_ping_role_ids")
-          .setDescription("Roles to ping: type @ and select roles, or paste role IDs (e.g. 123,456). No @everyone.")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o.setName("ping_on_hot").setDescription("Ping roles when hot token alert posts (default: true)").setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o.setName("ping_on_trending").setDescription("Ping roles when trending alert posts (default: true)").setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o.setName("ping_on_watch_match").setDescription("Ping roles when a launch matches watch list (default: false)").setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o.setName("ping_on_curated").setDescription("Ping roles when curated deployment posts (default: false)").setRequired(false)
-      )
-      .addChannelOption((o) =>
-        o
-          .setName("trending_channel")
-          .setDescription("Channel for trending token alerts. Optional.")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("trending_enabled")
-          .setDescription("Enable trending alerts (default: false)")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("filter_x_match")
-          .setDescription("Only alert when deployer and fee recipient share same X/FC (default: false)")
-          .setRequired(false)
-      )
-      .addBooleanOption((o) =>
-        o
-          .setName("filter_fee_recipient_has_x")
-          .setDescription("Curated: only show deployments where fee recipient has an X account (default: false)")
-          .setRequired(false)
-      )
-      .addIntegerOption((o) =>
-        o
-          .setName("filter_max_deploys")
-          .setDescription("Max deploys per day to alert (optional, 0 = no limit)")
-          .setRequired(false)
-      )
-      .addNumberOption((o) =>
-        o
-          .setName("poll_interval_min")
-          .setDescription("Minutes between checks (default: 1)")
-          .setRequired(false)
-      )
-      .toJSON(),
-    new SlashCommandBuilder()
-      .setName("settings")
-      .setDescription("View or edit this server's Bankr monitor config")
+      .setDescription("Server setup: API key, channels, pings, rules, Telegram, full config")
       .addSubcommand((s) =>
         s
-          .setName("rules")
-          .setDescription("Update monitoring rules")
-          .addBooleanOption((o) =>
-            o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
+          .setName("full")
+          .setDescription("First-time / full config: API key, channels, ping roles, rules")
+          .addStringOption((o) =>
+            o
+              .setName("api_key")
+              .setDescription("Your Bankr API key (from bankr.bot/api)")
+              .setRequired(true)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("all_launches_channel")
+              .setDescription("Firehose: every Bankr launch (no filters). Optional if curated channel set.")
+              .setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("alert_channel")
+              .setDescription("Curated: only launches passing rules (X match, max deploys/day). Optional if firehose set.")
+              .setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("watch_channel")
+              .setDescription("Channel for alert-watchlist matches only (optional)")
+              .setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("claim_channel")
+              .setDescription("Claims channel — where /claim-watch add pings go (optional; else watch/alert)")
+              .setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("hot_channel")
+              .setDescription("Channel for hot token alerts (5+ buys in 1 min, 20+ holders). Optional.")
+              .setRequired(false)
           )
           .addBooleanOption((o) =>
-            o.setName("filter_fee_recipient_has_x").setDescription("Curated: only show when fee recipient has X account").setRequired(false)
+            o
+              .setName("hot_enabled")
+              .setDescription("Enable hot token alerts (default: true)")
+              .setRequired(false)
+          )
+          .addStringOption((o) =>
+            o
+              .setName("hot_ping_role_ids")
+              .setDescription("Roles to ping: type @ and select roles, or paste role IDs (e.g. 123,456). No @everyone.")
+              .setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("ping_on_hot").setDescription("Ping roles when hot token alert posts (default: true)").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("ping_on_trending").setDescription("Ping roles when trending alert posts (default: true)").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("ping_on_watch_match").setDescription("Ping roles when a launch matches alert watchlist (default: false)").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("ping_on_curated").setDescription("Ping roles when curated deployment posts (default: false)").setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName("trending_channel")
+              .setDescription("Channel for trending token alerts. Optional.")
+              .setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o
+              .setName("trending_enabled")
+              .setDescription("Enable trending alerts (default: false)")
+              .setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o
+              .setName("filter_x_match")
+              .setDescription("Only alert when deployer and fee recipient share same X/FC (default: false)")
+              .setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o
+              .setName("filter_fee_recipient_has_x")
+              .setDescription("Curated: only show deployments where fee recipient has an X account (default: false)")
+              .setRequired(false)
           )
           .addIntegerOption((o) =>
-            o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
+            o
+              .setName("filter_max_deploys")
+              .setDescription("Max deploys per day to alert (optional, 0 = no limit)")
+              .setRequired(false)
           )
           .addNumberOption((o) =>
-            o.setName("poll_interval_min").setDescription("Minutes between checks").setRequired(false)
+            o
+              .setName("poll_interval_min")
+              .setDescription("Minutes between checks (default: 1)")
+              .setRequired(false)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("api_key")
+          .setDescription("Update Bankr API key for this server")
+          .addStringOption((o) =>
+            o.setName("key").setDescription("New Bankr API key (from bankr.bot/api)").setRequired(true)
           )
       )
       .addSubcommand((s) =>
         s
           .setName("channels")
-          .setDescription("Update alert channels")
+          .setDescription("Alert channels, ping roles, and when to ping (hot / trending / watchlist / curated)")
           .addChannelOption((o) =>
             o.setName("all_launches_channel").setDescription("Firehose: every Bankr launch (clear = unset)").setRequired(false)
           )
@@ -616,10 +603,10 @@ async function registerCommands(appId) {
             o.setName("alert_channel").setDescription("Curated: rules apply (clear = unset)").setRequired(false)
           )
           .addChannelOption((o) =>
-            o.setName("watch_channel").setDescription("Channel for watch-list matches").setRequired(false)
+            o.setName("watch_channel").setDescription("Channel for alert-watchlist matches").setRequired(false)
           )
           .addChannelOption((o) =>
-            o.setName("claim_channel").setDescription("Claims channel (for /claims add pings; else watch/alert)").setRequired(false)
+            o.setName("claim_channel").setDescription("Claims channel (for /claim-watch add pings; else watch/alert)").setRequired(false)
           )
           .addChannelOption((o) =>
             o.setName("hot_channel").setDescription("Channel for hot token alerts").setRequired(false)
@@ -636,20 +623,32 @@ async function registerCommands(appId) {
           .addBooleanOption((o) =>
             o.setName("trending_enabled").setDescription("Enable trending alerts").setRequired(false)
           )
-      )
-      .addSubcommand((s) =>
-        s
-          .setName("pings")
-          .setDescription("When to ping roles (hot, trending, watch list, curated)")
           .addBooleanOption((o) => o.setName("ping_on_hot").setDescription("Ping when hot token alert posts").setRequired(false))
           .addBooleanOption((o) => o.setName("ping_on_trending").setDescription("Ping when trending alert posts").setRequired(false))
-          .addBooleanOption((o) => o.setName("ping_on_watch_match").setDescription("Ping when launch matches watch list").setRequired(false))
+          .addBooleanOption((o) => o.setName("ping_on_watch_match").setDescription("Ping when launch matches alert watchlist").setRequired(false))
           .addBooleanOption((o) => o.setName("ping_on_curated").setDescription("Ping when curated deployment posts").setRequired(false))
       )
       .addSubcommand((s) =>
         s
+          .setName("rules")
+          .setDescription("Curated feed rules (X match, fee recipient has X, max deploys, poll interval)")
+          .addBooleanOption((o) =>
+            o.setName("filter_x_match").setDescription("Only alert when deployer and fee recipient match").setRequired(false)
+          )
+          .addBooleanOption((o) =>
+            o.setName("filter_fee_recipient_has_x").setDescription("Curated: only show when fee recipient has X account").setRequired(false)
+          )
+          .addIntegerOption((o) =>
+            o.setName("filter_max_deploys").setDescription("Max deploys per day to alert").setRequired(false)
+          )
+          .addNumberOption((o) =>
+            o.setName("poll_interval_min").setDescription("Minutes between checks").setRequired(false)
+          )
+      )
+      .addSubcommand((s) =>
+        s
           .setName("telegram")
-          .setDescription("Telegram group + topic IDs: All launches, Hot launches, Trending Tokens, X only fee recipient")
+          .setDescription("Telegram group + topic IDs: All launches, Hot, Trending, X-only fee recipient")
           .addStringOption((o) =>
             o.setName("group_chat_id").setDescription("Telegram group chat ID (e.g. -1001234567890)").setRequired(false)
           )
@@ -669,19 +668,11 @@ async function registerCommands(appId) {
             o.setName("delay_hot_trending_sec").setDescription("Delay (seconds) before Hot/Trending pings to Telegram after Discord (default 60; 0 = same time)").setRequired(false)
           )
       )
-      .addSubcommand((s) =>
-        s
-          .setName("api_key")
-          .setDescription("Update your Bankr API key")
-          .addStringOption((o) =>
-            o.setName("key").setDescription("New Bankr API key").setRequired(true)
-          )
-      )
-      .addSubcommand((s) => s.setName("show").setDescription("Show current config (channels, rules; API key hidden)"))
+      .addSubcommand((s) => s.setName("show").setDescription("Show full server config (API key hidden)"))
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("Show how to use BankrMonitor (watch, lookup, wallet lookup)" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
+      .setDescription("BankrMonitor: wallet lookup, alert watchlist, claim-watch, setup, lookup" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
       .toJSON(),
   ];
 
@@ -1646,7 +1637,7 @@ async function replyFeesForMessage(message, tokenAddress) {
   }
 }
 
-/** Build fee reply text for a token (used by /fees-token and by mention + address). */
+/** Build fee reply text for a token (used by paste/mention + address). */
 function formatClaimableOneLiner(hookFees, symbol) {
   const DECIMALS = 18;
   // Pool order: token0 = WETH, token1 = asset (same as indexer)
@@ -2089,15 +2080,23 @@ client.on("interactionCreate", async (interaction) => {
       color: 0x0052_ff,
       title: "BankrMonitor – How to use",
       description:
-        "This bot helps you **watch** Bankr launches and **look up** tokens by wallet/X/Farcaster." +
+        "**Alert watchlist** for launches, **claim-watch** for fee claims, **wallet lookup**, and **/lookup** for deployments." +
         (HIDE_DEPLOY_COMMAND ? "" : " You can also **deploy** Bankr tokens from Discord.") +
         " Data: Bankr API.",
       fields: [
         {
-          name: "📋 /watch",
+          name: "📋 /alert-watchlist",
           value:
-            "**add** – Add to watch list (type: X, Farcaster, wallet, or keyword + value). Optional **name** = nickname/label. **edit** – Change the nickname of an existing entry (type + value + new name; leave name empty to clear). **remove** – Remove by type + value. X and Farcaster are resolved to wallet first.\n" +
-            "**remove** – Remove by type + value.\n**list** – Show current watch list.",
+            "**add** – **Wallet** (paste `0x…` or X/Farcaster URL or @handle → we store the resolved wallet) or **keyword** (text match on name/symbol). Optional **name** = label.\n" +
+            "**edit** / **remove** / **list** – Manage entries. Legacy X/FC-only rows (if any) still work; new adds use wallet resolution.",
+          inline: false,
+        },
+        {
+          name: "⚙️ /setup",
+          value:
+            "**full** – API key + channels + ping roles + rules (first-time).\n" +
+            "**channels** – Where alerts go + **hot_ping_role_ids** + when to ping (hot / trending / watchlist / curated).\n" +
+            "**api_key**, **rules**, **telegram**, **show** (full config preview).",
           inline: false,
         },
         {
@@ -2129,22 +2128,15 @@ client.on("interactionCreate", async (interaction) => {
           },
         ]),
         {
-          name: "💰 /fees-token",
+          name: "💰 /claim-watch",
           value:
-            "**Accrued/claimable fees** for one Bankr token.\n" +
-            "**token:** Token address (0x…) or Bankr launch URL (e.g. bankr.bot/launches/0x…). Shows fee recipient, indexer accrued fees (token + WETH + USD) when available, or estimated from volume. Claimed vs unclaimed is not in the API — use [Bankr terminal](https://bankr.bot/terminal) or `bankr fees --token <ca>` to see/claim.",
-          inline: false,
-        },
-        {
-          name: "💰 /claims",
-          value:
-            "**Claim watch list + lookups.** Set your **Claims channel** in **/setup** or **/settings channels** (like curated). Then: **add** — token (0x…ba3) to watch; **list** — see your list; **remove** — by address or label. **check** — has this token been claimed? **wallet** — what has this wallet claimed?",
+            "**Claim watchlist + lookups.** Set **Claims** in **/setup channels**. **add** — token (0x…ba3); **list** / **remove**; **check** — claimed? **wallet** — what this wallet claimed.",
           inline: false,
         },
         {
           name: "📌 Channels & paste",
           value:
-            "**/setup** — **All launches** = firehose (every Bankr deploy). **Curated** = only launches that pass your rules (same X/FC on deployer + fee recipient, max deploys/day). **Watch** = only your **/watch** list. **Claim channel** = fee-claim alerts only (else uses watch/alert).\n" +
+            "**/setup full** or **/setup channels** — **All launches** = firehose; **Curated** = rules; **watch** channel = **alert-watchlist** matches; **claim** = claim-watch pings.\n" +
             "**Paste a Bankr token** (any channel): address ending in **BA3** → bot replies with name, symbol, link, fees.",
           inline: false,
         },
@@ -2237,63 +2229,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === "fees-token") {
-    const tokenInput = interaction.options.getString("token");
-    const addrMatch = tokenInput && tokenInput.match(/0x[a-fA-F0-9]{40}/);
-    const tokenAddress = addrMatch ? addrMatch[0].toLowerCase() : null;
-    if (!tokenAddress) {
-      await interaction.reply({
-        content: "Provide a token address (0x...) or a Bankr launch URL (e.g. https://bankr.bot/launches/0x...).",
-      });
-      return;
-    }
-    await interaction.deferReply();
-    try {
-      const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
-      const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
-      if (out.claimableUnavailableReason) debugLogClaimableUnavailable(out.tokenAddress, out, "fees-token");
-      const content = formatFeesTokenReply(out, tokenAddress);
-      await interaction.editReply({ content });
-      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/fees-token", tokenAddress);
-    } catch (e) {
-      console.error("Fees-token failed:", e.message);
-      debugLogError(e, "fees-token");
-      await interaction.editReply({ content: `Fees lookup failed: ${e.message}` }).catch(() => {});
-    }
-    return;
-  }
-
-  if (interaction.commandName === "bankr-whales") {
-    const limit = interaction.options.getInteger("limit") ?? 10;
-    await interaction.deferReply();
-    try {
-      const { rows, source } = await fetchTopFeeEarners(limit);
-      if (rows.length === 0) {
-        await interaction.editReply("No fee-earner data from the indexer right now. Try again later or check DOPPLER_INDEXER_URL.");
-        return;
-      }
-      const title = source === "v4pools" ? "**Top Bankr Fee Recipients** (by pool volume)\n" : "**Top Bankr Fee Earners** (all-time)\n";
-      const lines = [title];
-      rows.forEach((r, i) => {
-        const short = `${r.wallet.slice(0, 6)}…${r.wallet.slice(-4)}`;
-        const usd = formatUsd(r.totalUsd) ?? `$${r.totalUsd.toFixed(0)}`;
-        const wethStr = r.weth > 0 ? `\n   ${r.weth.toFixed(4)} WETH` : "";
-        lines.push(`${i + 1}. \`${short}\`\n   ${usd}${wethStr}`);
-      });
-      const footer = source === "v4pools"
-        ? "\n_By pool volume (indexer may not expose fee totals) · [Bankr](https://bankr.bot)_"
-        : "\n_Data from Doppler Indexer · [Bankr](https://bankr.bot)_";
-      lines.push(footer);
-      await interaction.editReply(lines.join("\n"));
-      debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/bankr-whales", `${rows.length}`);
-    } catch (e) {
-      console.error("bankr-whales failed:", e.message);
-      debugLogError(e, "bankr-whales");
-      await interaction.editReply({ content: `Leaderboard failed: ${e.message}` }).catch(() => {});
-    }
-    return;
-  }
-
   if (interaction.commandName === "setup") {
     const guildId = interaction.guildId;
     if (!guildId) {
@@ -2310,111 +2245,93 @@ client.on("interactionCreate", async (interaction) => {
       });
       return;
     }
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    try {
-      const apiKey = interaction.options.getString("api_key")?.trim();
-      const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
-      const alertChannel = interaction.options.getChannel("alert_channel");
-      const watchChannel = interaction.options.getChannel("watch_channel");
-      const claimChannel = interaction.options.getChannel("claim_channel");
-      const hotChannel = interaction.options.getChannel("hot_channel");
-      const hotEnabled = interaction.options.getBoolean("hot_enabled");
-      const hotPingRoleIdsRaw = interaction.options.getString("hot_ping_role_ids");
-      const pingOnHotOpt = interaction.options.getBoolean("ping_on_hot");
-      const pingOnTrendingOpt = interaction.options.getBoolean("ping_on_trending");
-      const pingOnWatchMatchOpt = interaction.options.getBoolean("ping_on_watch_match");
-      const pingOnCuratedOpt = interaction.options.getBoolean("ping_on_curated");
-      const trendingChannel = interaction.options.getChannel("trending_channel");
-      const trendingEnabled = interaction.options.getBoolean("trending_enabled");
-      const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
-      const filterFeeRecipientHasX = interaction.options.getBoolean("filter_fee_recipient_has_x") ?? false;
-      const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
-      const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
-      if (!apiKey) {
-        await interaction.editReply({
-          content: "Provide **api_key**. Get a key at [bankr.bot/api](https://bankr.bot/api).",
-        });
-        return;
-      }
-      if (!allLaunchesChannel && !alertChannel) {
-        await interaction.editReply({
-          content:
-            "Set at least one launch channel: **all_launches_channel** (every Bankr deploy) and/or **alert_channel** (curated — rules below). Watch channel is optional.",
-        });
-        return;
-      }
-      const hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
-      const updates = {
-        bankrApiKey: apiKey,
-        allLaunchesChannelId: allLaunchesChannel?.id ?? null,
-        alertChannelId: alertChannel?.id ?? null,
-        watchAlertChannelId: watchChannel?.id ?? null,
-        claimAlertChannelId: claimChannel?.id ?? null,
-        hotAlertChannelId: hotChannel?.id ?? null,
-        hotLaunchEnabled: hotEnabled !== false,
-        hotLaunchRoleIds: hotLaunchRoleIds ?? [],
-        pingOnHot: pingOnHotOpt ?? true,
-        pingOnTrending: pingOnTrendingOpt ?? true,
-        pingOnWatchMatch: pingOnWatchMatchOpt ?? false,
-        pingOnCurated: pingOnCuratedOpt ?? false,
-        trendingAlertChannelId: trendingChannel?.id ?? null,
-        trendingEnabled: trendingEnabled === true,
-        rules: {
-          filterXMatch,
-          filterFeeRecipientHasX,
-          filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
-          pollIntervalMs: pollIntervalMin != null ? Math.max(0.5, pollIntervalMin) * 60_000 : 60_000,
-        },
-      };
-      await setTenant(guildId, updates);
-      const lines = [
-        "**Server config saved.**",
-        allLaunchesChannel ? `• **All launches** (firehose): ${allLaunchesChannel.name}` : "• All launches channel: (none)",
-        alertChannel ? `• **Curated** (rules): ${alertChannel.name}` : "• Curated channel: (none)",
-        watchChannel ? `• **Watch list**: ${watchChannel.name}` : "• Watch channel: (none)",
-        claimChannel ? `• **Claims**: ${claimChannel.name}` : "• Claims: (use watch/alert channel)",
-        hotChannel ? `• **Hot tokens**: ${hotChannel.name} (${updates.hotLaunchEnabled ? "on" : "off"})` : "• Hot tokens: (none)",
-        trendingChannel ? `• **Trending**: ${trendingChannel.name} (${updates.trendingEnabled ? "on" : "off"})` : "• Trending: (none)",
-        updates.hotLaunchRoleIds?.length > 0 ? `• **Ping roles**: ${updates.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
-        `• **Ping when:** hot ${updates.pingOnHot !== false} · trending ${updates.pingOnTrending !== false} · watch ${updates.pingOnWatchMatch === true} · curated ${updates.pingOnCurated === true}`,
-        `• Filter X match (curated): ${filterXMatch}`,
-        filterMaxDeploys != null ? `• Max deploys/day (curated): ${filterMaxDeploys}` : "• Max deploys/day: no limit",
-        `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
-        "",
-        "**Tip:** Firehose = every deploy. Curated = only passes rules (X match, fee recipient has X, max deploys/day). **/watch** = your list only.",
-        "Use **/watch add** for X, Farcaster, wallets, keywords. **/settings show** to view.",
-      ];
-      await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
-    } catch (e) {
-      await interaction.editReply({ content: `Setup failed: ${e.message}` }).catch(() => {});
-    }
-    return;
-  }
-
-  if (interaction.commandName === "settings") {
-    const guildId = interaction.guildId;
-    if (!guildId) {
-      await interaction.reply({
-        content: "Settings are only available in a server.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-    if (!canManageServer(interaction)) {
-      await interaction.reply({
-        content: "Only server admins (Manage Server permission) can run **/settings**.",
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
     const sub = interaction.options.getSubcommand();
+    const subOpts = interaction.options.data?.[0]?.options ?? [];
+    const hasSubOpt = (n) => subOpts.some((o) => o.name === n);
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
+      if (sub === "full") {
+        const apiKey = interaction.options.getString("api_key")?.trim();
+        const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
+        const alertChannel = interaction.options.getChannel("alert_channel");
+        const watchChannel = interaction.options.getChannel("watch_channel");
+        const claimChannel = interaction.options.getChannel("claim_channel");
+        const hotChannel = interaction.options.getChannel("hot_channel");
+        const hotEnabled = interaction.options.getBoolean("hot_enabled");
+        const hotPingRoleIdsRaw = interaction.options.getString("hot_ping_role_ids");
+        const pingOnHotOpt = interaction.options.getBoolean("ping_on_hot");
+        const pingOnTrendingOpt = interaction.options.getBoolean("ping_on_trending");
+        const pingOnWatchMatchOpt = interaction.options.getBoolean("ping_on_watch_match");
+        const pingOnCuratedOpt = interaction.options.getBoolean("ping_on_curated");
+        const trendingChannel = interaction.options.getChannel("trending_channel");
+        const trendingEnabled = interaction.options.getBoolean("trending_enabled");
+        const filterXMatch = interaction.options.getBoolean("filter_x_match") ?? false;
+        const filterFeeRecipientHasX = interaction.options.getBoolean("filter_fee_recipient_has_x") ?? false;
+        const filterMaxDeploys = interaction.options.getInteger("filter_max_deploys");
+        const pollIntervalMin = interaction.options.getNumber("poll_interval_min");
+        if (!apiKey) {
+          await interaction.editReply({
+            content: "Provide **api_key**. Get a key at [bankr.bot/api](https://bankr.bot/api).",
+          });
+          return;
+        }
+        if (!allLaunchesChannel && !alertChannel) {
+          await interaction.editReply({
+            content:
+              "Set at least one launch channel: **all_launches_channel** (every Bankr deploy) and/or **alert_channel** (curated — rules below). Watch channel is optional.",
+          });
+          return;
+        }
+        const hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
+        const updates = {
+          bankrApiKey: apiKey,
+          allLaunchesChannelId: allLaunchesChannel?.id ?? null,
+          alertChannelId: alertChannel?.id ?? null,
+          watchAlertChannelId: watchChannel?.id ?? null,
+          claimAlertChannelId: claimChannel?.id ?? null,
+          hotAlertChannelId: hotChannel?.id ?? null,
+          hotLaunchEnabled: hotEnabled !== false,
+          hotLaunchRoleIds: hotLaunchRoleIds ?? [],
+          pingOnHot: pingOnHotOpt ?? true,
+          pingOnTrending: pingOnTrendingOpt ?? true,
+          pingOnWatchMatch: pingOnWatchMatchOpt ?? false,
+          pingOnCurated: pingOnCuratedOpt ?? false,
+          trendingAlertChannelId: trendingChannel?.id ?? null,
+          trendingEnabled: trendingEnabled === true,
+          rules: {
+            filterXMatch,
+            filterFeeRecipientHasX,
+            filterMaxDeploys: filterMaxDeploys != null ? filterMaxDeploys : null,
+            pollIntervalMs: pollIntervalMin != null ? Math.max(0.5, pollIntervalMin) * 60_000 : 60_000,
+          },
+        };
+        await setTenant(guildId, updates);
+        const lines = [
+          "**Server config saved.**",
+          allLaunchesChannel ? `• **All launches** (firehose): ${allLaunchesChannel.name}` : "• All launches channel: (none)",
+          alertChannel ? `• **Curated** (rules): ${alertChannel.name}` : "• Curated channel: (none)",
+          watchChannel ? `• **Alert watchlist channel**: ${watchChannel.name}` : "• Alert watchlist channel: (none)",
+          claimChannel ? `• **Claims**: ${claimChannel.name}` : "• Claims: (use watch/alert channel)",
+          hotChannel ? `• **Hot tokens**: ${hotChannel.name} (${updates.hotLaunchEnabled ? "on" : "off"})` : "• Hot tokens: (none)",
+          trendingChannel ? `• **Trending**: ${trendingChannel.name} (${updates.trendingEnabled ? "on" : "off"})` : "• Trending: (none)",
+          updates.hotLaunchRoleIds?.length > 0 ? `• **Ping roles**: ${updates.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
+          `• **Ping when:** hot ${updates.pingOnHot !== false} · trending ${updates.pingOnTrending !== false} · alert watchlist ${updates.pingOnWatchMatch === true} · curated ${updates.pingOnCurated === true}`,
+          `• Filter X match (curated): ${filterXMatch}`,
+          filterMaxDeploys != null ? `• Max deploys/day (curated): ${filterMaxDeploys}` : "• Max deploys/day: no limit",
+          `• Poll interval: ${updates.rules.pollIntervalMs / 60_000} min`,
+          "",
+          "**Tip:** Firehose = every deploy. Curated = rules. **/alert-watchlist** = wallets & keywords (X/FC URLs resolve to wallet).",
+          "Use **/setup show** to view everything; **/setup channels** to change channels and pings.",
+        ];
+        await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
+        return;
+      }
+
       if (sub === "show") {
         const tenant = await getTenant(guildId);
         if (!tenant) {
           await interaction.editReply({
-            content: "No config for this server yet. Run **/setup** to configure API key, channels, and rules.",
+            content: "No config for this server yet. Run **/setup full** (API key + at least one channel) or **/setup api_key** then **/setup channels**.",
           });
           return;
         }
@@ -2423,27 +2340,31 @@ client.on("interactionCreate", async (interaction) => {
           "**Current config** (API key hidden)",
           `• **All launches** (firehose): ${tenant.allLaunchesChannelId ? `<#${tenant.allLaunchesChannelId}>` : "—"}`,
           `• **Curated** (rules): ${tenant.alertChannelId ? `<#${tenant.alertChannelId}>` : "—"}`,
-          `• **Watch list**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
+          `• **Alert watchlist**: ${tenant.watchAlertChannelId ? `<#${tenant.watchAlertChannelId}>` : "—"}`,
           `• **Claims**: ${tenant.claimAlertChannelId ? `<#${tenant.claimAlertChannelId}>` : "—"} (or watch/alert)`,
           `• **Hot tokens**: ${tenant.hotAlertChannelId ? `<#${tenant.hotAlertChannelId}>` : "—"} ${tenant.hotLaunchEnabled !== false ? "(on)" : "(off)"}`,
-          (tenant.claimWatchTokens?.length ?? 0) > 0 ? `• **Claims** (watch list): ${tenant.claimWatchTokens.length} token(s) — **/claims list**` : "• **Claims** (watch list): (none) — **/claims add**",
+          (tenant.claimWatchTokens?.length ?? 0) > 0
+            ? `• **Claim watchlist**: ${tenant.claimWatchTokens.length} token(s) — **/claim-watch list**`
+            : "• **Claim watchlist**: (none) — **/claim-watch add**",
           (tenant.hotLaunchRoleIds?.length ?? 0) > 0 ? `• **Ping roles**: ${tenant.hotLaunchRoleIds.length} role(s)` : "• Ping roles: (none)",
-          `• **Ping when:** hot ${tenant.pingOnHot !== false} · trending ${tenant.pingOnTrending !== false} · watch ${tenant.pingOnWatchMatch === true} · curated ${tenant.pingOnCurated === true}`,
+          `• **Ping when:** hot ${tenant.pingOnHot !== false} · trending ${tenant.pingOnTrending !== false} · alert watchlist ${tenant.pingOnWatchMatch === true} · curated ${tenant.pingOnCurated === true}`,
           `• **Trending**: ${tenant.trendingAlertChannelId ? `<#${tenant.trendingAlertChannelId}>` : "—"} ${tenant.trendingEnabled ? "(on)" : "(off)"}`,
           `• Filter X match: ${tenant.rules?.filterXMatch ?? false}`,
           `• Filter fee recipient has X: ${tenant.rules?.filterFeeRecipientHasX ?? false}`,
           `• Max deploys/day: ${tenant.rules?.filterMaxDeploys ?? "—"}`,
           `• Poll interval: ${((tenant.rules?.pollIntervalMs ?? 60000) / 60_000)} min`,
-          "• Watchlist: X " + (w.x?.length ?? 0) + ", FC " + (w.fc?.length ?? 0) + ", wallets " + (w.wallet?.length ?? 0) + ", keywords " + (w.keywords?.length ?? 0),
+          "• Alert watchlist entries: wallets " + (w.wallet?.length ?? 0) + ", keywords " + (w.keywords?.length ?? 0) +
+            ((w.x?.length ?? 0) + (w.fc?.length ?? 0) > 0 ? ` (legacy X/FC rows: ${(w.x?.length ?? 0) + (w.fc?.length ?? 0)})` : ""),
           "",
           tenant.telegramChatId
             ? `• **Telegram:** group \`${String(tenant.telegramChatId).slice(0, 12)}…\` · All launches ${tenant.telegramTopicFirehose ?? "—"} · X only fee recipient ${tenant.telegramTopicCurated ?? "—"} · Hot ${tenant.telegramTopicHot ?? "—"} · Trending ${tenant.telegramTopicTrending ?? "—"} · Hot/trending delay ${tenant.telegramHotPingDelayMs != null ? `${tenant.telegramHotPingDelayMs / 1000}s` : "(env)"}`
             : "• **Telegram:** (none)",
-          "Use **/settings api_key**, **/settings channels**, **/settings rules**, **/settings pings**, or **/settings telegram** to edit.",
+          "Edit with **/setup api_key**, **/setup channels** (includes ping toggles), **/setup rules**, **/setup telegram**.",
         ];
         await interaction.editReply({ content: lines.join("\n") });
         return;
       }
+
       if (sub === "telegram") {
         const groupChatId = interaction.options.getString("group_chat_id")?.trim();
         const topicFirehose = interaction.options.getString("topic_firehose")?.trim();
@@ -2451,14 +2372,13 @@ client.on("interactionCreate", async (interaction) => {
         const topicHot = interaction.options.getString("topic_hot")?.trim();
         const topicTrending = interaction.options.getString("topic_trending")?.trim();
         const delaySec = interaction.options.getInteger("delay_hot_trending_sec");
-        const opts = interaction.options.data.options || [];
         const updates = {};
-        if (opts.find((o) => o.name === "group_chat_id")) updates.telegramChatId = groupChatId || null;
-        if (opts.find((o) => o.name === "topic_firehose")) updates.telegramTopicFirehose = topicFirehose ? (parseInt(topicFirehose, 10) || topicFirehose) : null;
-        if (opts.find((o) => o.name === "topic_curated")) updates.telegramTopicCurated = topicCurated ? (parseInt(topicCurated, 10) || topicCurated) : null;
-        if (opts.find((o) => o.name === "topic_hot")) updates.telegramTopicHot = topicHot ? (parseInt(topicHot, 10) || topicHot) : null;
-        if (opts.find((o) => o.name === "topic_trending")) updates.telegramTopicTrending = topicTrending ? (parseInt(topicTrending, 10) || topicTrending) : null;
-        if (opts.find((o) => o.name === "delay_hot_trending_sec")) updates.telegramHotPingDelayMs = delaySec != null ? Math.max(0, delaySec) * 1000 : null;
+        if (hasSubOpt("group_chat_id")) updates.telegramChatId = groupChatId || null;
+        if (hasSubOpt("topic_firehose")) updates.telegramTopicFirehose = topicFirehose ? (parseInt(topicFirehose, 10) || topicFirehose) : null;
+        if (hasSubOpt("topic_curated")) updates.telegramTopicCurated = topicCurated ? (parseInt(topicCurated, 10) || topicCurated) : null;
+        if (hasSubOpt("topic_hot")) updates.telegramTopicHot = topicHot ? (parseInt(topicHot, 10) || topicHot) : null;
+        if (hasSubOpt("topic_trending")) updates.telegramTopicTrending = topicTrending ? (parseInt(topicTrending, 10) || topicTrending) : null;
+        if (hasSubOpt("delay_hot_trending_sec")) updates.telegramHotPingDelayMs = delaySec != null ? Math.max(0, delaySec) * 1000 : null;
         if (Object.keys(updates).length === 0) {
           await interaction.editReply({
             content:
@@ -2470,24 +2390,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: "Telegram settings updated." });
         return;
       }
-      if (sub === "pings") {
-        const pingOnHot = interaction.options.getBoolean("ping_on_hot");
-        const pingOnTrending = interaction.options.getBoolean("ping_on_trending");
-        const pingOnWatchMatch = interaction.options.getBoolean("ping_on_watch_match");
-        const pingOnCurated = interaction.options.getBoolean("ping_on_curated");
-        const updates = {};
-        if (pingOnHot !== null) updates.pingOnHot = pingOnHot;
-        if (pingOnTrending !== null) updates.pingOnTrending = pingOnTrending;
-        if (pingOnWatchMatch !== null) updates.pingOnWatchMatch = pingOnWatchMatch;
-        if (pingOnCurated !== null) updates.pingOnCurated = pingOnCurated;
-        if (Object.keys(updates).length === 0) {
-          await interaction.editReply({ content: "Provide at least one option: **ping_on_hot**, **ping_on_trending**, **ping_on_watch_match**, **ping_on_curated**." });
-          return;
-        }
-        await setTenant(guildId, updates);
-        await interaction.editReply({ content: "Ping settings updated." });
-        return;
-      }
+
       if (sub === "api_key") {
         const key = interaction.options.getString("key")?.trim();
         if (!key) {
@@ -2498,6 +2401,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: "API key updated." });
         return;
       }
+
       if (sub === "channels") {
         const allLaunchesChannel = interaction.options.getChannel("all_launches_channel");
         const alertChannel = interaction.options.getChannel("alert_channel");
@@ -2508,41 +2412,36 @@ client.on("interactionCreate", async (interaction) => {
         const hotPingRoleIdsRaw = interaction.options.getString("hot_ping_role_ids");
         const trendingChannel = interaction.options.getChannel("trending_channel");
         const trendingEnabled = interaction.options.getBoolean("trending_enabled");
+        const pingOnHot = interaction.options.getBoolean("ping_on_hot");
+        const pingOnTrending = interaction.options.getBoolean("ping_on_trending");
+        const pingOnWatchMatch = interaction.options.getBoolean("ping_on_watch_match");
+        const pingOnCurated = interaction.options.getBoolean("ping_on_curated");
         const updates = {};
         if (allLaunchesChannel) updates.allLaunchesChannelId = allLaunchesChannel.id;
         if (alertChannel) updates.alertChannelId = alertChannel.id;
-        if (interaction.options.data.options?.find((o) => o.name === "watch_channel")) {
-          updates.watchAlertChannelId = watchChannel?.id ?? null;
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "claim_channel")) {
-          updates.claimAlertChannelId = claimChannel?.id ?? null;
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "hot_channel")) {
-          updates.hotAlertChannelId = hotChannel?.id ?? null;
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "hot_enabled") !== undefined) {
-          updates.hotLaunchEnabled = hotEnabled !== false;
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "hot_ping_role_ids") !== undefined) {
-          updates.hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "trending_channel")) {
-          updates.trendingAlertChannelId = trendingChannel?.id ?? null;
-        }
-        if (interaction.options.data.options?.find((o) => o.name === "trending_enabled") !== undefined) {
-          updates.trendingEnabled = trendingEnabled === true;
-        }
+        if (hasSubOpt("watch_channel")) updates.watchAlertChannelId = watchChannel?.id ?? null;
+        if (hasSubOpt("claim_channel")) updates.claimAlertChannelId = claimChannel?.id ?? null;
+        if (hasSubOpt("hot_channel")) updates.hotAlertChannelId = hotChannel?.id ?? null;
+        if (hasSubOpt("hot_enabled")) updates.hotLaunchEnabled = hotEnabled !== false;
+        if (hasSubOpt("hot_ping_role_ids")) updates.hotLaunchRoleIds = parseRoleIdsFromInput(hotPingRoleIdsRaw);
+        if (hasSubOpt("trending_channel")) updates.trendingAlertChannelId = trendingChannel?.id ?? null;
+        if (hasSubOpt("trending_enabled")) updates.trendingEnabled = trendingEnabled === true;
+        if (pingOnHot !== null) updates.pingOnHot = pingOnHot;
+        if (pingOnTrending !== null) updates.pingOnTrending = pingOnTrending;
+        if (pingOnWatchMatch !== null) updates.pingOnWatchMatch = pingOnWatchMatch;
+        if (pingOnCurated !== null) updates.pingOnCurated = pingOnCurated;
         if (Object.keys(updates).length === 0) {
           await interaction.editReply({
             content:
-              "Pick at least one channel. **all_launches_channel** = firehose; **alert_channel** = curated; **claim_channel** = where **/claims add** pings go; **watch_channel** / **hot_channel** / **trending_channel** optional.",
+              "Pick at least one: a **channel**, **hot_ping_role_ids**, **ping_on_hot** / **ping_on_trending** / **ping_on_watch_match** / **ping_on_curated**, or toggles. **claim_channel** = where **/claim-watch add** pings go.",
           });
           return;
         }
         await setTenant(guildId, updates);
-        await interaction.editReply({ content: "Channels updated." });
+        await interaction.editReply({ content: "Channels & ping settings updated." });
         return;
       }
+
       if (sub === "rules") {
         const filterXMatch = interaction.options.getBoolean("filter_x_match");
         const filterFeeRecipientHasX = interaction.options.getBoolean("filter_fee_recipient_has_x");
@@ -2558,13 +2457,15 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: "Rules updated." });
         return;
       }
+
+      await interaction.editReply({ content: "Unknown **/setup** subcommand." });
     } catch (e) {
-      await interaction.editReply({ content: `Settings failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: `Setup failed: ${e.message}` }).catch(() => {});
     }
     return;
   }
 
-  if (interaction.commandName === "claims") {
+  if (interaction.commandName === "claim-watch") {
     const sub = interaction.options.getSubcommand();
     const guildId = interaction.guildId ?? null;
     const tenant = guildId ? await getTenant(guildId) : null;
@@ -2572,14 +2473,14 @@ client.on("interactionCreate", async (interaction) => {
     if (sub === "add" || sub === "list" || sub === "remove") {
       if (!guildId || !tenant || (!tenant.allLaunchesChannelId && !tenant.alertChannelId && !tenant.watchAlertChannelId)) {
         await interaction.reply({
-          content: "Set your server up first: **/setup** (API key + at least one channel). Then set the **Claims** channel in **/settings channels**. After that use **/claims add** to add tokens.",
+          content: "Set your server up first: **/setup full** (API key + at least one channel). Set **Claims** in **/setup channels**. Then use **/claim-watch add**.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
       if ((sub === "add" || sub === "remove") && !canManageServer(interaction)) {
         await interaction.reply({
-          content: "Only server admins can **add** or **remove** from the claim watch list. Use **/claims list** to view.",
+          content: "Only server admins can **add** or **remove** from the claim watchlist. Use **/claim-watch list** to view.",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -2595,10 +2496,10 @@ client.on("interactionCreate", async (interaction) => {
           }
           const added = await addClaimWatchToken(guildId, addr, name || undefined);
           const ch = tenant?.claimAlertChannelId || tenant?.watchAlertChannelId || tenant?.alertChannelId;
-          const channelHint = ch ? ` You'll get pinged in <#${ch}> when it's claimed.` : " Set a Claims channel in **/settings channels** to get pinged.";
+          const channelHint = ch ? ` You'll get pinged in <#${ch}> when it's claimed.` : " Set **claim_channel** in **/setup channels** to get pinged.";
           await interaction.reply({
             content: added
-              ? (name ? `Added **${name}** (\`${addr}\`) to your claim watch list.` : `Added \`${addr}\` to your claim watch list.`) + channelHint
+              ? (name ? `Added **${name}** (\`${addr}\`) to your claim watchlist.` : `Added \`${addr}\` to your claim watchlist.`) + channelHint
               : (name ? `**${name}** (\`${addr}\`) is already on the list (label updated).` : "That token is already on the list."),
             flags: MessageFlags.Ephemeral,
           });
@@ -2606,13 +2507,13 @@ client.on("interactionCreate", async (interaction) => {
           const tokenOrLabel = interaction.options.getString("token")?.trim();
           const ok = tokenOrLabel ? await removeClaimWatchToken(guildId, tokenOrLabel) : false;
           await interaction.reply({
-            content: ok ? "Removed from your claim watch list." : "Not found. Use the exact address (0x…) or the label from **/claims list**.",
+            content: ok ? "Removed from your claim watchlist." : "Not found. Use the exact address (0x…) or the label from **/claim-watch list**.",
             flags: MessageFlags.Ephemeral,
           });
         } else if (sub === "list") {
           const list = await getClaimWatchTokens(guildId);
           if (list.length === 0) {
-            await interaction.reply({ content: "Your claim watch list is empty. Use **/claims add** with a token address (0x…ba3).", flags: MessageFlags.Ephemeral });
+            await interaction.reply({ content: "Your claim watchlist is empty. Use **/claim-watch add** with a token address (0x…ba3).", flags: MessageFlags.Ephemeral });
             return;
           }
           const labels = tenant?.claimWatchLabels || {};
@@ -2627,12 +2528,12 @@ client.on("interactionCreate", async (interaction) => {
             })
           );
           await interaction.reply({
-            content: `**Your claim watch list** (${list.length}):\n\n${withSymbol.join("\n")}\n\nUse **/claims remove** with address or label.`,
+            content: `**Your claim watchlist** (${list.length}):\n\n${withSymbol.join("\n")}\n\nUse **/claim-watch remove** with address or label.`,
             flags: MessageFlags.Ephemeral,
           });
         }
       } catch (e) {
-        await interaction.reply({ content: `Claims failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.reply({ content: `claim-watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
       }
       return;
     }
@@ -2703,18 +2604,20 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  if (interaction.commandName !== "watch") return;
+  if (interaction.commandName !== "alert-watchlist") return;
 
   const sub = interaction.options.getSubcommand();
   const type = interaction.options.getString("type");
   const value = interaction.options.getString("value");
   const name = interaction.options.getString("name");
   const guildId = interaction.guildId ?? null;
-  const useTenant = guildId && (await getTenant(guildId));
+  const tenant = guildId ? await getTenant(guildId) : null;
+  const useTenant = !!tenant;
+  const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
 
   if ((sub === "add" || sub === "remove") && guildId && !canManageServer(interaction)) {
     await interaction.reply({
-      content: "Only server admins (Manage Server permission) can **add** or **remove** watch list entries. Use **/watch list** to view.",
+      content: "Only server admins (Manage Server permission) can **add** or **remove** alert watchlist entries. Use **/alert-watchlist list** to view.",
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -2722,139 +2625,119 @@ client.on("interactionCreate", async (interaction) => {
 
   try {
     if (sub === "add") {
-      if (type === "x" || type === "fc") {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        const normalized = value ? String(value).trim().toLowerCase().replace(/^@/, "") : "";
-        if (useTenant) {
-          const added = await updateWatchListForGuild(guildId, type, value, true, name ?? undefined);
-          const label = name ? `${name} (${type === "x" ? "@" : ""}${normalized || value})` : `${type === "x" ? "@" : ""}${normalized || value}`;
-          await interaction.editReply({
-            content: added
-              ? `Added **${label}** to this server's watch list.`
-              : `**${label}** is already on the watch list.`,
-          });
-        } else {
-          const tenant = guildId ? await getTenant(guildId) : null;
-          const { wallet, normalized: norm } = await resolveHandleToWallet(value, { bankrApiKey: tenant?.bankrApiKey });
-          if (!wallet) {
-            await interaction.editReply({
-              content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. Add a wallet address (0x...) directly with type **wallet**. Run **/setup** to use a per-server watchlist.`,
-            });
-            return;
-          }
-          const added = await addWallet(wallet);
-          await interaction.editReply({
-            content: added
-              ? `Added **${type === "x" ? "@" : ""}${norm || value}** (wallet \`${wallet}\`) to watch list. Run **/setup** to use a per-server watchlist.`
-              : `**${type === "x" ? "@" : ""}${norm || value}** is already on the watch list (wallet \`${wallet}\`).`,
-          });
+      if (type === "wallet") {
+        const needsResolve = value && !parseQuery(value).isWallet;
+        if (needsResolve) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const resolved = await resolveWatchlistWalletInput(value, bankrApiKey);
+        if (!resolved.wallet) {
+          const msg = resolved.error ?? "Could not resolve wallet.";
+          if (needsResolve) await interaction.editReply({ content: msg });
+          else await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+          return;
         }
-      } else if (type === "wallet") {
-        const addr = typeof value === "string" && /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
+        const addr = resolved.wallet;
+        const extra = resolved.resolvedLabel ? ` (from **${resolved.resolvedLabel}**)` : "";
         if (useTenant) {
-          const added = addr ? await updateWatchListForGuild(guildId, "wallet", addr, true, name ?? undefined) : false;
+          const added = await updateWatchListForGuild(guildId, "wallet", addr, true, name ?? undefined);
           const label = name ? `${name} (\`${addr}\`)` : `\`${addr}\``;
-          await interaction.reply({
-            content: addr
-              ? (added ? `Added wallet ${label} to this server's watch list.` : `That wallet is already on the watch list.`)
-              : "Invalid wallet address (use 0x + 40 hex chars).",
-            flags: MessageFlags.Ephemeral,
-          });
+          const body = added
+            ? `Added wallet ${label}${extra} to this server's **alert watchlist**.`
+            : `That wallet is already on the alert watchlist (\`${addr}\`)${extra}.`;
+          if (needsResolve) await interaction.editReply({ content: body });
+          else await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
         } else {
-          const added = await addWallet(value);
-          await interaction.reply({
-            content: added
-              ? `Added wallet \`${String(value).trim().toLowerCase()}\` to watch list. Run **/setup** for per-server watchlist.`
-              : (addr ? "That wallet is already on the watch list." : "Invalid wallet address (use 0x + 40 hex chars)."),
-            flags: MessageFlags.Ephemeral,
-          });
+          const added = await addWallet(addr);
+          const body = added
+            ? `Added wallet \`${addr}\`${extra} to the global watchlist. Run **/setup full** for a per-server alert watchlist.`
+            : `That wallet is already on the watchlist (\`${addr}\`)${extra}.`;
+          if (needsResolve) await interaction.editReply({ content: body });
+          else await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
         }
       } else {
         if (useTenant) {
           const added = await updateWatchListForGuild(guildId, "keywords", value, true, name ?? undefined);
           const label = name ? `${name} ("${value}")` : `"${value}"`;
           await interaction.reply({
-            content: added ? `Added keyword **${label}** to this server's watch list.` : `**${label}** is already on the watch list.`,
+            content: added ? `Added keyword **${label}** to this server's alert watchlist.` : `**${label}** is already on the alert watchlist.`,
             flags: MessageFlags.Ephemeral,
           });
         } else {
           await addKeyword(value);
-          await interaction.reply({ content: `Added keyword **"${value}"** to watch list. Run **/setup** for per-server watchlist.`, flags: MessageFlags.Ephemeral });
+          await interaction.reply({
+            content: `Added keyword **"${value}"** to the global watchlist. Run **/setup full** for per-server.`,
+            flags: MessageFlags.Ephemeral,
+          });
         }
       }
     } else if (sub === "remove") {
-      if (type === "x" || type === "fc") {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        if (useTenant) {
-          const ok = await updateWatchListForGuild(guildId, type, value, false);
-          await interaction.editReply({
-            content: ok ? `Removed **${type === "x" ? "@" : ""}${value}** from this server's watch list.` : "That handle was not on the watch list.",
-          });
-        } else {
-          const tenant = guildId ? await getTenant(guildId) : null;
-          const { wallet, normalized: norm } = await resolveHandleToWallet(value, { bankrApiKey: tenant?.bankrApiKey });
-          if (!wallet) {
-            await interaction.editReply({
-              content: `Could not resolve **${type === "x" ? "@" : ""}${value}** to a wallet. If you added by wallet, remove with type **wallet** and the address.`,
-            });
-            return;
-          }
-          const ok = await removeWallet(wallet);
-          await interaction.editReply({
-            content: ok ? `Removed **${type === "x" ? "@" : ""}${norm || value}** (wallet) from watch list.` : "That wallet was not on the watch list.",
-          });
+      if (type === "wallet") {
+        const needsResolve = value && !parseQuery(value).isWallet;
+        if (needsResolve) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const resolved = await resolveWatchlistWalletInput(value, bankrApiKey);
+        if (!resolved.wallet) {
+          const msg = resolved.error ?? "Could not resolve wallet.";
+          if (needsResolve) await interaction.editReply({ content: msg });
+          else await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+          return;
         }
-      } else if (type === "wallet") {
+        const addr = resolved.wallet;
         if (useTenant) {
-          const ok = await updateWatchListForGuild(guildId, "wallet", value, false);
-          await interaction.reply({
-            content: ok ? "Removed wallet from this server's watch list." : "Wallet not found or invalid address.",
-            flags: MessageFlags.Ephemeral,
-          });
+          const ok = await updateWatchListForGuild(guildId, "wallet", addr, false);
+          const body = ok ? `Removed wallet \`${addr}\` from this server's alert watchlist.` : "That wallet was not on the alert watchlist.";
+          if (needsResolve) await interaction.editReply({ content: body });
+          else await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
         } else {
-          const ok = await removeWallet(value);
-          await interaction.reply({
-            content: ok ? "Removed wallet from watch list." : "Wallet not found or invalid address.",
-            flags: MessageFlags.Ephemeral,
-          });
+          const ok = await removeWallet(addr);
+          const body = ok ? `Removed wallet \`${addr}\` from the global watchlist.` : "That wallet was not on the watchlist.";
+          if (needsResolve) await interaction.editReply({ content: body });
+          else await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
         }
       } else {
         if (useTenant) {
           const ok = await updateWatchListForGuild(guildId, "keywords", value, false);
           await interaction.reply({
-            content: ok ? `Removed keyword **"${value}"** from this server's watch list.` : "Keyword not found.",
+            content: ok ? `Removed keyword **"${value}"** from this server's alert watchlist.` : "Keyword not found (check spelling; keywords are stored lowercase).",
             flags: MessageFlags.Ephemeral,
           });
         } else {
           await removeKeyword(value);
-          await interaction.reply({ content: `Removed keyword **"${value}"** from watch list.`, flags: MessageFlags.Ephemeral });
+          await interaction.reply({ content: `Removed keyword **"${value}"** from the global watchlist.`, flags: MessageFlags.Ephemeral });
         }
       }
     } else if (sub === "edit") {
       if (!useTenant) {
         await interaction.reply({
-          content: "Use **/setup** to configure a per-server watchlist first. Editing is only available for server watch lists.",
+          content: "Use **/setup full** to configure this server first. **edit** is only for per-server alert watchlists.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
       const editName = interaction.options.getString("name");
-      const normalizedVal = type === "wallet" && value && /^0x[a-fA-F0-9]{40}$/.test(value.trim())
-        ? value.trim().toLowerCase()
-        : (value ? String(value).trim().toLowerCase().replace(/^@/, "") : "");
-      const ok = await updateWatchListEntryName(guildId, type, normalizedVal || value, editName ?? null);
-      const label = type === "x" ? `@${normalizedVal || value}` : type === "wallet" ? `\`${normalizedVal || value}\`` : normalizedVal || value;
+      let matchVal = value;
+      if (type === "wallet") {
+        const resolved = await resolveWatchlistWalletInput(value, bankrApiKey);
+        if (!resolved.wallet) {
+          await interaction.reply({ content: resolved.error ?? "Could not resolve wallet.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        matchVal = resolved.wallet;
+      } else {
+        matchVal = value ? String(value).trim().toLowerCase() : "";
+      }
+      const storeType = type === "wallet" ? "wallet" : "keywords";
+      const ok = await updateWatchListEntryName(guildId, storeType, matchVal, editName ?? null);
+      const label = type === "wallet" ? `\`${matchVal}\`` : matchVal;
       if (ok) {
         const nameStr = editName != null && String(editName).trim() ? String(editName).trim() : null;
         await interaction.reply({
           content: nameStr
-            ? `Updated **${label}** → nickname set to **${nameStr}**.`
+            ? `Updated **${label}** → nickname **${nameStr}**.`
             : `Cleared nickname for **${label}**.`,
           flags: MessageFlags.Ephemeral,
         });
       } else {
         await interaction.reply({
-          content: `**${label}** was not found on this server's watch list. Use **/watch list** to see entries.`,
+          content: `**${label}** was not found on this server's alert watchlist. Use **/alert-watchlist list**.`,
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -2865,29 +2748,32 @@ client.on("interactionCreate", async (interaction) => {
         const fmtFc = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} (${e.value})` : e.value)).join(", ") : "_none_");
         const fmtWallet = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} (\`${e.value}\`)` : `\`${e.value}\``)).join(", ") : "_none_");
         const fmtKw = (arr) => (arr.length ? arr.map((e) => (e.name ? `${e.name} ("${e.value}")` : `"${e.value}"`)).join(", ") : "_none_");
+        const legacy =
+          (wl.x?.length ?? 0) + (wl.fc?.length ?? 0) > 0
+            ? `\n**Legacy X/Farcaster rows** (still matched): X: ${fmtX(wl.x)} · FC: ${fmtFc(wl.fc)}\n_Add new social follows via **wallet** + profile URL._`
+            : "";
         const lines = [
-          "**Watch list** (this server)",
-          "**X:** " + fmtX(wl.x),
-          "**Farcaster:** " + fmtFc(wl.fc),
+          "**Alert watchlist** (this server)",
           "**Wallets:** " + fmtWallet(wl.wallet),
           "**Keywords:** " + fmtKw(wl.keywords),
+          legacy,
         ];
-        await interaction.reply({ content: lines.join("\n"), flags: MessageFlags.Ephemeral });
-        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/watch list", "");
+        await interaction.reply({ content: lines.filter(Boolean).join("\n"), flags: MessageFlags.Ephemeral });
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/alert-watchlist list", "");
       } else {
         const { wallet, keywords } = await list();
         const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
         const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
         await interaction.reply({
-          content: `**Watch list** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup** to use a per-server watchlist.`,
+          content: `**Alert watchlist** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup full** for a per-server list.`,
           flags: MessageFlags.Ephemeral,
         });
-        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/watch list", "global");
+        debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/alert-watchlist list", "global");
       }
     }
   } catch (e) {
-    console.error("Watch command failed:", e.message);
-    debugLogError(e, "watch");
+    console.error("alert-watchlist failed:", e.message);
+    debugLogError(e, "alert-watchlist");
     await interaction.reply({ content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 });

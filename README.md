@@ -8,14 +8,14 @@ The [bankr.bot/launches](https://bankr.bot/launches) feed shows real-time token 
 
 ## Ready to share: checklist
 
-Once these are done, you can invite the bot to many servers and let each server run **/setup** with their own API key, rules, and watchlist.
+Once these are done, you can invite the bot to many servers and let each server run **/setup full** (or **/setup api_key** + **/setup channels**) with their own API key, rules, and alert watchlist.
 
 | Step | What to do |
 |------|-------------|
 | **1. Deploy Doppler indexer** | Run the [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) on Railway (Postgres + indexer service). See **Self-hosting the Doppler indexer on Railway** below. |
-| **2. Set BankrMonitor env** | In the place where the bot runs (Railway, VPS, or `.env`): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DOPPLER_INDEXER_URL` (your indexer URL), `RPC_URL` (Base RPC), and optionally `BANKR_API_KEY` (so /lookup and /fees-token work without 403). |
+| **2. Set BankrMonitor env** | In the place where the bot runs (Railway, VPS, or `.env`): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DOPPLER_INDEXER_URL` (your indexer URL), `RPC_URL` (Base RPC), and optionally `BANKR_API_KEY` (so /lookup and paste/mention fee replies work without 403). |
 | **3. Run the bot** | `npm start` (or deploy the Discord bot service). Optional: run `npm run fee-api` if you want the claimable-fees API. |
-| **4. Share** | Invite the bot to servers. Each server runs **/setup** (API key, alert channel, rules) and **/watch add** for their watchlist. Use **/settings** anytime to edit. |
+| **4. Share** | Invite the bot to servers. Each server runs **/setup full** (or subcommands) and **/alert-watchlist add** for wallets/keywords. Use **/setup show** / **/setup channels** / **/setup rules** to edit. |
 
 Verify the indexer: `DOPPLER_INDEXER_URL=https://your-indexer.up.railway.app npm run check:indexer` should show OK.
 
@@ -110,7 +110,7 @@ curl "https://testnet-indexer.doppler.lol/search/0x123...abc?chain_ids=8453,5707
 
 - **Estimated creator fees** = indexer’s `volumeUsd` × 1.2% × 57%. If the indexer has no volume (or `0`) for that token, the estimate is $0. New or not-yet-indexed tokens often have no volume.
 - **Historical accrued** = indexer’s `cumulatedFees(poolId, chainId, beneficiary)`. If the indexer has no row for that pool/beneficiary yet, nothing is shown.
-- **Claimable right now** = on-chain `RehypeDopplerHook.getHookFees(poolId)`. This is **not** from the indexer. Set **RPC_URL_BASE** (Base RPC) in the bot’s environment so the bot can read the hook; then claimable token/WETH for the fee recipient will appear when you use `/fees-token`.
+- **Claimable right now** = on-chain `RehypeDopplerHook.getHookFees(poolId)`. This is **not** from the indexer. Set **RPC_URL_BASE** (Base RPC) in the bot’s environment so the bot can read the hook; then claimable token/WETH for the fee recipient will appear in **paste/mention** fee replies (or `token-stats` / fee API).
 
 **What tokens does the indexer have?**
 
@@ -288,7 +288,7 @@ This project focuses on three fee views (no leaderboards, charts, or OHLC):
 
 | What | How you see it | Source |
 |------|----------------|--------|
-| **Claimable right now** (token + WETH) | Discord: mention bot + token address, or **/fees-token**; or `GET /claimable?token=<addr>` (fee-api); or `bankr fees --token <addr>`. Same **with or without** indexer. | **On-chain** only: Rehype hook `getHookFees(poolId)` via Base RPC. |
+| **Claimable right now** (token + WETH) | Discord: mention bot + token address (or paste CA); or `GET /claimable?token=<addr>` (fee-api); or `bankr fees --token <addr>`. Same **with or without** indexer. | **On-chain** only: Rehype hook `getHookFees(poolId)` via Base RPC. |
 | **Historical accrued** (all-time fees for beneficiary) | Shown in Discord/CLI when the indexer is running and has `cumulatedFees` for that pool+beneficiary. | **Indexer** (Doppler indexer `cumulatedFees`). |
 | **Already claimed** | When both indexer and chain data exist: **Already claimed ≈ Accrued − Claimable** (shown in Discord for that token). | Derived: indexer accrued minus on-chain claimable. |
 
@@ -363,27 +363,27 @@ Outputs JSON. Without `OUTPUT_JSON=1`, outputs a compact JSON array.
 
 Notify on new launches via Discord bot channel (recommended) or webhook, and/or Telegram bot.
 
-### Discord bot channel (recommended for /watch and /lookup)
+### Discord bot channel (recommended for /alert-watchlist and /lookup)
 
 When using the Discord bot (`npm start`), you can set:
 
 - **DISCORD_ALL_LAUNCHES_CHANNEL_ID** — every Bankr deploy (firehose, no filters).
 - **DISCORD_ALERT_CHANNEL_ID** — curated only (respects **FILTER_X_MATCH**, **FILTER_MAX_DEPLOYS**).
-- **DISCORD_WATCH_ALERT_CHANNEL_ID** — watch-list matches only.
+- **DISCORD_WATCH_ALERT_CHANNEL_ID** — alert-watchlist matches only.
 
 Right-click each channel → Copy channel ID (Developer Mode). You can use one, two, or all three (same launch is deduped per channel).
 
-**Optional env when using /setup:** Per-server **/setup** can set **all_launches_channel** (firehose), **alert_channel** (curated), **watch_channel** (watch list); at least one of firehose or curated is required. If no global env channels are set, alerts go to each server’s configured channels.
+**Optional env when using /setup:** Per-server **/setup full** or **/setup channels** can set **all_launches_channel** (firehose), **alert_channel** (curated), **watch_channel** (alert-watchlist); at least one of firehose or curated is required on first **/setup full**. If no global env channels are set, alerts go to each server’s configured channels.
 
-- **/watch** — Manage the launch watch list (add/remove X, Farcaster, wallet, keyword).
-- **/claim-watch** — Get notified when a token’s fees are claimed: add/remove/list token addresses; alerts post to your watch or alert channel when claimable drops.
+- **/alert-watchlist** — Wallets (paste `0x…` or X/Farcaster URL — stored as resolved wallet) and keywords; add / remove / edit / list.
+- **/claim-watch** — Notified when a token’s fees are claimed: add/remove/list; **check** / **wallet** lookups.
 - **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.
 
-**Who can do what:** Only server admins (Discord **Manage Server** permission) can run **/setup**, **/settings**, **/watch add**, **/watch remove**, **/claim-watch add**, **/claim-watch remove**, and **/deploy**. Everyone can use **/lookup**, **/wallet-lookup**, **/fees-token**, **/watch list**, **/claim-watch list**, **/help**, and the token paste/mention fee replies (read-only).
+**Who can do what:** Only server admins (Discord **Manage Server** permission) can run **/setup** subcommands that change config, **/alert-watchlist add** / **remove**, **/claim-watch add** / **remove**, and **/deploy**. Everyone can use **/lookup**, **/wallet-lookup**, **/alert-watchlist list**, **/claim-watch list**, **/help**, and the token paste/mention fee replies (read-only).
 
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 
-**Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, `/fees-token`, paste token, mention fees, `/deploy`, `/watch list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
+**Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, paste token, mention fees, `/deploy`, `/alert-watchlist list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
 
 **Three feed types:**
 
@@ -391,7 +391,7 @@ Right-click each channel → Copy channel ID (Developer Mode). You can use one, 
 |----------|---------|
 | **DISCORD_ALL_LAUNCHES_CHANNEL_ID** | **Firehose** — every Bankr deployment (no filter) |
 | **DISCORD_ALERT_CHANNEL_ID** | **Curated** — only if deploy passes **FILTER_X_MATCH** / **FILTER_MAX_DEPLOYS** |
-| **DISCORD_WATCH_ALERT_CHANNEL_ID** | **Watch list** — only tokens matching **/watch** (X, FC, wallet, keyword) |
+| **DISCORD_WATCH_ALERT_CHANNEL_ID** | **Alert watchlist** — only tokens matching **/alert-watchlist** (wallets + keywords; legacy X/FC rows still match) |
 
 Example: one channel for all deploys, another for “quality” deploys (same X on deployer + fee recipient), a third for your watch list.
 
@@ -424,15 +424,15 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
      - **All launches** — firehose (every deploy)
      - **Hot launches** — delayed hot ping (e.g. 5+ buys in 1 min, 20+ holders)
      - **Trending Tokens** — same as hot (trending ping)
-     - **X only fee recipient** — curated (only when fee recipient has X; set **Filter fee recipient has X** in /settings rules)
+     - **X only fee recipient** — curated (only when fee recipient has X; set **Filter fee recipient has X** in **/setup rules**)
    - **Add your bot:** Group → Add members → your bot. Give it **Post messages** (and **Manage topics** if you want the bot to create topics; usually you create them manually).
    - **Get group ID and topic IDs:**
      - **Group ID:** Forward a message from the group to [@userinfobot](https://t.me/userinfobot) or [@RawDataBot](https://t.me/RawDataBot); the reply shows the chat ID (e.g. `-1001234567890`). Or send any message in the group, then open `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates` and read `message.chat.id`.
      - **Topic IDs:** Each topic’s thread ID is the **message_id** of the topic’s first (header) message. After creating a topic, send a message in it, then call `getUpdates` and look at `message.message_thread_id` in the reply — that’s the topic ID. Or use a bot that reports thread IDs (e.g. post in the topic and inspect updates). Topic IDs are integers (e.g. `2`, `3`, `4`, `5`).
    - **Configure:**
      - **Env (single group):** Set `TELEGRAM_CHAT_ID` to the group ID. Set `TELEGRAM_TOPIC_FIREHOSE`, `TELEGRAM_TOPIC_CURATED`, `TELEGRAM_TOPIC_HOT`, `TELEGRAM_TOPIC_TRENDING` to the four topic IDs (integers or numeric strings).
-     - **Per-server (Discord bot):** In the server where the bot is in, run **/settings telegram**. Set **group_chat_id** to the Telegram group ID, then **topic_firehose**, **topic_curated** (X only fee recipient), **topic_hot**, **topic_trending** to the four topic IDs.
-   - **Delay for Telegram Hot/Trending:** Hot and Trending pings are sent to Discord first; then, by default, **1 minute later** they are sent to the Telegram Hot and Trending topics. You can change this later: set **TELEGRAM_HOT_PING_DELAY_MS** in env (default `60000` ms), or per server run **/settings telegram** and set **delay_hot_trending_sec** (e.g. `60` for 1 min, `0` for same time as Discord).
+     - **Per-server (Discord bot):** In the server where the bot is in, run **/setup telegram**. Set **group_chat_id** to the Telegram group ID, then **topic_firehose**, **topic_curated** (X only fee recipient), **topic_hot**, **topic_trending** to the four topic IDs.
+   - **Delay for Telegram Hot/Trending:** Hot and Trending pings are sent to Discord first; then, by default, **1 minute later** they are sent to the Telegram Hot and Trending topics. You can change this later: set **TELEGRAM_HOT_PING_DELAY_MS** in env (default `60000` ms), or per server run **/setup telegram** and set **delay_hot_trending_sec** (e.g. `60` for 1 min, `0` for same time as Discord).
    - **Restrict to your group only:** Set **TELEGRAM_ALLOWED_CHAT_IDS** to your group’s chat ID (e.g. `-1001234567890`). The bot will only send to that chat; if someone adds the bot to another group, it will not post there. Use a comma-separated list for multiple groups. Leave unset to allow all.
 
 4. **Environment variables**
