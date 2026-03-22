@@ -891,12 +891,14 @@ function formatLaunchBodyForTelegram(launch, opts = {}) {
 
 export async function sendTelegram(launch, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
-  if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
+  if (!TELEGRAM_TOKEN || !chatId) return;
+  if (!options.skipAllowedCheck && !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId);
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
   const basescanTokenUrl = `${BASESCAN}/token/${launch.tokenAddress}`;
 
-  let text = `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
+  let text = options.prependMarkdown ? `${options.prependMarkdown}\n\n` : "";
+  text += `*New launch: ${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})*\n\n`;
   text += `*Token*\n${escapeMarkdown(launch.name)} ($${escapeMarkdown(launch.symbol)})\n\n`;
   text += `[View on Bankr](${launchUrl}) | [Basescan](${basescanTokenUrl})\n\n`;
   text += `*CA*\n\`${launch.tokenAddress}\`\n\n`;
@@ -961,7 +963,8 @@ export async function sendTelegram(launch, options = {}) {
  * options.messageThreadId — forum topic ID. options.trending — use "TRENDING" title and buys5m/1h line. */
 export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
-  if (!TELEGRAM_TOKEN || !chatId || !stats || !allowedTelegramChat(chatId)) return;
+  if (!TELEGRAM_TOKEN || !chatId || !stats) return;
+  if (!options.skipAllowedCheck && !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId);
   const {
     hotByBuys,
@@ -1024,7 +1027,8 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     extras.push(`🕐 Deployed: \`${new Date(deployedMs).toISOString()}\``);
   }
   const extraBlock = extras.length ? `${extras.join("\n")}\n\n` : "";
-  const text = `${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;
+  const prefix = options.prependMarkdown ? `${options.prependMarkdown}\n\n` : "";
+  const text = `${prefix}${title}\n\n${tokenLink}\n\n${extraBlock}${body}\n${line}`;
   const replyMarkup = telegramTradeKeyboard(launch.tokenAddress);
   const payload = {
     chat_id: chatId,
@@ -1042,7 +1046,7 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     });
     const data = await res.json().catch(() => ({}));
     const messageId = data?.result?.message_id;
-    if (messageId != null) {
+    if (messageId != null && options.skipPin !== true) {
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/pinChatMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1064,7 +1068,8 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
  */
 export async function sendTelegramClaim(claim, options = {}) {
   const chatId = options.chatId ?? process.env.TELEGRAM_CLAIM_CHAT_ID ?? TELEGRAM_CHAT;
-  if (!TELEGRAM_TOKEN || !chatId || !allowedTelegramChat(chatId)) return;
+  if (!TELEGRAM_TOKEN || !chatId) return;
+  if (!options.skipAllowedCheck && !allowedTelegramChat(chatId)) return;
   const messageThreadId = telegramThreadId(options.messageThreadId ?? process.env.TELEGRAM_CLAIM_TOPIC_ID);
   const symbol = (claim.poolSymbol ?? "Token").trim();
   const tokenAddr = (claim.poolToken ?? "").trim();
@@ -1073,7 +1078,8 @@ export async function sendTelegramClaim(claim, options = {}) {
   const txUrl = claim.txHash ? `${BASESCAN}/tx/${claim.txHash}` : null;
   // Token name links to Bankr; Token CA full address for search/copy
   const titleLink = bankrUrl ? `[$${escapeMarkdown(symbol)}](${bankrUrl})` : `*$${escapeMarkdown(symbol)}*`;
-  let text = `💰 ${titleLink} claimed\n\n`;
+  let text = options.prependMarkdown ? `${options.prependMarkdown}\n\n` : "";
+  text += `💰 ${titleLink} claimed\n\n`;
   if (tokenAddr) text += `Token CA: \`${tokenAddr}\`\n`;
   text += `Fees: ${amt} WETH\n`;
   if (txUrl) text += `TX: [BaseScan](${txUrl})`;

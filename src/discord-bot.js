@@ -72,6 +72,15 @@ import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims, getTokenClaims } from "./watchers/dopplerClaimWatcher.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
+import { isWatchMatchForTenant, getWatchMatchReasons } from "./watch-match.js";
+import {
+  schedulePersonalLaunchDms,
+  schedulePersonalClaimDms,
+  schedulePersonalHotTrendingDms,
+  getTelegramPersonalDmDelayMs,
+} from "./telegram-personal-dm.js";
+import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
+import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -708,72 +717,6 @@ function tenantPassesFilters(launch, rules) {
   return true;
 }
 
-/** Per-tenant watch match: same logic as notify.js isWatchMatch but using tenant watch list. */
-function isWatchMatchForTenant(launch, watchList) {
-  const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
-  const normFc = (u) => (u && typeof u === "string" ? String(u).trim().toLowerCase() : null);
-  const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
-  const deployerFc = launch.launcherFarcaster ? normFc(String(launch.launcherFarcaster)) : null;
-  const normAddr = (a) => (a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null);
-  const launcherAddr = normAddr(launch.launcher);
-  const feeAddrs = (launch.beneficiaries || [])
-    .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
-    .map(normAddr)
-    .filter(Boolean);
-  const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
-  const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
-  const watchX = watchList?.x ?? new Set();
-  const watchFc = watchList?.fc ?? new Set();
-  const watchWallet = watchList?.wallet ?? new Set();
-  const watchKeywords = watchList?.keywords ?? new Set();
-  const inWatchX = deployerX && watchX.has(deployerX);
-  const inWatchFc = deployerFc && watchFc.has(deployerFc);
-  const inWatchWallet = watchWallet.size > 0 && allWalletAddrs.some((a) => watchWallet.has(a));
-  const inWatchKeyword = watchKeywords.size > 0 && [...watchKeywords].some((kw) => searchText.includes(String(kw).toLowerCase().trim()));
-  return !!(inWatchX || inWatchFc || inWatchWallet || inWatchKeyword);
-}
-
-/** Human-readable lines for the embed: what on the watch list triggered this match. */
-function getWatchMatchReasons(launch, watchList) {
-  if (!watchList) return [];
-  const normX = (u) => (u && typeof u === "string" ? u.replace(/^@/, "").trim().toLowerCase() : null);
-  const normFc = (u) => (u && typeof u === "string" ? String(u).trim().toLowerCase() : null);
-  const normAddr = (a) => (a && /^0x[a-fA-F0-9]{40}$/.test(String(a).trim()) ? String(a).trim().toLowerCase() : null);
-  const deployerX = launch.launcherX ? normX(String(launch.launcherX)) : null;
-  const deployerFc = launch.launcherFarcaster ? normFc(String(launch.launcherFarcaster)) : null;
-  const launcherAddr = normAddr(launch.launcher);
-  const feeAddrs = (launch.beneficiaries || [])
-    .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
-    .map(normAddr)
-    .filter(Boolean);
-  const allWalletAddrs = [launcherAddr, ...feeAddrs].filter(Boolean);
-  const searchText = `${launch.name || ""} ${launch.symbol || ""}`.toLowerCase();
-  const watchX = watchList?.x ?? new Set();
-  const watchFc = watchList?.fc ?? new Set();
-  const watchWallet = watchList?.wallet ?? new Set();
-  const watchKeywords = watchList?.keywords ?? new Set();
-  const reasons = [];
-  if (deployerX && watchX.has(deployerX)) {
-    reasons.push(`Launcher X (@${deployerX}) is on your watch list`);
-  }
-  if (deployerFc && watchFc.has(deployerFc)) {
-    reasons.push(`Launcher Farcaster (${deployerFc}) is on your watch list`);
-  }
-  for (const a of allWalletAddrs) {
-    if (!watchWallet.has(a)) continue;
-    const short = `${a.slice(0, 6)}…${a.slice(-4)}`;
-    const role = a === launcherAddr ? "launcher" : "fee recipient";
-    reasons.push(`Wallet \`${short}\` on your watch list (matched as ${role})`);
-  }
-  for (const kw of watchKeywords) {
-    const k = String(kw).toLowerCase().trim();
-    if (!k || !searchText.includes(k)) continue;
-    const displayKw = String(kw).trim();
-    reasons.push(`Keyword “${displayKw}” appears in token name or symbol`);
-  }
-  return reasons;
-}
-
 /** Parse role IDs from string: comma/space-separated numeric IDs and/or Discord role mentions <@&id>. */
 function parseRoleIdsFromInput(raw) {
   if (raw == null || String(raw).trim() === "") return [];
@@ -991,6 +934,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
           }
         }
       }
+      schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
       const seenTg = new Set();
       for (const chatId of telegramChatIds || []) {
         const key = `${chatId}`;
@@ -1093,6 +1037,7 @@ async function runNotify() {
         if (sendToEnvCurated) {
           await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
         }
+        schedulePersonalLaunchDms(launchForEmbeds);
       }
       if (
         HOT_LAUNCH_ENABLED &&
@@ -1195,6 +1140,7 @@ async function runNotify() {
               await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
             }
           }
+          schedulePersonalLaunchDms(launchForEmbeds);
         }
         const anyHotEnabled = tenantsWithChannels.some((t) => t.hotLaunchEnabled !== false);
         if (
@@ -1399,7 +1345,18 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
         const text = u?.message?.text?.trim();
         const chatId = u?.message?.chat?.id;
         const threadId = u?.message?.message_thread_id;
+        const chatType = u?.message?.chat?.type;
         if (!text || chatId == null) continue;
+        if (chatType === "private") {
+          if (isPersonalDmsEnabled()) {
+            await handlePersonalTelegramCommand({
+              chatId,
+              text,
+              send: (msg, o = {}) => sendTg(chatId, msg, o),
+            });
+          }
+          continue;
+        }
         // /topicid or /id — always reply (ignore allowedChatIds) so you can discover chat + topic IDs
         if (topicIdRegex.test(text)) {
           const threadPart = threadId != null
@@ -1555,6 +1512,7 @@ client.once("ready", async () => {
         messageThreadId: process.env.TELEGRAM_CLAIM_TOPIC_ID,
       }).catch((e) => console.error("Telegram claim send:", e.message));
     }
+    schedulePersonalClaimDms(claim);
   });
   if (CLAIM_FIREHOSE_CHANNEL_ID) console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
   if (Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) console.log(`Claim token channels: ${Object.keys(CLAIM_TOKEN_CHANNELS).length} token(s)`);
@@ -1574,6 +1532,11 @@ client.once("ready", async () => {
     : null;
   if (tgToken) {
     startTelegramClaimsPolling(tgToken, tgAllowedIds);
+  }
+  if (tgToken && isPersonalDmsEnabled()) {
+    console.log(
+      `Telegram personal DMs: ON · delay ${getTelegramPersonalDmDelayMs()}ms · users file ${process.env.TELEGRAM_PERSONAL_USERS_FILE || join(process.cwd(), ".telegram-personal-users.json")}`
+    );
   }
 });
 

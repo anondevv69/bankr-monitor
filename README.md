@@ -410,7 +410,9 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
    - **Get the channel chat ID:** Channel IDs look like `-1001234567890`. Easiest: forward any message from the channel to [@userinfobot](https://t.me/userinfobot) or to [@RawDataBot](https://t.me/RawDataBot); the reply shows the chat ID. Or add the bot, post once, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and read `message.chat.id` (use the bot token from [@BotFather](https://t.me/BotFather)).
    - Set **TELEGRAM_BOT_TOKEN** (from @BotFather) and **TELEGRAM_CHAT_ID** (the channel ID) in your env. The bot will post every new Bankr launch to that channel; subscribers see the firehose.
 
-   Telegram is **receive-only**: the app only sends alerts. It does not accept commands from users.
+   The **channel** setup above is broadcast-only (the bot posts; subscribers read).
+
+   **Optional — same bot, private DMs:** With the **Discord bot** running, set **TELEGRAM_PERSONAL_DMS_ENABLED=true** and open a **private chat** with your bot → **/start**. Users get delayed personal alerts (watchlist, optional firehose, claims, trending; hot = premium via **TELEGRAM_PREMIUM_CODE**). Delay defaults to **TELEGRAM_HOT_PING_DELAY_MS** (or **TELEGRAM_DM_DELAY_MS**). Restrict who can register with **TELEGRAM_DM_ALLOWED_USER_IDS** (Telegram user IDs). Persist **`TELEGRAM_PERSONAL_USERS_FILE`** on a Railway volume in production.
 
    **Share with users:** Once the channel is public, give people the link (e.g. **t.me/your_channel_username**). They join the channel and get every new Bankr deploy automatically.
 
