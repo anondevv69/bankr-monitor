@@ -11,6 +11,7 @@ import { EventEmitter } from "events";
 import { createPublicClient, webSocket, parseAbiItem, decodeFunctionData } from "viem";
 import { base } from "viem/chains";
 import { DOPPLER_CONTRACTS_BASE } from "../config.js";
+import { isBankrTokenAddress } from "../bankr-token.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 
@@ -28,9 +29,6 @@ const MIN_WETH_CLAIM = (() => {
 
 /** ERC-4337 EntryPoint (v0.6) on Base; handleOps(tuple[], beneficiary) — use ops[0].sender as claimer when tx goes through AA. */
 const ENTRYPOINT_V06 = "0x0000000071727De22E5E9d8BAf0edAc6f37da032".toLowerCase();
-
-/** Only emit claims for pool tokens whose address ends with this (Bankr tokens end in "ba3"). Set BANKR_TOKEN_SUFFIX to override. */
-const BANKR_TOKEN_SUFFIX = (process.env.BANKR_TOKEN_SUFFIX || "ba3").toLowerCase();
 
 const FEE_LOCKERS =
   CHAIN_ID === 8453
@@ -270,7 +268,7 @@ async function start() {
             } catch (_) {}
             // Only alert for Bankr tokens (address ends in e.g. "ba3"); ignore other Doppler platforms
             const poolAddr = payload.poolToken?.toLowerCase() ?? "";
-            if (!poolAddr || !poolAddr.endsWith(BANKR_TOKEN_SUFFIX)) continue;
+            if (!poolAddr || !isBankrTokenAddress(poolAddr)) continue;
             emitter.emit("claim", payload);
           }
         },
@@ -355,7 +353,7 @@ async function getWalletClaims(wallet, fromBlock = 0) {
             if (l.topics?.[0] !== TRANSFER_TOPIC) continue;
             if ((l.topics[1] ?? "").toLowerCase() !== lockerPadded) continue;
             const addr = (l.address ?? "").toLowerCase();
-            if (addr === wethLower || !addr.endsWith(BANKR_TOKEN_SUFFIX)) continue;
+            if (addr === wethLower || !isBankrTokenAddress(addr)) continue;
             const meta = await getTokenMeta(client, addr);
             results.push({
               tokenAddress: addr,
@@ -383,7 +381,7 @@ async function getWalletClaims(wallet, fromBlock = 0) {
 const BLOCK_CHUNK = 150_000;
 async function getTokenClaims(tokenAddress, fromBlock, maxLogs = 300) {
   const token = (tokenAddress ?? "").trim().toLowerCase();
-  if (!token || !/^0x[a-f0-9]{40}$/.test(token) || !token.endsWith(BANKR_TOKEN_SUFFIX)) return [];
+  if (!isBankrTokenAddress(token)) return [];
   if (CHAIN_ID !== 8453) return [];
   const results = [];
   try {

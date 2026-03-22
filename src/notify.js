@@ -19,6 +19,7 @@
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
  *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
  *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
+ *   BANKR_TOKEN_SUFFIX       - Only treat 0x…40 addresses ending with this as Bankr (default ba3). Applies to indexer + chain fallback + hot pings.
  *   SEEN_FILE            - Path to store seen tokens (default: .bankr-seen.json)
  */
 
@@ -29,6 +30,7 @@ import { fileURLToPath } from "url";
 import { fetchNewLaunches } from "./fetch-from-chain.js";
 import { formatUsd, getHotTokenStats } from "./token-stats.js";
 import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
+import { isBankrTokenAddress } from "./bankr-token.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -225,7 +227,9 @@ async function fetchFromBankrApi(apiKey) {
       offset += batch.length;
     }
 
-    if (allLaunches.length > 0) return allLaunches.map(formatBankrLaunch);
+    if (allLaunches.length > 0) {
+      return allLaunches.map(formatBankrLaunch).filter((l) => isBankrTokenAddress(l.tokenAddress));
+    }
   } catch (e) {
     console.error("[Bankr API] Error:", e.message || e);
   }
@@ -265,8 +269,8 @@ async function fetchLaunches(apiKey) {
     if (bankrLaunches?.length > 0) return bankrLaunches;
   }
 
-  // Production indexer (bankr.indexer.doppler.lol): filter tokens by Bankr integration address
-  // so we only get tokens that have this address as fee beneficiary. Try beneficiary first, then integrationAddress, then no filter.
+  // Production indexer: prefer Bankr integration filter. Unscoped `tokens(where: { chainId })` also exists as last resort;
+  // every path is filtered to addresses ending in BANKR_TOKEN_SUFFIX (default ba3) so non-Bankr Doppler tokens never notify.
   const queryWithBeneficiary = `
     query TokensByBeneficiary($chainId: Int!, $beneficiary: String!) {
       tokens(
@@ -358,8 +362,9 @@ async function fetchLaunches(apiKey) {
       const json = await res.json();
       if (json.errors?.length) continue;
       const next = json.data?.tokens?.items ?? [];
-      if (next.length > 0) {
-        items = next;
+      const bankrOnly = next.filter((t) => isBankrTokenAddress(t.address));
+      if (bankrOnly.length > 0) {
+        items = bankrOnly;
         break;
       }
     } catch {
@@ -372,19 +377,21 @@ async function fetchLaunches(apiKey) {
   console.error(`Indexer HTTP/GraphQL failed or returned no tokens for chainId ${CHAIN_ID}. Trying chain fallback...`);
   try {
     const chainLaunches = await fetchNewLaunches();
-    return chainLaunches.map((l) => ({
-      name: l.name,
-      symbol: l.symbol,
-      tokenAddress: l.tokenAddress,
-      launcher: null,
-      beneficiaries: null,
-      image: l.image || null,
-      pool: l.poolId,
-      volumeUsd: null,
-      holderCount: null,
-      x: l.x || null,
-      website: l.website || null,
-    }));
+    return chainLaunches
+      .filter((l) => isBankrTokenAddress(String(l.tokenAddress)))
+      .map((l) => ({
+        name: l.name,
+        symbol: l.symbol,
+        tokenAddress: typeof l.tokenAddress === "string" ? l.tokenAddress.toLowerCase() : l.tokenAddress,
+        launcher: null,
+        beneficiaries: null,
+        image: l.image || null,
+        pool: l.poolId,
+        volumeUsd: null,
+        holderCount: null,
+        x: l.x || null,
+        website: l.website || null,
+      }));
   } catch (e) {
     console.error("Chain fallback failed (set RPC_URL_BASE):", e.message);
     return [];
@@ -617,16 +624,17 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
     if (mc) tokenLines.push(`**Market Cap:** ${mc}`);
   }
   const idx = options.indexerSnapshot;
-  if (out.volumeUsd != null && out.formatUsd) {
+  const dexVolPositive = out.volumeUsd != null && Number(out.volumeUsd) > 0;
+  if (dexVolPositive && out.formatUsd) {
     const vol = out.formatUsd(out.volumeUsd);
     if (vol) tokenLines.push(`**Volume:** ${vol}`);
   }
   if (idx?.vol24h > 0 && out.formatUsd) {
     const iv = out.formatUsd(idx.vol24h);
-    const dexZ = out.volumeUsd == null || !(Number(out.volumeUsd) > 0);
-    if (iv && dexZ) {
+    const showIndexerVol = !dexVolPositive;
+    if (iv && showIndexerVol) {
       const v1 = idx.vol1h > 0 ? ` · 1h: ${out.formatUsd(idx.vol1h)}` : "";
-      tokenLines.push(`**Volume (Doppler):** ${iv}${v1}`);
+      tokenLines.push(`**Volume:** ${iv}${v1}`);
     }
   }
   const trades = out.dexMetrics?.trades24h;
@@ -634,7 +642,7 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   if (dexHasTrades) {
     tokenLines.push(`**24H:** 🟢 ${trades.buys} buys • 🔴 ${trades.sells} sells`);
   } else if (idx && idx.buyTx24h + idx.sellTx24h > 0) {
-    tokenLines.push(`**24H:** 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells _(Doppler)_`);
+    tokenLines.push(`**24H:** 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells`);
   }
 
   let deployerVal = formatDeployerOrFeeForEmbed(launch?.deployer);
@@ -694,7 +702,7 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
       lines.push(`**Trend:** ${idx.trendLabel} · ${idx.trendScore}/100`);
     }
     const value = lines.join("\n").slice(0, 1024);
-    fields.push({ name: "Doppler indexer", value, inline: false });
+    fields.push({ name: "Stats", value, inline: false });
   }
 
   fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });

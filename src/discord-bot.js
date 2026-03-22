@@ -70,6 +70,7 @@ import { fetchTopFeeEarners, fetchLatestFeeClaim } from "./whales.js";
 import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims, getTokenClaims } from "./watchers/dopplerClaimWatcher.js";
+import { isBankrTokenAddress } from "./bankr-token.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -852,6 +853,7 @@ function buildRolePingContent(roleIds, suffix = "🔥 **Hot token**") {
 
 /** Schedule a delayed check for "hot" (buys/holders) and "trending" (higher buy threshold). Sends only to hot/trending channels, not firehose. */
 function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTrendingChannelIds = [], telegramChatIds, telegramHotTargets = [], telegramTrendingTargets = [], bankrApiKey, hotPingConfigByGuildId = {}, telegramHotPingDelayMs: overrideDelayMs } = {}) {
+  if (!isBankrTokenAddress(launch?.tokenAddress)) return;
   const hasHotDest = discordHotChannelIds.length > 0 || (telegramHotTargets?.length > 0);
   const hasTrendingDest = discordTrendingChannelIds.length > 0 || (telegramTrendingTargets?.length > 0);
   const hasTelegram = (telegramChatIds?.length > 0) || hasHotDest || hasTrendingDest;
@@ -1592,6 +1594,21 @@ function pruneLookupCache() {
   }
 }
 
+/**
+ * Content is only a /lookup-style query (no extra text): wallet, @handle, or X/Farcaster profile URL.
+ * Used for paste-in-channel lookup without the slash command.
+ */
+function getStandaloneLookupQuery(content) {
+  const t = String(content || "").trim();
+  if (!t || t.length > 280 || t.includes("\n")) return null;
+  if (/^0x[a-fA-F0-9]{40}$/i.test(t)) return t.toLowerCase();
+  if (/^@[a-zA-Z0-9_]{1,32}$/.test(t)) return t;
+  if (/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/[a-zA-Z0-9_]+(?:\/[^\s]*)?$/i.test(t)) return t;
+  if (/^(?:https?:\/\/)?(?:www\.)?warpcast\.com\/~\/[a-zA-Z0-9_.-]+(?:\/[^\s]*)?$/i.test(t)) return t;
+  if (/^(?:https?:\/\/)?(?:www\.)?farcaster\.xyz\/[a-zA-Z0-9_.-]+(?:\/[^\s]*)?$/i.test(t)) return t;
+  return null;
+}
+
 /** Reply to a message with fees for a token (mention + address flow). Sends typing, then token fees or recipient fees. */
 async function replyFeesForMessage(message, tokenAddress) {
   await message.channel.sendTyping().catch(() => {});
@@ -1826,24 +1843,13 @@ function buildPasteTokenFeesEmbedValue(out) {
     return feeParts.join("\n");
   }
   if (out.launch) {
-    const fallback = [];
+    const lines = [];
     if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
-      fallback.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
+      lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—"}`);
     }
-    const rpcSet = !!(process.env.RPC_URL_BASE || process.env.RPC_URL);
-    if (rpcSet && !out.hasPoolIdForHook) {
-      fallback.push(
-        "_RPC is set; this token's **pool ID** (bytes32) wasn't found in the Bankr API or indexer — claimable fees need it. It may appear after the pool is indexed._"
-      );
-    } else if (!rpcSet) {
-      fallback.push("_No fee data yet — set **RPC_URL_BASE** (Base RPC) in the bot env for on-chain claimable._");
-    } else {
-      fallback.push(
-        "_No fee data yet for this pool. Volume and historical fees usually appear in the indexer within a few minutes of the first swap; claimable uses on-chain data when RPC is set._"
-      );
-    }
-    fallback.push(`_Data retrieved: ${retrievedAt} ET_`);
-    return fallback.join("\n");
+    if (lines.length === 0) lines.push("No fee data yet recorded.");
+    lines.push(`_Data retrieved: ${retrievedAt} ET_`);
+    return lines.join("\n");
   }
   return "";
 }
@@ -1863,6 +1869,64 @@ client.on("messageCreate", async (message) => {
     }
     await replyFeesForMessage(message, tokenAddress);
     debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "mention fees", tokenAddress);
+    return;
+  }
+
+  // Paste-only: same as /lookup — X/Twitter or Farcaster URL, @handle, or wallet (no Bankr token CA in message)
+  const standaloneLookup = getStandaloneLookupQuery(message.content);
+  if (bankrTokens.length === 0 && standaloneLookup) {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const tenant = message.guildId ? await getTenant(message.guildId) : null;
+      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(
+        standaloneLookup,
+        "both",
+        "newest",
+        { bankrApiKey: apiKey }
+      );
+      const searchQ = normalized || String(standaloneLookup).trim();
+      const searchUrl = resolvedWallet
+        ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
+        : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
+      if (matches.length === 0) {
+        const isWalletQuery = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
+        let hint = "";
+        if (!isWalletQuery && !resolvedWallet) {
+          hint =
+            "\n\nCouldn't resolve this handle to a wallet. Set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster and search by wallet.";
+        } else if (resolvedWallet && !isWalletQuery) {
+          hint = `\n\n**[Open Bankr search](${searchUrl})** if the site lists more tokens than the bot merged here.`;
+        }
+        const emptyBody = resolvedWallet
+          ? `**Wallet for ${searchQ}:** \`${resolvedWallet}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
+          : `No Bankr tokens found for **${searchQ}**.\n**[Full search on Bankr →](${searchUrl})**`;
+        await message.reply({ content: `${emptyBody}${hint}` }).catch(() => {});
+        debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste lookup (0)", searchQ);
+        return;
+      }
+      const data = {
+        matches,
+        query: standaloneLookup,
+        by: "both",
+        searchUrl,
+        totalCount,
+        possiblyCapped,
+        resolvedWallet: resolvedWallet ?? null,
+        currentPage: 0,
+        createdAt: Date.now(),
+      };
+      const embed = buildLookupEmbed(data, 0);
+      const payload = { embeds: [embed] };
+      if (matches.length > LOOKUP_PAGE_SIZE) payload.components = buildLookupButtons(data, 0);
+      const msg = await message.reply(payload).catch(() => null);
+      if (msg && matches.length > LOOKUP_PAGE_SIZE) lookupCache.set(msg.id, data);
+      debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste lookup", `${searchQ} (${totalCount})`);
+    } catch (e) {
+      console.error("Paste lookup failed:", e.message);
+      debugLogError(e, "messageCreate paste lookup");
+      await message.reply(`Lookup failed: ${e.message}`).catch(() => {});
+    }
     return;
   }
 
@@ -1980,9 +2044,15 @@ client.on("interactionCreate", async (interaction) => {
           hint = inGuild
             ? "\n\nIf the link above shows results on Bankr, ask your server admin to set an API key in **/setup** so lookup can use the list API."
             : "\n\nIf the link above shows results on Bankr, set **BANKR_API_KEY** (from [bankr.bot/api](https://bankr.bot/api)) in this bot's env so lookup can use the list API.";
+        } else if (resolvedWallet && !isWalletQuery) {
+          hint =
+            "\n\nThe wallet was resolved from your handle, but no matching launches were merged from the API in this session. **Open the Bankr search link** to see tokens the site still lists for this wallet.";
         }
+        const emptyBody = resolvedWallet
+          ? `**Wallet for ${searchQ}:** \`${resolvedWallet}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
+          : `No Bankr tokens found for **${searchQ}**.\n**[Full search on Bankr →](${searchUrl})**`;
         await interaction.editReply({
-          content: `No Bankr tokens found for **${searchQ}**.\nFull search: ${searchUrl}${hint}`,
+          content: `${emptyBody}${hint}`,
         });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/lookup", `${searchQ} (0 results)`);
         return;
@@ -2036,6 +2106,7 @@ client.on("interactionCreate", async (interaction) => {
             "**Deployment info:** Search Bankr tokens by **deployer** or **fee recipient**.\n" +
             "**query:** wallet (`0x...`), X handle (`@user` or x.com/user/...), or Farcaster (handle or farcaster.xyz/...). X/FC are resolved to wallet first, then tokens are shown.\n" +
             "**by:** Deployer / Fee recipient / Both (default).\n" +
+            "You can also **paste the same URL or @handle alone** in a channel (no command) — same search as /lookup.\n" +
             "Shows tokens + link to [full list on Bankr](https://bankr.bot/launches/search). Pagination when there are more than 5.",
           inline: false,
         },

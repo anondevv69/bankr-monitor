@@ -31,8 +31,8 @@ const BANKR_API_KEY = process.env.BANKR_API_KEY;
 const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
 
-/** Same scale as swap / 24h bucket `volumeUsd` on bankr.indexer.doppler.lol (see token-trend-card). */
-const INDEXER_BUCKET_USD_SCALE = 1e12;
+/** Aggregate bucket `volumeUsd` on bankr.indexer (18-decimal fixed USD, same as pool mcap/liquidity). */
+const INDEXER_BUCKET_USD_SCALE = 1e18;
 
 /**
  * @param {any} pool
@@ -627,9 +627,10 @@ async function fetchDopplerPoolState(tokenAddress) {
 function formatUsd(value) {
   if (value == null || value === "" || Number.isNaN(Number(value))) return null;
   const n = Number(value);
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
-  return `$${n.toFixed(2)}`;
+  if (!Number.isFinite(n)) return null;
+  if (n >= 1e9) return `$${(n / 1e9).toLocaleString("en-US", { maximumFractionDigits: 2 })}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toLocaleString("en-US", { maximumFractionDigits: 2 })}M`;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export { fetchPoolByBaseToken, fetchCumulatedFees, fetchHookFeesOnChain, formatUsd, CHAIN_ID, DOPPLER_INDEXER_URL };

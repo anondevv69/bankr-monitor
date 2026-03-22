@@ -471,7 +471,9 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     if (useWalletOnlyPath && effectiveQuery) {
       const walletSearch = await fetchSearch(effectiveQuery, apiKey);
       if (walletSearch?.launches?.length) {
-        const extra = walletSearch.launches.filter(matches);
+        // Search is already scoped to this wallet; do not re-filter with launchMatches() — API rows may omit
+        // nested deployer/fee objects that launchWallet() needs, which caused 0 matches despite a resolved wallet.
+        const extra = walletSearch.launches.filter((l) => l.status === "deployed" && l.tokenAddress);
         mergeLaunchesWithoutDuplicates(launches, extra);
         totalCount = Math.max(totalCount, walletSearch.totalCount ?? 0, launches.length);
       }

@@ -11,7 +11,7 @@ const DEFAULT_INDEXER =
 
 /** BigInt USD (mcap, liquidity, etc.) */
 const USD_1E18 = 1e18;
-/** Swap / 15m bucket volume fields use 1e12 on this indexer (see on-chain USD scale). */
+/** Swap row `swapValueUsd` uses 12-decimal USD on this indexer. */
 const USD_VOL_1E12 = 1e12;
 
 const CHAIN_NAMES = {
@@ -91,16 +91,12 @@ export function computeTrendScore(input) {
 export function formatTrendCardText(card) {
   const sym = card.token || "Token";
   const pct = (n) => (Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "—");
-  const usd = (n) =>
-    Number.isFinite(n) && n >= 0
-      ? n >= 1e9
-        ? `$${(n / 1e9).toFixed(2)}B`
-        : n >= 1e6
-          ? `$${(n / 1e6).toFixed(2)}M`
-          : n >= 1e3
-            ? `$${(n / 1e3).toFixed(2)}K`
-            : `$${n.toFixed(2)}`
-      : "—";
+  const usd = (n) => {
+    if (!Number.isFinite(n) || n < 0) return "—";
+    if (n >= 1e9) return `$${(n / 1e9).toLocaleString("en-US", { maximumFractionDigits: 2 })}B`;
+    if (n >= 1e6) return `$${(n / 1e6).toLocaleString("en-US", { maximumFractionDigits: 2 })}M`;
+    return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
 
   const lines = [];
   lines.push(`📊 **Token Stats — ${sym}**`);
@@ -234,7 +230,7 @@ function sumBucketVolumeUsd(items, sinceSec) {
   for (const b of items) {
     const mid = Number(b.minuteId);
     if (!Number.isFinite(mid) || mid < sinceSec) continue;
-    sum += numFromScaled(b.volumeUsd, USD_VOL_1E12);
+    sum += numFromScaled(b.volumeUsd, USD_1E18);
   }
   return sum;
 }
@@ -357,7 +353,7 @@ export async function buildTokenTrendCard(tokenAddress, options = {}) {
   let trades24h = vb?.txCount != null ? Number(vb.txCount) : 0;
   let buyTx24h = vb?.buyCount != null ? Number(vb.buyCount) : 0;
   let sellTx24h = vb?.sellCount != null ? Number(vb.sellCount) : 0;
-  let vol24h = vb?.volumeUsd != null ? numFromScaled(vb.volumeUsd, USD_VOL_1E12) : 0;
+  let vol24h = vb?.volumeUsd != null ? numFromScaled(vb.volumeUsd, USD_1E18) : 0;
   let vol1h = 0;
 
   let buys1h = 0;
