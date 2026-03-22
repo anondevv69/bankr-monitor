@@ -1548,21 +1548,6 @@ function pruneLookupCache() {
   }
 }
 
-/**
- * Content is only a /lookup-style query (no extra text): wallet, @handle, or X/Farcaster profile URL.
- * Used for paste-in-channel lookup without the slash command.
- */
-function getStandaloneLookupQuery(content) {
-  const t = String(content || "").trim();
-  if (!t || t.length > 280 || t.includes("\n")) return null;
-  if (/^0x[a-fA-F0-9]{40}$/i.test(t)) return t.toLowerCase();
-  if (/^@[a-zA-Z0-9_]{1,32}$/.test(t)) return t;
-  if (/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/[a-zA-Z0-9_]+(?:\/[^\s]*)?$/i.test(t)) return t;
-  if (/^(?:https?:\/\/)?(?:www\.)?warpcast\.com\/~\/[a-zA-Z0-9_.-]+(?:\/[^\s]*)?$/i.test(t)) return t;
-  if (/^(?:https?:\/\/)?(?:www\.)?farcaster\.xyz\/[a-zA-Z0-9_.-]+(?:\/[^\s]*)?$/i.test(t)) return t;
-  return null;
-}
-
 /** Reply to a message with fees for a token (mention + address flow). Sends typing, then token fees or recipient fees. */
 async function replyFeesForMessage(message, tokenAddress) {
   await message.channel.sendTyping().catch(() => {});
@@ -1816,75 +1801,21 @@ client.on("messageCreate", async (message) => {
   const bankrTokens = addresses.filter((a) => a.endsWith("ba3")); // Bankr token CAs end in BA3
 
   if (mentioned) {
-    const tokenAddress = addresses[0] ?? null;
-    if (!tokenAddress) {
-      await message.reply("To get fees: mention me and include a **token contract address** (0x...). Example: `@Bot 0x1234...`").catch(() => {});
+    if (bankrTokens.length === 0) {
+      await message
+        .reply(
+          "Mention me with a **Bankr token contract** (address ending in **…ba3**). Example: `@Bot 0x…ba3`\n\nFor wallet / handle search use **/lookup**."
+        )
+        .catch(() => {});
       return;
     }
+    const tokenAddress = bankrTokens[0];
     await replyFeesForMessage(message, tokenAddress);
     debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "mention fees", tokenAddress);
     return;
   }
 
-  // Paste-only: same as /lookup — X/Twitter or Farcaster URL, @handle, or wallet (no Bankr token CA in message)
-  const standaloneLookup = getStandaloneLookupQuery(message.content);
-  if (bankrTokens.length === 0 && standaloneLookup) {
-    await message.channel.sendTyping().catch(() => {});
-    try {
-      const tenant = message.guildId ? await getTenant(message.guildId) : null;
-      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
-      const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(
-        standaloneLookup,
-        "both",
-        "newest",
-        { bankrApiKey: apiKey }
-      );
-      const searchQ = normalized || String(standaloneLookup).trim();
-      const searchUrl = resolvedWallet
-        ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
-        : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
-      if (matches.length === 0) {
-        const isWalletQuery = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
-        let hint = "";
-        if (!isWalletQuery && !resolvedWallet) {
-          hint =
-            "\n\nCouldn't resolve this handle to a wallet. Set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster and search by wallet.";
-        } else if (resolvedWallet && !isWalletQuery) {
-          hint = `\n\n**[Open Bankr search](${searchUrl})** if the site lists more tokens than the bot merged here.`;
-        }
-        const emptyBody = resolvedWallet
-          ? `**Wallet for ${searchQ}:** \`${resolvedWallet}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
-          : `No Bankr tokens found for **${searchQ}**.\n**[Full search on Bankr →](${searchUrl})**`;
-        await message.reply({ content: `${emptyBody}${hint}` }).catch(() => {});
-        debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste lookup (0)", searchQ);
-        return;
-      }
-      const data = {
-        matches,
-        query: standaloneLookup,
-        by: "both",
-        searchUrl,
-        totalCount,
-        possiblyCapped,
-        resolvedWallet: resolvedWallet ?? null,
-        currentPage: 0,
-        createdAt: Date.now(),
-      };
-      const embed = buildLookupEmbed(data, 0);
-      const payload = { embeds: [embed] };
-      if (matches.length > LOOKUP_PAGE_SIZE) payload.components = buildLookupButtons(data, 0);
-      const msg = await message.reply(payload).catch(() => null);
-      if (msg && matches.length > LOOKUP_PAGE_SIZE) lookupCache.set(msg.id, data);
-      debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste lookup", `${searchQ} (${totalCount})`);
-    } catch (e) {
-      console.error("Paste lookup failed:", e.message);
-      debugLogError(e, "messageCreate paste lookup");
-      await message.reply(`Lookup failed: ${e.message}`).catch(() => {});
-    }
-    return;
-  }
-
-  // No mention: in any channel, if message contains a Bankr token (0x...ba3), reply with rich token embed
+  // Paste: only Bankr token CAs (0x...ba3) — use /lookup for handles, URLs, and non-Bankr wallets
   if (bankrTokens.length === 0) return;
   const tokenAddress = bankrTokens[0];
   await message.channel.sendTyping().catch(() => {});

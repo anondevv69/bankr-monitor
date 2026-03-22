@@ -379,11 +379,11 @@ Right-click each channel → Copy channel ID (Developer Mode). You can use one, 
 - **/claim-watch** — Notified when a token’s fees are claimed: add/remove/list; **check** / **wallet** lookups.
 - **/lookup** — Search Bankr token launches by wallet, X handle, or Farcaster (e.g. `/lookup ayowtfchil` or `/lookup 0x6686...`). Uses the same search as [bankr.bot/launches/search](https://bankr.bot/launches/search); full list link is included in the reply.
 
-**Who can do what:** Only server admins (Discord **Manage Server** permission) can run **/setup** subcommands that change config, **/alert-watchlist add** / **remove**, **/claim-watch add** / **remove**, and **/deploy**. Everyone can use **/lookup**, **/wallet-lookup**, **/alert-watchlist list**, **/claim-watch list**, **/help**, and the token paste/mention fee replies (read-only).
+**Who can do what:** Only server admins (Discord **Manage Server** permission) can run **/setup** subcommands that change config, **/alert-watchlist add** / **remove**, **/claim-watch add** / **remove**, and **/deploy**. Everyone can use **/lookup**, **/wallet-lookup**, **/alert-watchlist list**, **/claim-watch list**, **/help**, and **Bankr token** paste or @mention fee replies — only when the message includes a contract ending in **…ba3** (use **/lookup** for handles and profile URLs).
 
 **Bot permissions:** The bot must be able to **View Channel**, **Send Messages**, and **Embed Links** in both channels. If you see `Watch channel … failed: Missing Access` in logs, open the watch channel → channel settings → Permissions → add your bot with those permissions (or use “Add members” and grant the bot role access).
 
-**Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, paste token, mention fees, `/deploy`, `/alert-watchlist list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
+**Debug webhook (optional):** Set **DISCORD_DEBUG_WEBHOOK_URL** to a Discord webhook URL to receive: (1) a message on startup with how many Discord servers the bot is in and how many have /setup or Telegram configured, (2) a catch-all of user activity (e.g. `/lookup`, paste Bankr CA, mention + ba3 CA, `/deploy`, `/alert-watchlist list`, `/claim-watch list`), and (3) errors (notify failures, lookup failures, uncaught exceptions).
 
 **Three feed types:**
 
@@ -412,7 +412,7 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
 
    The **channel** setup above is broadcast-only (the bot posts; subscribers read).
 
-   **Optional — same bot, private DMs:** With the **Discord bot** running, set **TELEGRAM_PERSONAL_DMS_ENABLED=true** and open a **private chat** with your bot → **/start**. Users get delayed personal alerts (watchlist, optional firehose, claims, trending; hot = premium via **TELEGRAM_PREMIUM_CODE**). Delay defaults to **TELEGRAM_HOT_PING_DELAY_MS** (or **TELEGRAM_DM_DELAY_MS**). Restrict who can register with **TELEGRAM_DM_ALLOWED_USER_IDS** (Telegram user IDs). Persist **`TELEGRAM_PERSONAL_USERS_FILE`** on a Railway volume in production.
+   **Optional — same bot, private DMs:** With the **Discord bot** running, set **TELEGRAM_PERSONAL_DMS_ENABLED=true** and open a **private chat** with your bot → **/start**. Users get personal alerts (watchlist, optional firehose, claims, trending, hot — each toggled via **`/alerts`**). Delivery timing is configured with **TELEGRAM_HOT_PING_DELAY_MS** (or **TELEGRAM_DM_DELAY_MS**). Restrict who can register with **TELEGRAM_DM_ALLOWED_USER_IDS** (Telegram user IDs). Persist **`TELEGRAM_PERSONAL_USERS_FILE`** on a Railway volume in production.
 
    **Share with users:** Once the channel is public, give people the link (e.g. **t.me/your_channel_username**). They join the channel and get every new Bankr deploy automatically.
 

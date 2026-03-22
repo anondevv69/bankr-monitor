@@ -121,7 +121,7 @@ async function fanOutHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrendin
   let i = 0;
   for (const user of users) {
     if (!isChatAllowedForPersonalFeatures(user.chatId)) continue;
-    const wantHot = isHot && user.settings.hot === true && user.premium === true;
+    const wantHot = isHot && user.settings.hot === true;
     const wantTrend = isTrending && user.settings.trending !== false;
     if (!wantHot && !wantTrend) continue;
     const idx = i++;

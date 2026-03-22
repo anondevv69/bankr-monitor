@@ -1,5 +1,5 @@
 /**
- * Per-user Telegram DM preferences: watchlist (max 5), alert toggles, optional premium.
+ * Per-user Telegram DM preferences: watchlist (max 5), alert toggles.
  * JSON file — use a Railway volume path for persistence.
  */
 
@@ -15,7 +15,7 @@ export const TELEGRAM_PERSONAL_WATCHLIST_MAX = 5;
  *   chatId: string,
  *   watchlist: WatchEntry[],
  *   settings: { launchAlerts: boolean, firehose: boolean, claimAlerts: boolean, trending: boolean, hot: boolean },
- *   premium: boolean,
+ *   premium: boolean, // reserved / unused (legacy JSON)
  * }} PersonalUser */
 
 let _chain = Promise.resolve();

@@ -13,9 +13,17 @@ import {
   addWatchlistEntry,
   removeWatchlistEntry,
   updatePersonalSettings,
-  setPersonalPremium,
   TELEGRAM_PERSONAL_WATCHLIST_MAX,
 } from "./telegram-personal-store.js";
+
+/** Strip @BotName suffix from /command@bot */
+function parseCommandLine(text) {
+  const trimmed = String(text || "").trim();
+  const first = trimmed.split(/\s+/)[0] || "";
+  const cmd = (first.split("@")[0] || "").toLowerCase();
+  const rest = trimmed.slice(first.length).trim();
+  return { cmd, rest, trimmed };
+}
 
 async function classifyWatchArg(raw, bankrApiKey) {
   const arg = String(raw || "").trim();
@@ -54,14 +62,37 @@ function formatTokenFeesPlain(out, tokenAddress) {
   return lines.join("\n");
 }
 
+async function runTokenLookupForChat(send, addr, bankrApiKey) {
+  const tokenAddress = addr.toLowerCase();
+  if (!isBankrTokenAddress(tokenAddress)) {
+    await send("Need a Bankr token address (0x…ba3) or Bankr launch URL.");
+    return;
+  }
+  await send("Fetching token…");
+  try {
+    const out = await getTokenFees(tokenAddress, { bankrApiKey });
+    await send(formatTokenFeesPlain(out, tokenAddress));
+  } catch (e) {
+    await send(`Token lookup failed: ${e.message}`);
+  }
+}
+
+const ALERT_KEYS = {
+  launch: "launchAlerts",
+  firehose: "firehose",
+  claims: "claimAlerts",
+  trending: "trending",
+  hot: "hot",
+};
+
 /**
  * @param {{ chatId: number|string, text: string, send: (msg: string, opts?: object) => Promise<void> }} ctx
  */
 export async function handlePersonalTelegramCommand(ctx) {
   const chatId = String(ctx.chatId);
-  const text = String(ctx.text || "").trim();
   const send = ctx.send;
   const bankrApiKey = process.env.BANKR_API_KEY;
+  const { cmd, rest, trimmed } = parseCommandLine(ctx.text);
 
   if (!isPersonalDmsEnabled()) return;
 
@@ -70,8 +101,13 @@ export async function handlePersonalTelegramCommand(ctx) {
     return;
   }
 
-  const cmd = text.split(/\s+/)[0]?.toLowerCase() || "";
-  const rest = text.slice(cmd.length).trim();
+  // Lone Bankr CA in a DM → token lookup (no /start required)
+  const loneCa = trimmed.match(/^(0x[a-fA-F0-9]{40})$/i);
+  if (loneCa && isBankrTokenAddress(loneCa[1])) {
+    if (!bankrApiKey) return send("Set BANKR_API_KEY on the bot for token lookup.");
+    await runTokenLookupForChat(send, loneCa[1], bankrApiKey);
+    return;
+  }
 
   if (cmd === "/start" || cmd === "/help") {
     await registerPersonalUser(chatId);
@@ -83,12 +119,9 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/add <wallet | 0x…ba3 token | @handle | keyword>",
         "/remove <value>",
         "/watchlist",
-        "/toggle_launch · /toggle_firehose · /toggle_claims",
-        "/toggle_trending · /toggle_hot (premium)",
-        "/wallet <0x | @ | URL>",
-        "/token <0x…ba3 | Bankr URL>",
-        "/settings",
-        "/premium <code>",
+        "/alerts — show alert toggles; `/alerts launch|firehose|claims|trending|hot` flips each",
+        "/walletlookup <0x | @handle | URL>",
+        "/token <0x…ba3 | Bankr launch URL>",
         "",
         `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items.`,
       ].join("\n")
@@ -102,22 +135,18 @@ export async function handlePersonalTelegramCommand(ctx) {
     return;
   }
 
-  if (cmd === "/settings") {
-    const s = user.settings;
-    await send(
-      [
-        "Settings:",
-        `Launch watch: ${s.launchAlerts !== false ? "ON" : "OFF"}`,
-        `Firehose: ${s.firehose ? "ON" : "OFF"}`,
-        `Claims: ${s.claimAlerts !== false ? "ON" : "OFF"}`,
-        `Trending: ${s.trending !== false ? "ON" : "OFF"}`,
-        `Hot: ${s.hot ? "ON" : "OFF"} (${user.premium ? "premium" : "need /premium"})`,
-      ].join("\n")
-    );
-    return;
+  function alertsStatusLines(s) {
+    return [
+      "Alerts (send `/alerts <name>` to toggle):",
+      `• launch — watchlist matches: ${s.launchAlerts !== false ? "ON" : "OFF"}`,
+      `• firehose — every launch: ${s.firehose ? "ON" : "OFF"}`,
+      `• claims — fee claims for your watchlist: ${s.claimAlerts !== false ? "ON" : "OFF"}`,
+      `• trending — trending token pings: ${s.trending !== false ? "ON" : "OFF"}`,
+      `• hot — hot launch pings: ${s.hot ? "ON" : "OFF"}`,
+    ].join("\n");
   }
 
-  async function toggle(key) {
+  async function toggleSetting(key) {
     const u = await getPersonalUser(chatId);
     if (!u) return send("Send /start first.");
     let cur;
@@ -126,18 +155,39 @@ export async function handlePersonalTelegramCommand(ctx) {
     else if (key === "trending") cur = u.settings.trending !== false;
     else cur = !!u.settings[key];
     const next = !cur;
-    if (key === "hot" && next && !u.premium) {
-      return send("Hot alerts are premium only. Use /premium with the admin code first.");
-    }
     await updatePersonalSettings(chatId, { [key]: next });
-    await send(`${key} → ${next ? "ON" : "OFF"}`);
+    const label =
+      key === "launchAlerts"
+        ? "launch"
+        : key === "claimAlerts"
+          ? "claims"
+          : key;
+    await send(`${label} → ${next ? "ON" : "OFF"}`);
   }
 
-  if (cmd === "/toggle_launch") return toggle("launchAlerts");
-  if (cmd === "/toggle_firehose") return toggle("firehose");
-  if (cmd === "/toggle_claims") return toggle("claimAlerts");
-  if (cmd === "/toggle_trending") return toggle("trending");
-  if (cmd === "/toggle_hot") return toggle("hot");
+  if (cmd === "/alerts" || cmd === "/settings") {
+    const u = await getPersonalUser(chatId);
+    if (!u) return send("Send /start first.");
+    const sub = rest.toLowerCase().split(/\s+/)[0] || "";
+    if (!sub) {
+      await send(alertsStatusLines(u.settings));
+      return;
+    }
+    const mapKey = ALERT_KEYS[sub];
+    if (!mapKey) {
+      await send(
+        `Unknown alert "${rest}". Use: launch, firehose, claims, trending, hot.\n\n${alertsStatusLines(u.settings)}`
+      );
+      return;
+    }
+    return toggleSetting(mapKey);
+  }
+
+  if (cmd === "/toggle_launch") return toggleSetting("launchAlerts");
+  if (cmd === "/toggle_firehose") return toggleSetting("firehose");
+  if (cmd === "/toggle_claims") return toggleSetting("claimAlerts");
+  if (cmd === "/toggle_trending") return toggleSetting("trending");
+  if (cmd === "/toggle_hot") return toggleSetting("hot");
 
   if (cmd === "/add") {
     if (!rest) return send("Usage: /add <wallet | token 0x…ba3 | @handle | keyword>");
@@ -164,8 +214,8 @@ export async function handlePersonalTelegramCommand(ctx) {
     return send(lines.join("\n"));
   }
 
-  if (cmd === "/wallet") {
-    if (!rest) return send("Usage: /wallet <0x | @handle | profile URL>");
+  if (cmd === "/walletlookup" || cmd === "/wallet") {
+    if (!rest) return send("Usage: /walletlookup <0x | @handle | profile URL>");
     if (!bankrApiKey) return send("Set BANKR_API_KEY on the bot for wallet lookup.");
     await send("Looking up…");
     try {
@@ -184,29 +234,13 @@ export async function handlePersonalTelegramCommand(ctx) {
   }
 
   if (cmd === "/token") {
-    if (!rest) return send("Usage: /token <0x… or Bankr launch URL>");
+    if (!rest) return send("Usage: /token <0x…ba3 or Bankr launch URL>");
     const m = rest.match(/0x[a-fA-F0-9]{40}/);
     const addr = m ? m[0].toLowerCase() : null;
     if (!addr || !isBankrTokenAddress(addr)) {
       return send("Need a Bankr token address (0x…ba3) or URL containing it.");
     }
-    await send("Fetching token…");
-    try {
-      const out = await getTokenFees(addr, { bankrApiKey });
-      await send(formatTokenFeesPlain(out, addr));
-    } catch (e) {
-      await send(`Token lookup failed: ${e.message}`);
-    }
-    return;
-  }
-
-  if (cmd === "/premium") {
-    const code = process.env.TELEGRAM_PREMIUM_CODE;
-    if (!code || rest !== code) {
-      return send("Invalid or missing code.");
-    }
-    await setPersonalPremium(chatId, true);
-    await send("Premium enabled. You can turn on /toggle_hot.");
+    await runTokenLookupForChat(send, addr, bankrApiKey);
     return;
   }
 

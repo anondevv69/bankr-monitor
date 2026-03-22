@@ -68,7 +68,7 @@ You can look up claimable-style fees for **any** Bankr/Rehype token — you don�
 
 | Route | Use when |
 |-------|----------|
-| **Discord paste / mention** | Paste a Bankr token CA (or mention bot + CA). Shows fee recipient, indexer/hook fees, and estimated from volume (no `/fees-token` slash command). |
+| **Discord paste / mention** | Paste a **Bankr** token CA (`0x…ba3`) or **@mention the bot** with that CA. Handles / URLs alone no longer trigger auto-reply — use **`/lookup`**. Shows fee recipient, indexer/hook fees, and estimated from volume (no `/fees-token` slash command). |
 | **Fee API `GET /claimable?token=<CA>`** | Automation, dashboards, or other apps. Stateless; 60s cache. Example: `curl "https://your-api/claimable?token=0x..."`. |
 | **CLI `npm run token-stats -- <CA>`** | One-off from terminal. Same data as above plus pool state. |
 
