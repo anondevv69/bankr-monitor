@@ -1535,9 +1535,21 @@ client.once("ready", async () => {
     startTelegramClaimsPolling(tgToken, tgAllowedIds);
   }
   if (tgToken && isPersonalDmsEnabled()) {
+    const personalUsersPath =
+      process.env.TELEGRAM_PERSONAL_USERS_FILE?.trim() || join(process.cwd(), ".telegram-personal-users.json");
     console.log(
-      `Telegram personal DMs: ON · watchlist/claim delay ${getTelegramPersonalWatchlistDmDelayMs()}ms · hot/trending delay ${getTelegramPersonalDmDelayMs()}ms · users file ${process.env.TELEGRAM_PERSONAL_USERS_FILE || join(process.cwd(), ".telegram-personal-users.json")}`
+      `Telegram personal DMs: ON · watchlist/claim delay ${getTelegramPersonalWatchlistDmDelayMs()}ms · hot/trending delay ${getTelegramPersonalDmDelayMs()}ms · users file ${personalUsersPath}`
     );
+    const likelyEphemeralHost =
+      !!(process.env.RAILWAY_ENVIRONMENT ||
+        process.env.RAILWAY_PROJECT_ID ||
+        process.env.RENDER ||
+        process.env.FLY_APP_NAME);
+    if (likelyEphemeralHost && !process.env.TELEGRAM_PERSONAL_USERS_FILE?.trim()) {
+      console.warn(
+        "[Telegram personal DMs] TELEGRAM_PERSONAL_USERS_FILE is not set — watchlists and /alerts settings are saved next to the app and are wiped on every deploy. Add a Railway volume (e.g. mount /data) and set TELEGRAM_PERSONAL_USERS_FILE=/data/telegram-personal-users.json (same volume as TENANTS_FILE). See README + docs/RAILWAY_AND_TENANT_STORAGE.md."
+      );
+    }
   }
 });
 

@@ -60,6 +60,15 @@ So **all** servers that use your bot are “housed” in that one file: one obje
 
 **Summary:** Today, per-server settings are in one JSON file. Point that file to a **persistent volume** on Railway (e.g. `TENANTS_FILE=/data/bankr-tenants.json`) so they survive redeploys.
 
+### Telegram personal DMs (private `/start` watchlists)
+
+If **`TELEGRAM_PERSONAL_DMS_ENABLED=true`**, user watchlists and alert toggles are stored in **`TELEGRAM_PERSONAL_USERS_FILE`**, defaulting to **`.telegram-personal-users.json` in the app directory** — same problem: **that file is deleted on every Railway redeploy** unless it lives on a volume.
+
+- Mount a volume (e.g. **`/data`**) on the bot service.
+- Set **`TELEGRAM_PERSONAL_USERS_FILE=/data/telegram-personal-users.json`** (alongside `TENANTS_FILE=/data/bankr-tenants.json` if you use one).
+
+Pushing code to GitHub does not clear the file; **redeploying a new container** without a persistent path does.
+
 ---
 
 ## 4. Quick Railway layout
@@ -75,8 +84,9 @@ Railway project (e.g. "BankrMonitor Prod")
     - RPC_URL_BASE (Base mainnet RPC — required for claimable fees in /fees-token)
     - BANKR_API_KEY (optional but recommended)
     - TENANTS_FILE=/data/bankr-tenants.json   (if you added a volume at /data)
+    - TELEGRAM_PERSONAL_USERS_FILE=/data/telegram-personal-users.json   (if personal Telegram DMs enabled)
     Volumes:
-    - Mount path /data (so tenant + seen/watch files persist)
+    - Mount path /data (so tenant + seen/watch + Telegram personal users persist)
 ```
 
 The indexer and the bot are **separate services** in the same project; they don’t run in the same process. The bot talks to the indexer over HTTP (GraphQL) using `DOPPLER_INDEXER_URL`.
