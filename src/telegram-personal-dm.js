@@ -11,10 +11,36 @@ import {
   isChatAllowedForPersonalFeatures,
   userToWatchListSets,
   userMatchesClaim,
+  getClaimMatchReasons,
 } from "./telegram-personal-store.js";
-import { isWatchMatchForTenant } from "./watch-match.js";
+import { isWatchMatchForTenant, getWatchMatchReasons } from "./watch-match.js";
 
 const STAGGER_MS = 50;
+
+/** Telegram Markdown (legacy) escape — same rules as notify.js */
+function escapeTgMarkdown(s) {
+  if (!s || typeof s !== "string") return "";
+  return s.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
+}
+
+/** Prepend line(s) for personal DM: why this launch matched the user's watchlist */
+function buildPersonalWatchlistPrepend(launch, watchList) {
+  const reasons = getWatchMatchReasons(launch, watchList);
+  if (reasons.length === 0) {
+    return "🔔 *Watch list match*";
+  }
+  const bullets = reasons.map((r) => `• ${escapeTgMarkdown(r)}`).join("\n");
+  return `🔔 *Watch list match*\n_Matched because:_\n${bullets}`;
+}
+
+function buildPersonalClaimPrepend(user, claim) {
+  const reasons = getClaimMatchReasons(user, claim);
+  if (reasons.length === 0) {
+    return "💰 *Claim alert*";
+  }
+  const bullets = reasons.map((r) => `• ${escapeTgMarkdown(r)}`).join("\n");
+  return `💰 *Claim alert*\n_Matched because:_\n${bullets}`;
+}
 
 /** Delay before personal *hot/trending* DMs (keeps group/DM hot+trending behind Discord if configured). */
 export function getTelegramPersonalDmDelayMs() {
@@ -56,7 +82,7 @@ async function fanOutLaunchDms(launch) {
     const matchWatch = user.settings.launchAlerts !== false && isWatchMatchForTenant(launch, wl);
     if (!matchWatch) continue;
     const idx = i++;
-    const prepend = "🔔 *Watch list match*";
+    const prepend = buildPersonalWatchlistPrepend(launch, wl);
     setTimeout(async () => {
       try {
         await sendTelegram(launch, {
@@ -96,7 +122,7 @@ async function fanOutClaimDms(claim) {
         await sendTelegramClaim(claim, {
           chatId: user.chatId,
           skipAllowedCheck: true,
-          prependMarkdown: "💰 *Claim alert*",
+          prependMarkdown: buildPersonalClaimPrepend(user, claim),
         });
       } catch (_) {}
     }, idx * STAGGER_MS);

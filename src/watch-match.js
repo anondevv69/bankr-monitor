@@ -72,8 +72,10 @@ export function getWatchMatchReasons(launch, watchList) {
   if (deployerFc && watchFc.has(deployerFc)) {
     reasons.push(`Launcher Farcaster (${deployerFc}) is on your watch list`);
   }
+  const seenWalletMatch = new Set();
   for (const a of allWalletAddrs) {
-    if (!watchWallet.has(a)) continue;
+    if (!watchWallet.has(a) || seenWalletMatch.has(a)) continue;
+    seenWalletMatch.add(a);
     const short = `${a.slice(0, 6)}…${a.slice(-4)}`;
     const role = a === launcherAddr ? "launcher" : "fee recipient";
     reasons.push(`Wallet \`${short}\` on your watch list (matched as ${role})`);

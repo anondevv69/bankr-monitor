@@ -103,23 +103,36 @@ export function userToWatchListSets(user) {
   };
 }
 
-/** claim: { poolToken?, poolSymbol? } from doppler watcher */
-export function userMatchesClaim(user, claim) {
-  if (!user?.settings?.claimAlerts) return false;
-  if (!(user.watchlist?.length > 0)) return false;
+/**
+ * Why this claim matched the user's watchlist (token CA or keyword on symbol/text).
+ * @param {{ watchlist?: WatchEntry[] } | null} user
+ * @param {{ poolToken?: string, poolSymbol?: string }} claim
+ * @returns {string[]}
+ */
+export function getClaimMatchReasons(user, claim) {
+  if (!(user.watchlist?.length > 0)) return [];
+  const reasons = [];
   const token = (claim.poolToken || "").trim().toLowerCase();
   const sym = (claim.poolSymbol || "").toLowerCase();
   const hay = `${token} ${sym}`;
   for (const e of user.watchlist || []) {
     if (!e?.value) continue;
     const v = String(e.value).trim().toLowerCase();
-    if (e.type === "token" && token && v === token) return true;
-    if (e.type === "keyword" && v && (sym.includes(v) || hay.includes(v))) return true;
-    if (e.type === "wallet") {
-      /* fee claim events usually don't include arbitrary wallet in text; keywords "claim" etc. still work */
+    const orig = String(e.value).trim();
+    if (e.type === "token" && token && v === token) {
+      reasons.push(`Token CA \`${token.slice(0, 6)}…${token.slice(-4)}\` is on your watch list`);
+    } else if (e.type === "keyword" && v && (sym.includes(v) || hay.includes(v))) {
+      reasons.push(`Keyword “${orig}” matched this claim (symbol or token)`);
     }
   }
-  return false;
+  return [...new Set(reasons)];
+}
+
+/** claim: { poolToken?, poolSymbol? } from doppler watcher */
+export function userMatchesClaim(user, claim) {
+  if (!user?.settings?.claimAlerts) return false;
+  if (!(user.watchlist?.length > 0)) return false;
+  return getClaimMatchReasons(user, claim).length > 0;
 }
 
 export async function getAllPersonalUsers() {
