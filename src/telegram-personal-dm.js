@@ -47,9 +47,9 @@ async function fanOutLaunchDms(launch) {
     if (!matchWatch && !firehose) continue;
     const idx = i++;
     let prepend = "";
-    if (matchWatch && firehose) prepend = "🔔 *Watch match* · 📡 *Firehose* _(delayed vs Discord)_";
-    else if (matchWatch) prepend = "🔔 *Watch list match* _(delayed vs Discord)_";
-    else prepend = "📡 *Firehose* _(delayed vs Discord)_";
+    if (matchWatch && firehose) prepend = "🔔 *Watch match* · 📡 *Firehose*";
+    else if (matchWatch) prepend = "🔔 *Watch list match*";
+    else prepend = "📡 *Firehose*";
     setTimeout(async () => {
       try {
         await sendTelegram(launch, {
@@ -88,7 +88,7 @@ async function fanOutClaimDms(claim) {
         await sendTelegramClaim(claim, {
           chatId: user.chatId,
           skipAllowedCheck: true,
-          prependMarkdown: "💰 *Claim alert* _(delayed vs Discord)_",
+          prependMarkdown: "💰 *Claim alert*",
         });
       } catch (_) {}
     }, idx * STAGGER_MS);
@@ -132,7 +132,7 @@ async function fanOutHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrendin
             chatId: user.chatId,
             skipAllowedCheck: true,
             skipPin: true,
-            prependMarkdown: "🔥 *Hot* _(delayed vs Discord)_",
+            prependMarkdown: "🔥 *Hot*",
           });
         }
         if (wantTrend) {
@@ -141,7 +141,7 @@ async function fanOutHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrendin
             skipAllowedCheck: true,
             skipPin: true,
             trending: true,
-            prependMarkdown: "📈 *Trending* _(delayed vs Discord)_",
+            prependMarkdown: "📈 *Trending*",
           });
         }
       } catch (_) {}

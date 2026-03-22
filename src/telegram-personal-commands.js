@@ -66,7 +66,7 @@ export async function handlePersonalTelegramCommand(ctx) {
   if (!isPersonalDmsEnabled()) return;
 
   if (!isChatAllowedForPersonalFeatures(chatId)) {
-    await send("This account is not allowlisted for personal alerts. Ask the bot admin to add your Telegram user ID to TELEGRAM_DM_ALLOWED_USER_IDS.");
+    await send("This account is not allowlisted for personal alerts. Contact the bot admin.");
     return;
   }
 
@@ -79,8 +79,6 @@ export async function handlePersonalTelegramCommand(ctx) {
       [
         "BankrMonitor — personal alerts",
         "",
-        "All personal DMs are delayed vs Discord (TELEGRAM_DM_DELAY_MS or TELEGRAM_HOT_PING_DELAY_MS, default 60s).",
-        "",
         "Commands:",
         "/add <wallet | 0x…ba3 token | @handle | keyword>",
         "/remove <value>",
@@ -90,7 +88,7 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/wallet <0x | @ | URL>",
         "/token <0x…ba3 | Bankr URL>",
         "/settings",
-        `/premium <code> (admin code from TELEGRAM_PREMIUM_CODE)`,
+        "/premium <code>",
         "",
         `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items.`,
       ].join("\n")
