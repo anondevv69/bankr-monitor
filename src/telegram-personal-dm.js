@@ -1,6 +1,7 @@
 /**
- * Schedule Telegram *personal* DMs (opt-in users) with a delay so Discord stays fastest.
- * Uses TELEGRAM_DM_DELAY_MS or falls back to TELEGRAM_HOT_PING_DELAY_MS (default 60s).
+ * Schedule Telegram *personal* DMs.
+ * - Watchlist launch + claim DMs: immediate by default (same time we process the event).
+ * - Hot/trending personal DMs: TELEGRAM_DM_DELAY_MS or TELEGRAM_HOT_PING_DELAY_MS (default 60s).
  */
 
 import { sendTelegram, sendTelegramHotPing, sendTelegramClaim } from "./notify.js";
@@ -15,6 +16,7 @@ import { isWatchMatchForTenant } from "./watch-match.js";
 
 const STAGGER_MS = 50;
 
+/** Delay before personal *hot/trending* DMs (keeps group/DM hot+trending behind Discord if configured). */
 export function getTelegramPersonalDmDelayMs() {
   const dm = parseInt(process.env.TELEGRAM_DM_DELAY_MS ?? "", 10);
   if (!Number.isNaN(dm) && dm >= 0) return dm;
@@ -22,10 +24,17 @@ export function getTelegramPersonalDmDelayMs() {
   return Math.max(0, Number.isNaN(hot) ? 60000 : hot);
 }
 
-/** After Discord + group Telegram paths run for a new launch, queue delayed personal DMs. */
+/** Optional extra delay for watchlist launch/claim DMs (default 0 = fire with the firehose pipeline). */
+export function getTelegramPersonalWatchlistDmDelayMs() {
+  const w = parseInt(process.env.TELEGRAM_DM_WATCHLIST_DELAY_MS ?? "", 10);
+  if (!Number.isNaN(w) && w >= 0) return w;
+  return 0;
+}
+
+/** After Discord + group Telegram paths run for a new launch, queue personal watchlist DMs (no hot/trending delay by default). */
 export function schedulePersonalLaunchDms(launch) {
   if (!isPersonalDmsEnabled() || !process.env.TELEGRAM_BOT_TOKEN) return;
-  const delay = getTelegramPersonalDmDelayMs();
+  const delay = getTelegramPersonalWatchlistDmDelayMs();
   setTimeout(() => {
     void fanOutLaunchDms(launch);
   }, delay);
@@ -60,10 +69,10 @@ async function fanOutLaunchDms(launch) {
   }
 }
 
-/** After on-chain claim is handled for Discord/group, queue delayed personal claim DMs. */
+/** After on-chain claim is handled for Discord/group, queue personal claim DMs (same timing as watchlist launches by default). */
 export function schedulePersonalClaimDms(claim) {
   if (!isPersonalDmsEnabled() || !process.env.TELEGRAM_BOT_TOKEN) return;
-  const delay = getTelegramPersonalDmDelayMs();
+  const delay = getTelegramPersonalWatchlistDmDelayMs();
   setTimeout(() => {
     void fanOutClaimDms(claim);
   }, delay);

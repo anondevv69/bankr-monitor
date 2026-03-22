@@ -78,6 +78,7 @@ import {
   schedulePersonalClaimDms,
   schedulePersonalHotTrendingDms,
   getTelegramPersonalDmDelayMs,
+  getTelegramPersonalWatchlistDmDelayMs,
 } from "./telegram-personal-dm.js";
 import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
@@ -1535,7 +1536,7 @@ client.once("ready", async () => {
   }
   if (tgToken && isPersonalDmsEnabled()) {
     console.log(
-      `Telegram personal DMs: ON · delay ${getTelegramPersonalDmDelayMs()}ms · users file ${process.env.TELEGRAM_PERSONAL_USERS_FILE || join(process.cwd(), ".telegram-personal-users.json")}`
+      `Telegram personal DMs: ON · watchlist/claim delay ${getTelegramPersonalWatchlistDmDelayMs()}ms · hot/trending delay ${getTelegramPersonalDmDelayMs()}ms · users file ${process.env.TELEGRAM_PERSONAL_USERS_FILE || join(process.cwd(), ".telegram-personal-users.json")}`
     );
   }
 });
