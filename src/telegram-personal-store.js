@@ -14,7 +14,7 @@ export const TELEGRAM_PERSONAL_WATCHLIST_MAX = 5;
 /** @typedef {{
  *   chatId: string,
  *   watchlist: WatchEntry[],
- *   settings: { launchAlerts: boolean, firehose: boolean, claimAlerts: boolean, trending: boolean, hot: boolean },
+ *   settings: { launchAlerts: boolean, firehose: boolean (ignored; DMs never firehose), claimAlerts: boolean, trending: boolean, hot: boolean },
  *   premium: boolean, // reserved / unused (legacy JSON)
  * }} PersonalUser */
 
@@ -106,6 +106,7 @@ export function userToWatchListSets(user) {
 /** claim: { poolToken?, poolSymbol? } from doppler watcher */
 export function userMatchesClaim(user, claim) {
   if (!user?.settings?.claimAlerts) return false;
+  if (!(user.watchlist?.length > 0)) return false;
   const token = (claim.poolToken || "").trim().toLowerCase();
   const sym = (claim.poolSymbol || "").toLowerCase();
   const hay = `${token} ${sym}`;

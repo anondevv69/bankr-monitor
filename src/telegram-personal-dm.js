@@ -41,15 +41,13 @@ async function fanOutLaunchDms(launch) {
   let i = 0;
   for (const user of users) {
     if (!isChatAllowedForPersonalFeatures(user.chatId)) continue;
+    const wlLen = user.watchlist?.length ?? 0;
+    if (wlLen === 0) continue;
     const wl = userToWatchListSets(user);
     const matchWatch = user.settings.launchAlerts !== false && isWatchMatchForTenant(launch, wl);
-    const firehose = user.settings.firehose === true;
-    if (!matchWatch && !firehose) continue;
+    if (!matchWatch) continue;
     const idx = i++;
-    let prepend = "";
-    if (matchWatch && firehose) prepend = "🔔 *Watch match* · 📡 *Firehose*";
-    else if (matchWatch) prepend = "🔔 *Watch list match*";
-    else prepend = "📡 *Firehose*";
+    const prepend = "🔔 *Watch list match*";
     setTimeout(async () => {
       try {
         await sendTelegram(launch, {
@@ -81,6 +79,7 @@ async function fanOutClaimDms(claim) {
   let i = 0;
   for (const user of users) {
     if (!isChatAllowedForPersonalFeatures(user.chatId)) continue;
+    if (!(user.watchlist?.length > 0)) continue;
     if (!userMatchesClaim(user, claim)) continue;
     const idx = i++;
     setTimeout(async () => {

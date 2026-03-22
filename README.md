@@ -412,7 +412,7 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
 
    The **channel** setup above is broadcast-only (the bot posts; subscribers read).
 
-   **Optional — same bot, private DMs:** With the **Discord bot** running, set **TELEGRAM_PERSONAL_DMS_ENABLED=true** and open a **private chat** with your bot → **/start**. Users get personal alerts (watchlist, optional firehose, claims, trending, hot — each toggled via **`/alerts`**). Delivery timing is configured with **TELEGRAM_HOT_PING_DELAY_MS** (or **TELEGRAM_DM_DELAY_MS**). Restrict who can register with **TELEGRAM_DM_ALLOWED_USER_IDS** (Telegram user IDs). Persist **`TELEGRAM_PERSONAL_USERS_FILE`** on a Railway volume in production.
+   **Optional — same bot, private DMs:** With the **Discord bot** running, set **TELEGRAM_PERSONAL_DMS_ENABLED=true** and open a **private chat** with your bot → **/start**. Users get personal alerts: **watchlist launch/claim** matches (with a non-empty watchlist), plus optional **trending** and **hot** — toggled via **`/alerts`**. (No full firehose in DMs; use the channel/group topic for that.) Delivery timing uses **TELEGRAM_HOT_PING_DELAY_MS** (or **TELEGRAM_DM_DELAY_MS**). Restrict registration with **TELEGRAM_DM_ALLOWED_USER_IDS** if needed. Persist **`TELEGRAM_PERSONAL_USERS_FILE`** on a Railway volume in production.
 
    **Share with users:** Once the channel is public, give people the link (e.g. **t.me/your_channel_username**). They join the channel and get every new Bankr deploy automatically.
 

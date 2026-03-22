@@ -79,7 +79,6 @@ async function runTokenLookupForChat(send, addr, bankrApiKey) {
 
 const ALERT_KEYS = {
   launch: "launchAlerts",
-  firehose: "firehose",
   claims: "claimAlerts",
   trending: "trending",
   hot: "hot",
@@ -119,7 +118,7 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/add <wallet | 0x…ba3 token | @handle | keyword>",
         "/remove <value>",
         "/watchlist",
-        "/alerts — show alert toggles; `/alerts launch|firehose|claims|trending|hot` flips each",
+        "/alerts — show toggles; `/alerts launch|claims|trending|hot` (launch & claims need items on /watchlist)",
         "/walletlookup <0x | @handle | URL>",
         "/token <0x…ba3 | Bankr launch URL>",
         "",
@@ -139,10 +138,11 @@ export async function handlePersonalTelegramCommand(ctx) {
     return [
       "Alerts (send `/alerts <name>` to toggle):",
       `• launch — watchlist matches: ${s.launchAlerts !== false ? "ON" : "OFF"}`,
-      `• firehose — every launch: ${s.firehose ? "ON" : "OFF"}`,
-      `• claims — fee claims for your watchlist: ${s.claimAlerts !== false ? "ON" : "OFF"}`,
+      `• claims — fee claims matching your watchlist: ${s.claimAlerts !== false ? "ON" : "OFF"}`,
       `• trending — trending token pings: ${s.trending !== false ? "ON" : "OFF"}`,
       `• hot — hot launch pings: ${s.hot ? "ON" : "OFF"}`,
+      "",
+      "Launch & claim DMs only run when your watchlist has at least one item (use /add).",
     ].join("\n");
   }
 
@@ -176,7 +176,7 @@ export async function handlePersonalTelegramCommand(ctx) {
     const mapKey = ALERT_KEYS[sub];
     if (!mapKey) {
       await send(
-        `Unknown alert "${rest}". Use: launch, firehose, claims, trending, hot.\n\n${alertsStatusLines(u.settings)}`
+        `Unknown alert "${rest}". Use: launch, claims, trending, hot.\n\n${alertsStatusLines(u.settings)}`
       );
       return;
     }
@@ -184,7 +184,9 @@ export async function handlePersonalTelegramCommand(ctx) {
   }
 
   if (cmd === "/toggle_launch") return toggleSetting("launchAlerts");
-  if (cmd === "/toggle_firehose") return toggleSetting("firehose");
+  if (cmd === "/toggle_firehose") {
+    return send("Every-launch firehose is not available in personal DMs. Use the public Telegram channel or group topic for the full feed.");
+  }
   if (cmd === "/toggle_claims") return toggleSetting("claimAlerts");
   if (cmd === "/toggle_trending") return toggleSetting("trending");
   if (cmd === "/toggle_hot") return toggleSetting("hot");
