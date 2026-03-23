@@ -67,6 +67,8 @@ If **`TELEGRAM_PERSONAL_DMS_ENABLED=true`**, user watchlists and alert toggles a
 - Mount a volume (e.g. **`/data`**) on the bot service.
 - Set **`TELEGRAM_PERSONAL_USERS_FILE=/data/telegram-personal-users.json`** (alongside `TENANTS_FILE=/data/bankr-tenants.json` if you use one).
 
+- Optional: **`TELEGRAM_GROUP_SETTINGS_FILE=/data/telegram-group-settings.json`** — stores per-group Telegram settings (e.g. whether pasted `0x…ba3` triggers a token summary). Same volume as above.
+
 Pushing code to GitHub does not clear the file; **redeploying a new container** without a persistent path does.
 
 ---
@@ -85,6 +87,7 @@ Railway project (e.g. "BankrMonitor Prod")
     - BANKR_API_KEY (optional but recommended)
     - TENANTS_FILE=/data/bankr-tenants.json   (if you added a volume at /data)
     - TELEGRAM_PERSONAL_USERS_FILE=/data/telegram-personal-users.json   (if personal Telegram DMs enabled)
+    - TELEGRAM_GROUP_SETTINGS_FILE=/data/telegram-group-settings.json   (optional; group /tg_tokenlookup toggles)
     Volumes:
     - Mount path /data (so tenant + seen/watch + Telegram personal users persist)
 ```

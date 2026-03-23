@@ -40,7 +40,7 @@ async function classifyWatchArg(raw, bankrApiKey) {
   return { type: "keyword", value: arg.trim().toLowerCase() };
 }
 
-function formatTokenFeesPlain(out, tokenAddress) {
+export function formatTokenFeesPlain(out, tokenAddress) {
   const sym = out.symbol ?? "—";
   const name = out.name ?? "—";
   const lines = [`${name} ($${sym})`, `CA: ${tokenAddress}`];

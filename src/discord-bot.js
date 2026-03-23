@@ -82,6 +82,7 @@ import {
 } from "./telegram-personal-dm.js";
 import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
+import { handleTelegramGroupMessage } from "./telegram-group-handlers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1367,6 +1368,27 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
           await sendTg(chatId, msg, { message_thread_id: threadId ?? undefined, parse_mode: "Markdown" });
           continue;
         }
+
+        const isGroupChat = chatType === "group" || chatType === "supergroup";
+        if (isGroupChat) {
+          const fromUser = u?.message?.from;
+          const groupResult = await handleTelegramGroupMessage({
+            botToken: token,
+            chatId,
+            threadId,
+            text,
+            fromUserId: fromUser?.id,
+            isBot: fromUser?.is_bot === true,
+            allowedChatIds,
+            send: (msg, opts = {}) =>
+              sendTg(chatId, msg, {
+                ...opts,
+                message_thread_id: opts.message_thread_id !== undefined ? opts.message_thread_id : threadId,
+              }),
+          });
+          if (groupResult === "handled") continue;
+        }
+
         if (allowedChatIds?.length && !allowedChatIds.includes(String(chatId))) continue;
         const m = text.match(claimsRegex);
         if (!m) continue;
@@ -1394,7 +1416,9 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
     setTimeout(poll, 500);
   }
   poll();
-  console.log("Telegram /claims <wallet> and /topicid (or /id) enabled — use /topicid in a topic to get its ID for TELEGRAM_CLAIM_TOPIC_ID");
+  console.log(
+    "Telegram: /claims <wallet>, /topicid|/id, groups: paste Bankr 0x…ba3 for token summary; /tg_help, /tg_settings; /tg_tokenlookup on|off (admins)"
+  );
 }
 
 client.once("ready", async () => {
