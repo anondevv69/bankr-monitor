@@ -1,10 +1,16 @@
 /**
- * Telegram groups/supergroups: admin-only settings + auto-reply with token info for pasted Bankr CAs (…ba3).
+ * Telegram groups/supergroups: /walletlookup, /lookup, /token + pasted Bankr CAs (…ba3).
+ * Admins: /tg_tokenlookup on|off, /tg_settings. See /tg_help.
  */
 
 import { getTokenFees } from "./token-stats.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
-import { formatTokenFeesPlain } from "./telegram-personal-commands.js";
+import {
+  formatTokenFeesPlain,
+  runTelegramWalletLookupCommand,
+  runTelegramLookupCommand,
+  runTelegramTokenSlashCommand,
+} from "./telegram-personal-commands.js";
 import { getTelegramGroupSettings, updateTelegramGroupSettings } from "./telegram-group-settings.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
 
@@ -56,13 +62,19 @@ export async function handleTelegramGroupMessage(p) {
   if (cmd === "/tg_help") {
     await send(
       [
-        "*Telegram group commands*",
+        "*BankrMonitor — group*",
         "",
-        "`/tg_help` — this message",
-        "`/tg_settings` — show auto token lookup (anyone)",
-        "`/tg_tokenlookup on` or `off` — *admins only* (paste a Bankr `0x…ba3` → bot replies with token summary)",
+        "*Lookups (anyone):*",
+        "`/walletlookup` — X/Farcaster / URL → wallet",
+        "`/lookup` — Bankr tokens for wallet or profile",
+        "`/token` — fee summary for a `0x…ba3`",
+        "_Paste a Bankr contract (`…ba3`) in chat → token summary when auto-lookup is ON._",
         "",
-        "_Bankr token addresses ending in …ba3 in normal messages trigger a lookup when enabled._",
+        "*Admin:*",
+        "`/tg_settings` — auto-reply on paste on/off",
+        "`/tg_tokenlookup on` or `off` — toggle paste lookups",
+        "",
+        "_If the bot never sees pasted addresses, disable Group Privacy in @BotFather (`/setprivacy` → Disable)._",
       ].join("\n"),
       { parse_mode: "Markdown" }
     );
@@ -93,6 +105,21 @@ export async function handleTelegramGroupMessage(p) {
     const on = sub === "on";
     await updateTelegramGroupSettings(chatId, { tokenLookupInGroup: on });
     await send(`Auto token lookup for pasted Bankr CAs: *${on ? "ON" : "OFF"}*`, { parse_mode: "Markdown" });
+    return "handled";
+  }
+
+  if (cmd === "/walletlookup" || cmd === "/wallet") {
+    await runTelegramWalletLookupCommand(send, rest);
+    return "handled";
+  }
+
+  if (cmd === "/lookup") {
+    await runTelegramLookupCommand(send, rest);
+    return "handled";
+  }
+
+  if (cmd === "/token") {
+    await runTelegramTokenSlashCommand(send, rest);
     return "handled";
   }
 

@@ -1346,11 +1346,13 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
       const updates = data?.result ?? [];
       for (const u of updates) {
         offset = Math.max(offset, (u.update_id ?? 0) + 1);
-        const text = u?.message?.text?.trim();
-        const chatId = u?.message?.chat?.id;
-        const threadId = u?.message?.message_thread_id;
-        const chatType = u?.message?.chat?.type;
-        if (!text || chatId == null) continue;
+        const msg = u?.message;
+        const chatId = msg?.chat?.id;
+        const threadId = msg?.message_thread_id;
+        const chatType = msg?.chat?.type;
+        const text = (msg?.text ?? msg?.caption ?? "").trim();
+        if (chatId == null) continue;
+        if (!text) continue;
         if (chatType === "private") {
           if (isPersonalDmsEnabled()) {
             await handlePersonalTelegramCommand({
@@ -1419,7 +1421,7 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
   }
   poll();
   console.log(
-    "Telegram: /claims <wallet>, /topicid|/id, groups: paste Bankr 0x…ba3 for token summary; /tg_help, /tg_settings; /tg_tokenlookup on|off (admins)"
+    "Telegram: /claims <wallet>, /topicid|/id; groups: paste …ba3, /walletlookup, /lookup, /token; /tg_help; /tg_tokenlookup on|off (admins)"
   );
 }
 

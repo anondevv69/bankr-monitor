@@ -30,7 +30,7 @@ function parseCommandLine(text) {
 }
 
 /** Optional first token: deployer | fee | both — rest is the query (wallet, @handle, URL). */
-function parseLookupCommandRest(rest) {
+export function parseLookupCommandRest(rest) {
   const t = String(rest || "").trim();
   if (!t) return { filter: "both", query: "" };
   const parts = t.split(/\s+/);
@@ -46,7 +46,7 @@ function parseLookupCommandRest(rest) {
  * @param {Awaited<ReturnType<typeof lookupByDeployerOrFee>>} out
  * @param {"both"|"deployer"|"fee"} [filterMode]
  */
-async function sendTelegramTokenLookupResult(send, out, filterMode = "both") {
+export async function sendTelegramTokenLookupResult(send, out, filterMode = "both") {
   const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = out;
   const filterNote = filterMode !== "both" ? ` · ${filterMode}` : "";
 
@@ -122,7 +122,7 @@ export function formatTokenFeesPlain(out, tokenAddress) {
   return lines.join("\n");
 }
 
-async function runTokenLookupForChat(send, addr, bankrApiKey) {
+export async function runTokenLookupForChat(send, addr, bankrApiKey) {
   const tokenAddress = addr.toLowerCase();
   if (!isBankrTokenAddress(tokenAddress)) {
     await send("Need a Bankr token address (0x…ba3) or Bankr launch URL.");
@@ -135,6 +135,79 @@ async function runTokenLookupForChat(send, addr, bankrApiKey) {
   } catch (e) {
     await send(`Token lookup failed: ${e.message}`);
   }
+}
+
+/** Shared wallet-resolve command (DMs + groups). */
+export async function runTelegramWalletLookupCommand(send, rest) {
+  if (!rest?.trim()) {
+    await send("Usage: /walletlookup <0x | @handle | profile URL>");
+    return;
+  }
+  if (!hasTelegramBankrApiKeys()) {
+    await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for wallet lookup.");
+    return;
+  }
+  await send("Resolving…");
+  try {
+    const { wallet, normalized, isWallet } = await resolveHandleToWallet(rest, {
+      bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
+    });
+    if (wallet) {
+      await send(
+        (isWallet ? `Wallet: \`${wallet}\`\n\n` : `Wallet for ${normalized}: \`${wallet}\`\n\n`) +
+          "Use **/lookup** with the same handle or wallet to see Bankr tokens (deployer / fee recipient)."
+      );
+    } else {
+      await send(
+        `Could not resolve a wallet for **${normalized || rest}**. Try **/lookup** for a full search, or paste a **0x…** address.`
+      );
+    }
+  } catch (e) {
+    await send(`Resolve failed: ${e.message}`);
+  }
+}
+
+/** Shared deployer/fee lookup command (DMs + groups). */
+export async function runTelegramLookupCommand(send, rest) {
+  const { filter, query } = parseLookupCommandRest(rest);
+  if (!query) {
+    await send(
+      "Usage: /lookup [deployer|fee|both] <0x | @handle | X/Farcaster URL>\nExample: `/lookup https://x.com/user` or `/lookup fee 0x…`"
+    );
+    return;
+  }
+  if (!hasTelegramBankrApiKeys()) {
+    await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY for lookups.");
+    return;
+  }
+  await send("Looking up tokens…");
+  try {
+    const out = await lookupByDeployerOrFee(query, filter, "newest", {
+      bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
+    });
+    await sendTelegramTokenLookupResult(send, out, filter);
+  } catch (e) {
+    await send(`Lookup failed: ${e.message}`);
+  }
+}
+
+/** Shared /token command (DMs + groups). */
+export async function runTelegramTokenSlashCommand(send, rest) {
+  if (!rest?.trim()) {
+    await send("Usage: /token <0x…ba3 or Bankr launch URL>");
+    return;
+  }
+  if (!hasTelegramBankrApiKeys()) {
+    await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY for token lookup.");
+    return;
+  }
+  const m = rest.match(/0x[a-fA-F0-9]{40}/);
+  const addr = m ? m[0].toLowerCase() : null;
+  if (!addr || !isBankrTokenAddress(addr)) {
+    await send("Need a Bankr token address (0x…ba3) or URL containing it.");
+    return;
+  }
+  await runTokenLookupForChat(send, addr, pickTelegramBankrApiKeyRoundRobin());
 }
 
 const ALERT_KEYS = {
@@ -279,60 +352,15 @@ export async function handlePersonalTelegramCommand(ctx) {
   }
 
   if (cmd === "/walletlookup" || cmd === "/wallet") {
-    if (!rest) return send("Usage: /walletlookup <0x | @handle | profile URL>");
-    if (!hasTelegramBankrApiKeys()) {
-      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for wallet lookup.");
-    }
-    await send("Resolving…");
-    try {
-      const { wallet, normalized, isWallet } = await resolveHandleToWallet(rest, {
-        bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
-      });
-      if (wallet) {
-        await send(
-          (isWallet ? `Wallet: \`${wallet}\`\n\n` : `Wallet for ${normalized}: \`${wallet}\`\n\n`) +
-            "Use **/lookup** with the same handle or wallet to see Bankr tokens (deployer / fee recipient)."
-        );
-      } else {
-        await send(
-          `Could not resolve a wallet for **${normalized || rest}**. Try **/lookup** for a full search, or paste a **0x…** address.`
-        );
-      }
-    } catch (e) {
-      await send(`Resolve failed: ${e.message}`);
-    }
-    return;
+    return runTelegramWalletLookupCommand(send, rest);
   }
 
   if (cmd === "/lookup") {
-    const { filter, query } = parseLookupCommandRest(rest);
-    if (!query) {
-      return send("Usage: /lookup [deployer|fee|both] <0x | @handle | X/Farcaster URL>\nExample: `/lookup https://x.com/user` or `/lookup fee 0x…`");
-    }
-    if (!hasTelegramBankrApiKeys()) {
-      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY for lookups.");
-    }
-    await send("Looking up tokens…");
-    try {
-      const out = await lookupByDeployerOrFee(query, filter, "newest", {
-        bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
-      });
-      await sendTelegramTokenLookupResult(send, out, filter);
-    } catch (e) {
-      await send(`Lookup failed: ${e.message}`);
-    }
-    return;
+    return runTelegramLookupCommand(send, rest);
   }
 
   if (cmd === "/token") {
-    if (!rest) return send("Usage: /token <0x…ba3 or Bankr launch URL>");
-    const m = rest.match(/0x[a-fA-F0-9]{40}/);
-    const addr = m ? m[0].toLowerCase() : null;
-    if (!addr || !isBankrTokenAddress(addr)) {
-      return send("Need a Bankr token address (0x…ba3) or URL containing it.");
-    }
-    await runTokenLookupForChat(send, addr, pickTelegramBankrApiKeyRoundRobin());
-    return;
+    return runTelegramTokenSlashCommand(send, rest);
   }
 
   await send("Unknown command. Try /help");
