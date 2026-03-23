@@ -221,9 +221,29 @@ export async function handlePersonalTelegramCommand(ctx) {
     if (!bankrApiKey) return send("Set BANKR_API_KEY on the bot for wallet lookup.");
     await send("Looking up…");
     try {
-      const { matches, totalCount, searchUrl } = await lookupByDeployerOrFee(rest, "both", "newest", { bankrApiKey });
+      const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = await lookupByDeployerOrFee(
+        rest,
+        "both",
+        "newest",
+        { bankrApiKey }
+      );
       if (!matches.length) {
-        return send(`No tokens found. Search: ${searchUrl}`);
+        const link = searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(normalized || rest)}`;
+        const lines = [
+          "No Bankr tokens matched this lookup.",
+          "",
+          `Open Bankr search: ${link}`,
+        ];
+        if (!isWalletQuery && normalized && !resolvedWallet) {
+          lines.push(
+            "",
+            `Could not resolve a wallet for @${normalized} from Bankr alone. We only know wallets when that X/Farcaster appears as deployer or fee recipient on a Bankr launch (or Bankr’s simulate step resolves it).`,
+            "If they have no tokens on Bankr yet, search may still be empty — try their 0x… address if you have it."
+          );
+        } else if (!isWalletQuery && normalized && resolvedWallet) {
+          lines.push("", `Resolved wallet: ${resolvedWallet} (no deployed tokens matched in our merged list).`);
+        }
+        return send(lines.join("\n"));
       }
       const top = matches.slice(0, 5);
       const lines = top.map((m) => `• $${m.tokenSymbol} · ${m.tokenAddress} · ${m.bankrUrl}`);

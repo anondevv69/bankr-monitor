@@ -434,7 +434,23 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
 export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest", options = {}) {
   const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
-  if (!normalized) return { matches: [], totalCount: 0, query: query };
+  if (!normalized) {
+    const q = String(query).trim();
+    const searchUrl = q
+      ? `https://bankr.bot/launches/search?q=${encodeURIComponent(q)}`
+      : "https://bankr.bot/launches/search";
+    return {
+      matches: [],
+      totalCount: 0,
+      query,
+      normalized: null,
+      resolvedWallet: null,
+      possiblyCapped: false,
+      hasDates: false,
+      isWalletQuery: false,
+      searchUrl,
+    };
+  }
 
   // When query is X/FC handle, resolve to wallet first so we always search by wallet (avoids "do resolve then lookup" manually)
   let resolvedWallet = null;
@@ -539,14 +555,18 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     finalResolvedWallet = inferWalletFromHandleMatches(result, normalized);
   }
 
+  const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(finalResolvedWallet ?? normalized)}`;
+
   return {
     query,
     normalized,
     totalCount,
     possiblyCapped,
     hasDates,
+    isWalletQuery,
     resolvedWallet: finalResolvedWallet ?? null,
     matches: result,
+    searchUrl,
   };
 }
 
