@@ -343,6 +343,7 @@ function walletFrom(obj) {
 
 /** Get wallet from launch (nested deployer/fee or top-level deployerWallet/feeRecipientWallet). */
 export function launchWallet(launch, role) {
+  if (launch == null || typeof launch !== "object") return null;
   if (role === "deployer") {
     // Prefer API top-level launcher wallet (matches bankr.bot / search grouping); nested deployer can differ.
     return walletFrom(launch.deployerWallet) ?? walletFrom(launch.deployerWalletAddress) ?? walletFrom(launch.deployer);
