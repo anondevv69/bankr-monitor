@@ -30,11 +30,12 @@ Per-server **/setup full** or **/setup channels**: set **all_launches_channel** 
 
 ---
 
-## 3. **Lookup (CLI + Discord)**
+## 3. **Lookup (CLI + Discord + Telegram DMs)**
 
 - **CLI:** `npm run lookup -- <wallet|@handle|fc_handle>`  
   Resolves wallet, X, or Farcaster (including profile URLs). Shows tokens where that identity is deployer or fee recipient; total count and link to [bankr.bot/launches/search](https://bankr.bot/launches/search).
 - **Discord:** Same via **/lookup** with optional **by** (deployer / fee recipient / both). Search uses normalized handle (e.g. `ayowtfchil` from `https://x.com/ayowtfchil`).
+- **Telegram (private chat, after /start):** **`/walletlookup`** — resolve X/Farcaster (or echo a wallet) only. **`/lookup`** — list Bankr tokens for a wallet or account; optional first word **`deployer`**, **`fee`**, or **`both`** (default). Same Bankr merge as Discord; uses **`TELEGRAM_BANKR_API_KEYS`** + **`BANKR_API_KEY`**.
 
 ---
 

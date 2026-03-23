@@ -17,6 +17,9 @@ import {
 } from "./telegram-personal-store.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
 
+/** Max token rows per /lookup reply (Telegram ~4k limit). */
+const TELEGRAM_LOOKUP_MAX_ROWS = Math.min(Math.max(parseInt(process.env.TELEGRAM_LOOKUP_MAX_ROWS || "15", 10), 5), 35);
+
 /** Strip @BotName suffix from /command@bot */
 function parseCommandLine(text) {
   const trimmed = String(text || "").trim();
@@ -24,6 +27,62 @@ function parseCommandLine(text) {
   const cmd = (first.split("@")[0] || "").toLowerCase();
   const rest = trimmed.slice(first.length).trim();
   return { cmd, rest, trimmed };
+}
+
+/** Optional first token: deployer | fee | both — rest is the query (wallet, @handle, URL). */
+function parseLookupCommandRest(rest) {
+  const t = String(rest || "").trim();
+  if (!t) return { filter: "both", query: "" };
+  const parts = t.split(/\s+/);
+  const first = parts[0].toLowerCase();
+  if (["deployer", "fee", "both"].includes(first) && parts.length >= 2) {
+    return { filter: first, query: parts.slice(1).join(" ").trim() };
+  }
+  return { filter: "both", query: t };
+}
+
+/**
+ * @param {(msg: string) => Promise<void>} send
+ * @param {Awaited<ReturnType<typeof lookupByDeployerOrFee>>} out
+ * @param {"both"|"deployer"|"fee"} [filterMode]
+ */
+async function sendTelegramTokenLookupResult(send, out, filterMode = "both") {
+  const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = out;
+  const filterNote = filterMode !== "both" ? ` · ${filterMode}` : "";
+
+  if (!matches.length) {
+    const link = searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(normalized || "")}`;
+    const lines = [];
+    lines.push(`**Lookup**${filterNote}`);
+    if (resolvedWallet && !isWalletQuery) {
+      lines.push(`Wallet: \`${resolvedWallet}\``);
+    }
+    lines.push("", "No Bankr tokens matched.", "", `Bankr search: ${link}`);
+    if (!isWalletQuery && normalized && resolvedWallet) {
+      lines.push("", "The site may still list more for this wallet.");
+    } else if (!isWalletQuery && normalized && !resolvedWallet) {
+      lines.push("", "Try the link above or a **0x…** address.");
+    }
+    await send(lines.join("\n"));
+    return;
+  }
+
+  const shown = matches.slice(0, TELEGRAM_LOOKUP_MAX_ROWS);
+  const lines = [`**Lookup**${filterNote}`];
+  if (resolvedWallet && !isWalletQuery) {
+    lines.push(`Wallet: \`${resolvedWallet}\``);
+  } else if (isWalletQuery && normalized) {
+    lines.push(`Wallet: \`${normalized}\``);
+  }
+  lines.push("", `Tokens (${totalCount || matches.length}):`, "");
+  for (const m of shown) {
+    lines.push(`• $${m.tokenSymbol} · ${m.tokenAddress} · ${m.bankrUrl}`);
+  }
+  if (matches.length > shown.length) {
+    lines.push("", `…+${matches.length - shown.length} more on Bankr`);
+  }
+  lines.push("", `Full search: ${searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet ?? normalized ?? "")}`}`);
+  await send(lines.join("\n"));
 }
 
 async function classifyWatchArg(raw, bankrApiKey) {
@@ -121,7 +180,8 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/remove <value>",
         "/watchlist",
         "/alerts — show toggles; `/alerts launch|claims|trending|hot` (launch & claims need items on /watchlist)",
-        "/walletlookup <0x | @handle | URL>",
+        "/walletlookup <0x | @handle | URL> — resolve X/Farcaster to wallet only",
+        "/lookup [deployer|fee|both] <0x | @handle | URL> — Bankr tokens for that wallet or account",
         "/token <0x…ba3 | Bankr launch URL>",
         "",
         `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items.`,
@@ -223,32 +283,41 @@ export async function handlePersonalTelegramCommand(ctx) {
     if (!hasTelegramBankrApiKeys()) {
       return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for wallet lookup.");
     }
-    await send("Looking up…");
+    await send("Resolving…");
     try {
-      const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = await lookupByDeployerOrFee(
-        rest,
-        "both",
-        "newest",
-        { bankrApiKey: pickTelegramBankrApiKeyRoundRobin() }
-      );
-      if (!matches.length) {
-        const link = searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(normalized || rest)}`;
-        const lines = [];
-        if (resolvedWallet && !isWalletQuery) {
-          lines.push(`Wallet: \`${resolvedWallet}\``, "");
-        }
-        lines.push("No Bankr tokens matched this lookup.", "", `Open Bankr search: ${link}`);
-        if (!isWalletQuery && normalized && resolvedWallet) {
-          lines.push("", "The Bankr site may still list more for this wallet.");
-        } else if (!isWalletQuery && normalized && !resolvedWallet) {
-          lines.push("", "Try the search link, or paste a **0x…** wallet if you have it.");
-        }
-        return send(lines.join("\n"));
+      const { wallet, normalized, isWallet } = await resolveHandleToWallet(rest, {
+        bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
+      });
+      if (wallet) {
+        await send(
+          (isWallet ? `Wallet: \`${wallet}\`\n\n` : `Wallet for ${normalized}: \`${wallet}\`\n\n`) +
+            "Use **/lookup** with the same handle or wallet to see Bankr tokens (deployer / fee recipient)."
+        );
+      } else {
+        await send(
+          `Could not resolve a wallet for **${normalized || rest}**. Try **/lookup** for a full search, or paste a **0x…** address.`
+        );
       }
-      const top = matches.slice(0, 5);
-      const lines = top.map((m) => `• $${m.tokenSymbol} · ${m.tokenAddress} · ${m.bankrUrl}`);
-      const more = totalCount > top.length ? `\n…+${totalCount - top.length} more on Bankr` : "";
-      await send(`Wallet lookup (${Math.min(matches.length, top.length)} shown)\n\n${lines.join("\n")}${more}`);
+    } catch (e) {
+      await send(`Resolve failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (cmd === "/lookup") {
+    const { filter, query } = parseLookupCommandRest(rest);
+    if (!query) {
+      return send("Usage: /lookup [deployer|fee|both] <0x | @handle | X/Farcaster URL>\nExample: `/lookup https://x.com/user` or `/lookup fee 0x…`");
+    }
+    if (!hasTelegramBankrApiKeys()) {
+      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY for lookups.");
+    }
+    await send("Looking up tokens…");
+    try {
+      const out = await lookupByDeployerOrFee(query, filter, "newest", {
+        bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
+      });
+      await sendTelegramTokenLookupResult(send, out, filter);
     } catch (e) {
       await send(`Lookup failed: ${e.message}`);
     }
