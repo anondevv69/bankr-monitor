@@ -31,10 +31,11 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 - **Used when:** Resolving an X or Farcaster handle to a wallet; we read `feeDistribution.creator.address` (or similar) from the response.
 - **Code:** `resolveHandleViaDeploySimulate()` in `src/lookup-deployer.js`.
 
-### 4. Search inference (handle → wallet when simulate + list miss)
+### 4. Search inference + wallet retry (handle → wallet)
 
-- **When:** `/wallet-lookup`, Telegram `/walletlookup`, and `/lookup` all call `resolveHandleToWallet()`. After deploy simulate and scanning newest (and optional oldest) launches, if the handle still isn’t mapped, we call **`token-launches/search`** with the handle and `@handle`, then infer a single wallet from rows where that X/Farcaster appears on deployer or fee recipient (same idea as `bankr.bot/search`).
-- **Code:** `inferWalletFromRawLaunches()` in `src/lookup-deployer.js`.
+- **When:** `/wallet-lookup`, Telegram `/walletlookup`, and `/lookup` use `resolveHandleToWallet()`. After deploy simulate and newest (and optional oldest) launch scans, we call **`token-launches/search`** with the handle and `@handle`, then infer a single wallet from rows where that X/Farcaster is deployer or fee recipient (same idea as `bankr.bot/search`). **Code:** `inferWalletFromRawLaunches()` in `src/lookup-deployer.js`.
+- **List cache:** Cached launch lists are keyed by **API key fingerprint** + limit + order so Discord and Telegram (different keys) never reuse each other’s list.
+- **Empty handle lookup:** If merged results are empty but search can still infer exactly one wallet, we **run one more lookup pass by that wallet** (same merge as typing `0x…`).
 
 ---
 

@@ -324,7 +324,7 @@ cp .env.example .env
 Edit `.env`:
 
 - `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed. Used by Discord, notify, `/lookup`, etc.
-- **`TELEGRAM_BANKR_API_KEYS`** (optional) — Comma- or newline-separated keys used **only** for Telegram (personal DMs + group pasted `0x…ba3` lookups). **Round-robin** to spread Bankr rate limits. If unset, Telegram falls back to **`BANKR_API_KEY`** only.
+- **`TELEGRAM_BANKR_API_KEYS`** (optional) — Extra comma- or newline-separated keys for Telegram (personal DMs + group lookups). **Round-robin** across those plus **`BANKR_API_KEY`** (main key is always included, deduped). If unset, Telegram uses **`BANKR_API_KEY`** only.
 - `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
 - `FILTER_X_MATCH` — When `1` or `true`, the **main/alert feed** only notifies when deployer and fee recipient share the same X or Farcaster account (reduces spam). Watch-list matches are unchanged and still post to the watch channel.
 - `FILTER_MAX_DEPLOYS` — Max deploy count for launcher; skip if they've launched more (e.g. `2` = only first or second launch).

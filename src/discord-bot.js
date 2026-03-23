@@ -1963,7 +1963,9 @@ client.on("interactionCreate", async (interaction) => {
         const inGuild = !!interaction.guildId;
         let hint = "";
         if (!isWalletQuery && !resolvedWallet) {
-          hint = "\n\nCouldn't resolve this handle to a wallet. Ask your server admin to set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster handles and search by wallet.";
+          hint = !apiKey
+            ? "\n\nCouldn't resolve this handle to a wallet. Ask your server admin to set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster handles and search by wallet."
+            : "\n\nBankr didn't return a linked wallet for this handle from our last request. Use the search link or try a **0x…** address.";
         } else if (isWalletQuery) {
           hint = inGuild
             ? "\n\nIf the link above shows results on Bankr, ask your server admin to set an API key in **/setup** so lookup can use the list API."

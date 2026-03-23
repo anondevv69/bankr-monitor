@@ -178,11 +178,20 @@ let _listCache = null;
 let _listCacheKey = null;
 let _listCacheTime = 0;
 
+/** Stable fingerprint so Telegram vs Discord (different X-API-Key) never share one launch list cache. */
+function bankrKeyFingerprint(apiKeyStr) {
+  const k = apiKeyStr && String(apiKeyStr).trim();
+  if (!k) return "none";
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = (Math.imul(31, h) + k.charCodeAt(i)) | 0;
+  return `${k.length}:${(h >>> 0).toString(16)}`;
+}
+
 /** In-memory cache for list API to avoid hammering Bankr on every /lookup (Discord-safe). */
 async function getCachedLaunches(limit, order, apiKey) {
   const key = defaultBankrApiKey(apiKey);
   if (!key) return [];
-  const cacheKey = `${limit}:${order ?? "newest"}`;
+  const cacheKey = `${bankrKeyFingerprint(key)}:${limit}:${order ?? "newest"}`;
   const now = Date.now();
   if (_listCache && _listCacheKey === cacheKey && now - _listCacheTime < LIST_CACHE_TTL_MS) {
     return _listCache;
@@ -485,9 +494,11 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
 
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either
  *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first
- *  @param options { bankrApiKey?: string } - optional; when provided (e.g. from Discord /setup), use this key instead of env */
+ *  @param options { bankrApiKey?: string, lookupDepth?: number } - bankrApiKey from /setup or env; lookupDepth internal (wallet retry). */
 export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest", options = {}) {
-  const apiKey = defaultBankrApiKey(options.bankrApiKey);
+  const lookupDepth = Number(options.lookupDepth) || 0;
+  const { lookupDepth: _omitLd, ...optsRest } = options;
+  const apiKey = defaultBankrApiKey(optsRest.bankrApiKey);
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) {
     const q = String(query).trim();
@@ -608,6 +619,29 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   let finalResolvedWallet = resolvedWallet;
   if (!finalResolvedWallet && !isWalletQuery && normalized && result.length > 0) {
     finalResolvedWallet = inferWalletFromHandleMatches(result, normalized);
+  }
+
+  // Handle query returned 0 merged rows but search can still infer a single wallet — rerun as wallet lookup once
+  // (fixes cross-key list cache / edge cases where first pass didn't resolve before merge).
+  if (
+    lookupDepth === 0 &&
+    result.length === 0 &&
+    !isWalletQuery &&
+    normalized &&
+    apiKey &&
+    !finalResolvedWallet
+  ) {
+    let lateWallet = null;
+    for (const sq of [normalized, `@${normalized}`]) {
+      const sr = await fetchSearch(sq, apiKey);
+      if (sr?.launches?.length) {
+        lateWallet = inferWalletFromRawLaunches(sr.launches, normalized);
+        if (lateWallet) break;
+      }
+    }
+    if (lateWallet) {
+      return lookupByDeployerOrFee(lateWallet, filter, sortOrder, { ...optsRest, lookupDepth: 1 });
+    }
   }
 
   const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(finalResolvedWallet ?? normalized)}`;

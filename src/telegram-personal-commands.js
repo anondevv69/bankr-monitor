@@ -233,19 +233,15 @@ export async function handlePersonalTelegramCommand(ctx) {
       );
       if (!matches.length) {
         const link = searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(normalized || rest)}`;
-        const lines = [
-          "No Bankr tokens matched this lookup.",
-          "",
-          `Open Bankr search: ${link}`,
-        ];
-        if (!isWalletQuery && normalized && !resolvedWallet) {
-          lines.push(
-            "",
-            `Could not resolve a wallet for @${normalized}. Tried Bankr simulate, launch scans, and search-by-handle (needs TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY).`,
-            "If they have tokens on Bankr, try again or open the search link; otherwise use a 0x… address if you have it."
-          );
-        } else if (!isWalletQuery && normalized && resolvedWallet) {
-          lines.push("", `Resolved wallet: ${resolvedWallet} (no deployed tokens matched in our merged list).`);
+        const lines = [];
+        if (resolvedWallet && !isWalletQuery) {
+          lines.push(`Wallet: \`${resolvedWallet}\``, "");
+        }
+        lines.push("No Bankr tokens matched this lookup.", "", `Open Bankr search: ${link}`);
+        if (!isWalletQuery && normalized && resolvedWallet) {
+          lines.push("", "The Bankr site may still list more for this wallet.");
+        } else if (!isWalletQuery && normalized && !resolvedWallet) {
+          lines.push("", "Try the search link, or paste a **0x…** wallet if you have it.");
         }
         return send(lines.join("\n"));
       }

@@ -2,21 +2,29 @@
  * Bankr API keys used only for Telegram (DM + group token/wallet lookups).
  *
  * Railway: set TELEGRAM_BANKR_API_KEYS=key1,key2,key3 (comma or newline).
- * If unset, falls back to BANKR_API_KEY (single). Discord/notify always use BANKR_API_KEY only.
+ * If set, those keys are tried first (round-robin); BANKR_API_KEY is always appended as a fallback (deduped).
+ * If TELEGRAM_* is unset, only BANKR_API_KEY is used. Discord/notify always use BANKR_API_KEY (or /setup) only.
  */
 
 let _rr = 0;
 
 function parseTelegramKeys() {
+  const seen = new Set();
+  const out = [];
+  const push = (s) => {
+    const t = s && String(s).trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
   const tg = process.env.TELEGRAM_BANKR_API_KEYS?.trim();
   if (tg) {
-    return tg
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    for (const part of tg.split(/[\n,]+/)) push(part);
   }
-  const single = process.env.BANKR_API_KEY?.trim();
-  return single ? [single] : [];
+  // Always include main key last so Telegram lookups match Discord when TELEGRAM_* keys are read-only or weaker.
+  push(process.env.BANKR_API_KEY);
+  return out;
 }
 
 /** @returns {string[]} */
