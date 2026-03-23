@@ -83,6 +83,7 @@ import {
 import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
 import { handleTelegramGroupMessage } from "./telegram-group-handlers.js";
+import { resolveBankrApiKey, pickBankrApiKeyRoundRobin, listEnvBankrApiKeys } from "./bankr-api-keys.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -746,7 +747,7 @@ function normalizeWalletAddr(addr) {
 
 /** Prefer env key, else first tenant key (for shared newLaunches embed enrichment). */
 function pickBankrApiKeyForRoleCounts(tenantsWithChannels) {
-  if (process.env.BANKR_API_KEY) return process.env.BANKR_API_KEY;
+  if (listEnvBankrApiKeys().length > 0) return pickBankrApiKeyRoundRobin();
   for (const t of tenantsWithChannels || []) {
     if (t.bankrApiKey) return t.bankrApiKey;
   }
@@ -805,7 +806,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
   ) {
     return;
   }
-  const apiKey = bankrApiKey ?? process.env.BANKR_API_KEY;
+  const apiKey = resolveBankrApiKey(bankrApiKey);
   const hasPerGuildConfig = typeof hotPingConfigByGuildId === "object" && Object.keys(hotPingConfigByGuildId).length > 0;
   setTimeout(async () => {
     try {
@@ -1006,7 +1007,7 @@ async function runNotify() {
       const watchChannel = WATCH_ALERT_CHANNEL_ID ? await client.channels.fetch(WATCH_ALERT_CHANNEL_ID).catch(() => null) : null;
       const curatedLaunches = newLaunches.filter((l) => l.passedFilters !== false);
 
-      const envRoleCountKey = process.env.BANKR_API_KEY;
+      const envRoleCountKey = resolveBankrApiKey(null);
       for (const launch of newLaunches) {
         const launchForEmbeds = envRoleCountKey ? await enrichLaunchWithBankrRoleCounts(launch, { bankrApiKey: envRoleCountKey }) : launch;
         const embed = buildLaunchEmbed(launchForEmbeds);
@@ -1066,7 +1067,7 @@ async function runNotify() {
             telegramChatIds: telegramIds,
             telegramHotTargets,
             telegramTrendingTargets,
-            bankrApiKey: process.env.BANKR_API_KEY,
+            bankrApiKey: resolveBankrApiKey(null),
           });
         }
       }
@@ -1082,7 +1083,7 @@ async function runNotify() {
     }
     if (tenantsWithChannels.length > 0) {
       try {
-        const firstApiKey = tenantsWithChannels[0]?.bankrApiKey ?? process.env.BANKR_API_KEY;
+        const firstApiKey = resolveBankrApiKey(tenantsWithChannels[0]?.bankrApiKey);
         const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
         // Per-tenant curated list for "1 of N" footer
         for (const tenant of tenantsWithChannels) {
@@ -1241,7 +1242,7 @@ async function runClaimWatchCycle() {
 
     for (const tokenAddress of tokens) {
       try {
-        const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+        const out = await getTokenFees(tokenAddress, { bankrApiKey: resolveBankrApiKey(tenant?.bankrApiKey) });
         const hookFees = out.hookFees;
         const currentWeth = hookFees ? Number(hookFees.beneficiaryFees0) / 10 ** CLAIM_WATCH_DECIMALS : 0;
         const currentToken = hookFees ? Number(hookFees.beneficiaryFees1) / 10 ** CLAIM_WATCH_DECIMALS : 0;
@@ -1590,7 +1591,7 @@ async function replyFeesForMessage(message, tokenAddress) {
   await message.channel.sendTyping().catch(() => {});
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
-    const out = await getTokenFees(tokenAddress, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+    const out = await getTokenFees(tokenAddress, { bankrApiKey: resolveBankrApiKey(tenant?.bankrApiKey) });
     if (out.claimableUnavailableReason) debugLogClaimableUnavailable(out.tokenAddress, out, "mention");
     if (out.launch) {
       await message.reply(formatFeesTokenReply(out, tokenAddress)).catch(() => {});
@@ -1858,7 +1859,7 @@ client.on("messageCreate", async (message) => {
   await message.channel.sendTyping().catch(() => {});
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
-    const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+    const bankrApiKey = resolveBankrApiKey(tenant?.bankrApiKey);
     const [out, indexerSnap] = await Promise.all([
       getTokenFees(tokenAddress, { bankrApiKey }),
       fetchIndexerTradingSnapshot(tokenAddress).catch(() => null),
@@ -1918,7 +1919,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply();
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
-      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+      const apiKey = resolveBankrApiKey(tenant?.bankrApiKey);
       const { wallet, normalized, isWallet } = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
       if (wallet) {
         await interaction.editReply({
@@ -1950,7 +1951,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply();
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
-      const apiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+      const apiKey = resolveBankrApiKey(tenant?.bankrApiKey);
       const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by, "newest", { bankrApiKey: apiKey });
       const searchQ = normalized || String(query).trim();
       const searchUrl = resolvedWallet
@@ -2481,7 +2482,7 @@ client.on("interactionCreate", async (interaction) => {
       try {
         let claims = await getTokenClaims(addr);
         if (claims.length === 0) {
-          const out = await getTokenFees(addr, { bankrApiKey: tenant?.bankrApiKey ?? process.env.BANKR_API_KEY });
+          const out = await getTokenFees(addr, { bankrApiKey: resolveBankrApiKey(tenant?.bankrApiKey) });
           if (out.feeWallet && process.env.CHAIN_ID === "8453") {
             const { getClaimTxsFromBaseScan } = await import("./basescan-claims.js");
             const { count, latestTxHash } = await getClaimTxsFromBaseScan(out.feeWallet, undefined, { limit: 50 });
@@ -2544,7 +2545,7 @@ client.on("interactionCreate", async (interaction) => {
   const guildId = interaction.guildId ?? null;
   const tenant = guildId ? await getTenant(guildId) : null;
   const useTenant = !!tenant;
-  const bankrApiKey = tenant?.bankrApiKey ?? process.env.BANKR_API_KEY;
+  const bankrApiKey = resolveBankrApiKey(tenant?.bankrApiKey);
 
   if ((sub === "add" || sub === "remove") && guildId && !canManageServer(interaction)) {
     await interaction.reply({

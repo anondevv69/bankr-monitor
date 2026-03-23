@@ -15,6 +15,7 @@ import {
   updatePersonalSettings,
   TELEGRAM_PERSONAL_WATCHLIST_MAX,
 } from "./telegram-personal-store.js";
+import { resolveBankrApiKey, hasEnvBankrApiKeys } from "./bankr-api-keys.js";
 
 /** Strip @BotName suffix from /command@bot */
 function parseCommandLine(text) {
@@ -90,7 +91,7 @@ const ALERT_KEYS = {
 export async function handlePersonalTelegramCommand(ctx) {
   const chatId = String(ctx.chatId);
   const send = ctx.send;
-  const bankrApiKey = process.env.BANKR_API_KEY;
+  const bankrApiKey = resolveBankrApiKey();
   const { cmd, rest, trimmed } = parseCommandLine(ctx.text);
 
   if (!isPersonalDmsEnabled()) return;
@@ -103,7 +104,7 @@ export async function handlePersonalTelegramCommand(ctx) {
   // Lone Bankr CA in a DM → token lookup (no /start required)
   const loneCa = trimmed.match(/^(0x[a-fA-F0-9]{40})$/i);
   if (loneCa && isBankrTokenAddress(loneCa[1])) {
-    if (!bankrApiKey) return send("Set BANKR_API_KEY on the bot for token lookup.");
+    if (!hasEnvBankrApiKeys()) return send("Set BANKR_API_KEY (or BANKR_API_KEYS) on the bot for token lookup.");
     await runTokenLookupForChat(send, loneCa[1], bankrApiKey);
     return;
   }
@@ -218,7 +219,7 @@ export async function handlePersonalTelegramCommand(ctx) {
 
   if (cmd === "/walletlookup" || cmd === "/wallet") {
     if (!rest) return send("Usage: /walletlookup <0x | @handle | profile URL>");
-    if (!bankrApiKey) return send("Set BANKR_API_KEY on the bot for wallet lookup.");
+    if (!hasEnvBankrApiKeys()) return send("Set BANKR_API_KEY (or BANKR_API_KEYS) on the bot for wallet lookup.");
     await send("Looking up…");
     try {
       const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = await lookupByDeployerOrFee(

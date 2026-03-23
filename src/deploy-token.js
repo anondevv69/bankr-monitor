@@ -8,9 +8,9 @@
  */
 
 import "dotenv/config";
+import { getPrimaryBankrApiKey } from "./bankr-api-keys.js";
 
 const DEPLOY_API = "https://api.bankr.bot/token-launches/deploy";
-const BANKR_API_KEY = process.env.BANKR_API_KEY;
 
 const FEE_RECIPIENT_TYPES = ["wallet", "x", "farcaster", "ens"];
 
@@ -79,7 +79,7 @@ function parseRateLimitHeaders(res) {
  * @returns {Promise<{ success: boolean, tokenAddress?: string, poolId?: string, txHash?: string, activityId?: string, chain?: string, simulated?: boolean, feeDistribution?: object, rateLimit?: { remaining: number | null, limit: number | null, retryAfterSec: number | null }, error?: string }>}
  */
 export async function callBankrDeploy(body, options = {}) {
-  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
+  const apiKey = options.bankrApiKey?.trim() || getPrimaryBankrApiKey();
   if (!apiKey || !apiKey.trim()) {
     throw new Error("BANKR_API_KEY is not set. Get a key with Agent API access at bankr.bot/api");
   }

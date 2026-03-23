@@ -8,7 +8,7 @@
  * Usage: node src/token-stats.js <tokenAddress>
  * Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
  *
- * Env: BANKR_API_KEY (recommended; single-token launch endpoint may return 403 without it)
+ * Env: BANKR_API_KEY or BANKR_API_KEYS (comma-separated; round-robin for reads)
  *      DOPPLER_INDEXER_URL (optional; default https://bankr.indexer.doppler.lol for Base mainnet — set to your endpoint if different)
  *      CHAIN_ID (default 8453)
  */
@@ -18,6 +18,7 @@ import "dotenv/config";
 import { parseAbiItem } from "viem";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
 import { getClaimTxsFromBaseScan } from "./basescan-claims.js";
+import { resolveBankrApiKey } from "./bankr-api-keys.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
@@ -26,7 +27,6 @@ const DOPPLER_INDEXER_URL =
   (CHAIN_ID === 8453 ? "https://bankr.indexer.doppler.lol" : "https://testnet-indexer.doppler.lol");
 const BANKR_LAUNCH_URL = "https://api.bankr.bot/token-launches";
 const BANKR_AGENT_PROFILES_URL = "https://api.bankr.bot/agent-profiles";
-const BANKR_API_KEY = process.env.BANKR_API_KEY;
 /** Base RPC URL for on-chain reads (claimable fees, pool state). Only RPC_URL_BASE is used; RPC_URL is fallback. */
 const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
@@ -173,13 +173,14 @@ function ponderTimestampToMs(v) {
   return Number.isFinite(t) && t > 0 ? t : null;
 }
 
-async function fetchBankrLaunch(tokenAddress, apiKey = BANKR_API_KEY) {
+async function fetchBankrLaunch(tokenAddress, apiKey) {
+  const key = resolveBankrApiKey(apiKey);
   const urls = [
     `${BANKR_LAUNCH_URL}/${tokenAddress}`,
     `${BANKR_LAUNCH_URL}/${tokenAddress.slice(0, 2) + tokenAddress.slice(2).toUpperCase()}`,
   ];
   const headers = { Accept: "application/json" };
-  if (apiKey) headers["X-API-Key"] = apiKey;
+  if (key) headers["X-API-Key"] = key;
   for (const url of urls) {
     try {
       const res = await fetch(url, { headers });
@@ -198,11 +199,12 @@ async function fetchBankrLaunch(tokenAddress, apiKey = BANKR_API_KEY) {
  * Fetch Bankr agent profile (weeklyRevenueWeth, marketCapUsd, etc.).
  * GET /agent-profiles/{token_address} — used for enrichment when indexer is slow or down.
  */
-async function fetchBankrAgentProfile(tokenAddress, apiKey = BANKR_API_KEY) {
+async function fetchBankrAgentProfile(tokenAddress, apiKey) {
   const addr = tokenAddress?.trim?.()?.toLowerCase?.();
   if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
+  const key = resolveBankrApiKey(apiKey);
   const headers = { Accept: "application/json" };
-  if (apiKey) headers["X-API-Key"] = apiKey;
+  if (key) headers["X-API-Key"] = key;
   try {
     const res = await fetch(`${BANKR_AGENT_PROFILES_URL}/${addr}`, { headers });
     if (!res.ok) return null;
@@ -849,7 +851,7 @@ export async function getTokenFees(tokenAddress, options = {}) {
   const addr = normalizeAddress(tokenAddress);
   if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
 
-  const apiKey = options.bankrApiKey ?? BANKR_API_KEY;
+  const apiKey = resolveBankrApiKey(options.bankrApiKey);
   const [launch, doppler, poolState, dexMetrics, agentProfile] = await Promise.all([
     fetchBankrLaunch(addr, apiKey),
     fetchDopplerTokenVolume(addr),

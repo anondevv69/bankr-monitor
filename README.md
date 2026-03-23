@@ -324,6 +324,7 @@ cp .env.example .env
 Edit `.env`:
 
 - `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed.
+- **`BANKR_API_KEYS`** (optional) — Comma- or newline-separated list of keys. The bot **round-robins** across them for reads (notify, `/lookup`, token stats, Telegram lookups) to spread rate limits. You can instead put multiple keys in **`BANKR_API_KEY`** separated by commas. **`/deploy`** uses the **first** key when no per-server key is set in `/setup`.
 - `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
 - `FILTER_X_MATCH` — When `1` or `true`, the **main/alert feed** only notifies when deployer and fee recipient share the same X or Farcaster account (reduces spam). Watch-list matches are unchanged and still post to the watch channel.
 - `FILTER_MAX_DEPLOYS` — Max deploy count for launcher; skip if they've launched more (e.g. `2` = only first or second launch).

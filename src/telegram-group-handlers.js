@@ -6,6 +6,7 @@ import { getTokenFees } from "./token-stats.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { formatTokenFeesPlain } from "./telegram-personal-commands.js";
 import { getTelegramGroupSettings, updateTelegramGroupSettings } from "./telegram-group-settings.js";
+import { resolveBankrApiKey, hasEnvBankrApiKeys } from "./bankr-api-keys.js";
 
 /** @returns {Promise<boolean>} */
 export async function isTelegramChatAdmin(botToken, chatId, userId) {
@@ -107,11 +108,11 @@ export async function handleTelegramGroupMessage(p) {
   if (bankr.length === 0) return "not_handled";
 
   const addr = bankr[0];
-  const bankrApiKey = process.env.BANKR_API_KEY;
-  if (!bankrApiKey) {
-    await send("Set BANKR_API_KEY on the bot host for token lookup in groups.");
+  if (!hasEnvBankrApiKeys()) {
+    await send("Set BANKR_API_KEY or BANKR_API_KEYS on the bot host for token lookup in groups.");
     return "handled";
   }
+  const bankrApiKey = resolveBankrApiKey();
 
   try {
     const out = await getTokenFees(addr, { bankrApiKey });
