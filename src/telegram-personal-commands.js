@@ -241,8 +241,8 @@ export async function handlePersonalTelegramCommand(ctx) {
         if (!isWalletQuery && normalized && !resolvedWallet) {
           lines.push(
             "",
-            `Could not resolve a wallet for @${normalized} from Bankr alone. We only know wallets when that X/Farcaster appears as deployer or fee recipient on a Bankr launch (or Bankr’s simulate step resolves it).`,
-            "If they have no tokens on Bankr yet, search may still be empty — try their 0x… address if you have it."
+            `Could not resolve a wallet for @${normalized}. Tried Bankr simulate, launch scans, and search-by-handle (needs TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY).`,
+            "If they have tokens on Bankr, try again or open the search link; otherwise use a 0x… address if you have it."
           );
         } else if (!isWalletQuery && normalized && resolvedWallet) {
           lines.push("", `Resolved wallet: ${resolvedWallet} (no deployed tokens matched in our merged list).`);

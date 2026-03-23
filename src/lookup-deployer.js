@@ -257,6 +257,43 @@ function buildHandleToWalletMap(launches) {
   return map;
 }
 
+/**
+ * When deploy-simulate and newest/oldest list scans miss a handle, Bankr's search endpoint often still
+ * returns launches where that X/Farcaster is deployer or fee recipient (same data as bankr.bot/search).
+ * If exactly one wallet matches the handle across those rows, return it (else null).
+ * @param {unknown[]} launches - Raw launch objects from search API
+ * @param {string} normalizedHandle - parseQuery normalized handle (lowercase, no @)
+ * @returns {string|null}
+ */
+function inferWalletFromRawLaunches(launches, normalizedHandle) {
+  const q = norm(normalizedHandle);
+  if (!q || !Array.isArray(launches) || launches.length === 0) return null;
+  const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
+  const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
+  const wallets = new Set();
+  for (const l of launches) {
+    if (l?.status && l.status !== "deployed") continue;
+    const d = l.deployer;
+    const f = l.feeRecipient;
+    const dw = walletFrom(d);
+    const fw = walletFrom(f);
+    if (dw) {
+      const xu = xFrom(d);
+      if (xu && norm(String(xu).replace(/^@/, "")) === q) wallets.add(dw);
+      const fc = fcFrom(d);
+      if (fc && norm(String(fc)) === q) wallets.add(dw);
+    }
+    if (fw) {
+      const xu = xFrom(f);
+      if (xu && norm(String(xu).replace(/^@/, "")) === q) wallets.add(fw);
+      const fc = fcFrom(f);
+      if (fc && norm(String(fc)) === q) wallets.add(fw);
+    }
+  }
+  if (wallets.size === 1) return [...wallets][0];
+  return null;
+}
+
 /** Get wallet from deployer or fee object (API may use walletAddress, wallet, address, or raw string). */
 function walletFrom(obj) {
   if (obj == null) return null;
@@ -356,7 +393,9 @@ export function parseQuery(query) {
 
 /**
  * Resolve an X or Farcaster handle (or URL) to a wallet address using Bankr launch data.
- * Uses options.bankrApiKey when provided; otherwise env key pool (round-robin).
+ * Order: overrides → deploy simulate → newest + optional oldest list map → token-launches/search inference
+ * (search matches bankr.bot; fills gaps when simulate or list window misses the handle).
+ * Uses options.bankrApiKey when provided; otherwise BANKR_API_KEY from env.
  * @param {string} query
  * @param {{ bankrApiKey?: string }} [options]
  * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean }> }
@@ -381,6 +420,23 @@ export async function resolveHandleToWallet(query, options = {}) {
       const mapOld = buildHandleToWalletMap(oldest);
       for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
       wallet = handleToWallet.get(normalized) ?? null;
+    }
+  }
+  // Same discovery path as /lookup when list+simulate miss: search API often still returns the handle on launches.
+  if (!wallet) {
+    const tried = new Set();
+    for (const sq of [normalized, `@${normalized}`]) {
+      const k = sq.toLowerCase();
+      if (tried.has(k)) continue;
+      tried.add(k);
+      const sr = await fetchSearch(sq, apiKey);
+      if (sr?.launches?.length) {
+        const w = inferWalletFromRawLaunches(sr.launches, normalized);
+        if (w) {
+          wallet = w;
+          break;
+        }
+      }
     }
   }
   return { wallet, normalized, isWallet: false };

@@ -31,6 +31,11 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 - **Used when:** Resolving an X or Farcaster handle to a wallet; we read `feeDistribution.creator.address` (or similar) from the response.
 - **Code:** `resolveHandleViaDeploySimulate()` in `src/lookup-deployer.js`.
 
+### 4. Search inference (handle → wallet when simulate + list miss)
+
+- **When:** `/wallet-lookup`, Telegram `/walletlookup`, and `/lookup` all call `resolveHandleToWallet()`. After deploy simulate and scanning newest (and optional oldest) launches, if the handle still isn’t mapped, we call **`token-launches/search`** with the handle and `@handle`, then infer a single wallet from rows where that X/Farcaster appears on deployer or fee recipient (same idea as `bankr.bot/search`).
+- **Code:** `inferWalletFromRawLaunches()` in `src/lookup-deployer.js`.
+
 ---
 
 ## If “No Bankr tokens found” but the website shows a result

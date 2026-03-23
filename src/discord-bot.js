@@ -1932,9 +1932,9 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content:
             `Could not resolve a wallet for **${normalized || query}**. ` +
-            "We only know wallets from launches where this X or Farcaster is deployer or fee recipient (BANKR_API_KEY required). " +
-            "If this account has received tokens on Bankr, try **/lookup** with the same handle—sometimes tokens appear there. " +
-            "Otherwise use the wallet address (0x...) directly.",
+            "We try Bankr deploy simulate, launch scans, and search-by-handle (API key required). " +
+            "If this account has tokens on Bankr, try **/lookup** with the same handle or profile URL. " +
+            "Otherwise use the wallet address (**0x…**) directly.",
         });
       }
       debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/wallet-lookup", query);
