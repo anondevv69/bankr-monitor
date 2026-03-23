@@ -266,9 +266,26 @@ function buildHandleToWalletMap(launches) {
   return map;
 }
 
+/** Search query variants for handle resolution (Bankr sometimes matches profile URLs better than bare handles). */
+function searchQueriesForHandle(normalizedHandle) {
+  const n = norm(normalizedHandle);
+  if (!n) return [];
+  const out = [];
+  const add = (s) => {
+    const t = String(s).trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+  add(n);
+  add(`@${n}`);
+  add(`https://x.com/${n}`);
+  add(`https://twitter.com/${n}`);
+  return out;
+}
+
 /**
  * When deploy-simulate and newest/oldest list scans miss a handle, Bankr's search endpoint often still
  * returns launches where that X/Farcaster is deployer or fee recipient (same data as bankr.bot/search).
+ * Uses launchWallet() so top-level deployerWallet/feeRecipientWallet match bankr.bot when nested objects are sparse.
  * If exactly one wallet matches the handle across those rows, return it (else null).
  * @param {unknown[]} launches - Raw launch objects from search API
  * @param {string} normalizedHandle - parseQuery normalized handle (lowercase, no @)
@@ -280,23 +297,36 @@ function inferWalletFromRawLaunches(launches, normalizedHandle) {
   const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
   const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
   const wallets = new Set();
+  const matchX = (xu) => xu && norm(String(xu).replace(/^@/, "")) === q;
+  const matchFc = (fc) => fc && norm(String(fc)) === q;
+
   for (const l of launches) {
     if (l?.status && l.status !== "deployed") continue;
+    const dw = launchWallet(l, "deployer");
+    const fw = launchWallet(l, "fee");
     const d = l.deployer;
     const f = l.feeRecipient;
-    const dw = walletFrom(d);
-    const fw = walletFrom(f);
+
+    const deployerXCandidates = [xFrom(d), l.deployerX, l.deployerUsername, d?.username].filter(Boolean);
+    const feeXCandidates = [xFrom(f), l.feeRecipientX, l.feeUsername, f?.username].filter(Boolean);
+    const deployerFcCandidates = [fcFrom(d), l.deployerFc, l.deployerFarcasterUsername].filter(Boolean);
+    const feeFcCandidates = [fcFrom(f), l.feeRecipientFc, l.feeFarcasterUsername].filter(Boolean);
+
     if (dw) {
-      const xu = xFrom(d);
-      if (xu && norm(String(xu).replace(/^@/, "")) === q) wallets.add(dw);
-      const fc = fcFrom(d);
-      if (fc && norm(String(fc)) === q) wallets.add(dw);
+      for (const xu of deployerXCandidates) {
+        if (matchX(xu)) wallets.add(dw);
+      }
+      for (const fc of deployerFcCandidates) {
+        if (matchFc(fc)) wallets.add(dw);
+      }
     }
     if (fw) {
-      const xu = xFrom(f);
-      if (xu && norm(String(xu).replace(/^@/, "")) === q) wallets.add(fw);
-      const fc = fcFrom(f);
-      if (fc && norm(String(fc)) === q) wallets.add(fw);
+      for (const xu of feeXCandidates) {
+        if (matchX(xu)) wallets.add(fw);
+      }
+      for (const fc of feeFcCandidates) {
+        if (matchFc(fc)) wallets.add(fw);
+      }
     }
   }
   if (wallets.size === 1) return [...wallets][0];
@@ -434,7 +464,7 @@ export async function resolveHandleToWallet(query, options = {}) {
   // Same discovery path as /lookup when list+simulate miss: search API often still returns the handle on launches.
   if (!wallet) {
     const tried = new Set();
-    for (const sq of [normalized, `@${normalized}`]) {
+    for (const sq of searchQueriesForHandle(normalized)) {
       const k = sq.toLowerCase();
       if (tried.has(k)) continue;
       tried.add(k);
@@ -632,7 +662,11 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     !finalResolvedWallet
   ) {
     let lateWallet = null;
-    for (const sq of [normalized, `@${normalized}`]) {
+    const triedLate = new Set();
+    for (const sq of searchQueriesForHandle(normalized)) {
+      const k = sq.toLowerCase();
+      if (triedLate.has(k)) continue;
+      triedLate.add(k);
       const sr = await fetchSearch(sq, apiKey);
       if (sr?.launches?.length) {
         lateWallet = inferWalletFromRawLaunches(sr.launches, normalized);

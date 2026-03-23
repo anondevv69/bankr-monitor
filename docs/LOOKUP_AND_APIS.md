@@ -36,6 +36,7 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 - **When:** `/wallet-lookup`, Telegram `/walletlookup`, and `/lookup` use `resolveHandleToWallet()`. After deploy simulate and newest (and optional oldest) launch scans, we call **`token-launches/search`** with the handle and `@handle`, then infer a single wallet from rows where that X/Farcaster is deployer or fee recipient (same idea as `bankr.bot/search`). **Code:** `inferWalletFromRawLaunches()` in `src/lookup-deployer.js`.
 - **List cache:** Cached launch lists are keyed by **API key fingerprint** + limit + order so Discord and Telegram (different keys) never reuse each other’s list.
 - **Empty handle lookup:** If merged results are empty but search can still infer exactly one wallet, we **run one more lookup pass by that wallet** (same merge as typing `0x…`).
+- **Sparse search rows:** Inference uses **`launchWallet()`** (top-level `deployerWallet` / `feeRecipientWallet`) and flat **`deployerX` / `feeRecipientX`** fields, not only nested `deployer` objects — matching what [bankr.bot/search](https://bankr.bot/launches/search) shows. Handle resolution tries **`handle`**, **`@handle`**, and **`https://x.com/handle`** (and twitter.com) as search `q` values.
 
 ---
 
