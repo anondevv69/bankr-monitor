@@ -15,7 +15,7 @@ import {
   updatePersonalSettings,
   TELEGRAM_PERSONAL_WATCHLIST_MAX,
 } from "./telegram-personal-store.js";
-import { resolveBankrApiKey, hasEnvBankrApiKeys } from "./bankr-api-keys.js";
+import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
 
 /** Strip @BotName suffix from /command@bot */
 function parseCommandLine(text) {
@@ -91,7 +91,6 @@ const ALERT_KEYS = {
 export async function handlePersonalTelegramCommand(ctx) {
   const chatId = String(ctx.chatId);
   const send = ctx.send;
-  const bankrApiKey = resolveBankrApiKey();
   const { cmd, rest, trimmed } = parseCommandLine(ctx.text);
 
   if (!isPersonalDmsEnabled()) return;
@@ -104,8 +103,10 @@ export async function handlePersonalTelegramCommand(ctx) {
   // Lone Bankr CA in a DM → token lookup (no /start required)
   const loneCa = trimmed.match(/^(0x[a-fA-F0-9]{40})$/i);
   if (loneCa && isBankrTokenAddress(loneCa[1])) {
-    if (!hasEnvBankrApiKeys()) return send("Set BANKR_API_KEY (or BANKR_API_KEYS) on the bot for token lookup.");
-    await runTokenLookupForChat(send, loneCa[1], bankrApiKey);
+    if (!hasTelegramBankrApiKeys()) {
+      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for token lookup.");
+    }
+    await runTokenLookupForChat(send, loneCa[1], pickTelegramBankrApiKeyRoundRobin());
     return;
   }
 
@@ -194,7 +195,7 @@ export async function handlePersonalTelegramCommand(ctx) {
 
   if (cmd === "/add") {
     if (!rest) return send("Usage: /add <wallet | token 0x…ba3 | @handle | keyword>");
-    const classified = await classifyWatchArg(rest, bankrApiKey);
+    const classified = await classifyWatchArg(rest, pickTelegramBankrApiKeyRoundRobin());
     if (classified.error) return send(classified.error);
     const r = await addWatchlistEntry(chatId, { type: classified.type, value: classified.value });
     if (!r.ok && r.error === "LIMIT") {
@@ -219,14 +220,16 @@ export async function handlePersonalTelegramCommand(ctx) {
 
   if (cmd === "/walletlookup" || cmd === "/wallet") {
     if (!rest) return send("Usage: /walletlookup <0x | @handle | profile URL>");
-    if (!hasEnvBankrApiKeys()) return send("Set BANKR_API_KEY (or BANKR_API_KEYS) on the bot for wallet lookup.");
+    if (!hasTelegramBankrApiKeys()) {
+      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for wallet lookup.");
+    }
     await send("Looking up…");
     try {
       const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = await lookupByDeployerOrFee(
         rest,
         "both",
         "newest",
-        { bankrApiKey }
+        { bankrApiKey: pickTelegramBankrApiKeyRoundRobin() }
       );
       if (!matches.length) {
         const link = searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(normalized || rest)}`;
@@ -263,7 +266,7 @@ export async function handlePersonalTelegramCommand(ctx) {
     if (!addr || !isBankrTokenAddress(addr)) {
       return send("Need a Bankr token address (0x…ba3) or URL containing it.");
     }
-    await runTokenLookupForChat(send, addr, bankrApiKey);
+    await runTokenLookupForChat(send, addr, pickTelegramBankrApiKeyRoundRobin());
     return;
   }
 

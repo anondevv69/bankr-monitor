@@ -8,13 +8,13 @@
  *          node src/lookup-deployer.js @vyrozas
  *          node src/lookup-deployer.js dwr.eth
  *
- * Env: BANKR_API_KEY or BANKR_API_KEYS (comma-separated) — see bankr-api-keys.js.
+ * Env: BANKR_API_KEY (Telegram multi-key: TELEGRAM_BANKR_API_KEYS only).
  */
 
 import "dotenv/config";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
-import { resolveBankrApiKey } from "./bankr-api-keys.js";
+import { defaultBankrApiKey } from "./bankr-env-key.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
@@ -113,7 +113,7 @@ function mergeLaunchesWithoutDuplicates(launches, toAdd) {
  * apiKey: optional override (e.g. tenant's key); else round-robin env keys.
  * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
 async function fetchSearch(query, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;
   const seen = new Set();
@@ -159,7 +159,7 @@ async function fetchSearch(query, apiKey) {
 
 /** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. apiKey: optional override. */
 async function fetchLaunchesPage(offset, pageSize = 50, order, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key) return [];
   let url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
   if (order === "asc") url += "&order=asc";
@@ -180,7 +180,7 @@ let _listCacheTime = 0;
 
 /** In-memory cache for list API to avoid hammering Bankr on every /lookup (Discord-safe). */
 async function getCachedLaunches(limit, order, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key) return [];
   const cacheKey = `${limit}:${order ?? "newest"}`;
   const now = Date.now();
@@ -195,7 +195,7 @@ async function getCachedLaunches(limit, order, apiKey) {
 
 /** Fetch launches from Bankr API (paginated, parallel). order: undefined (newest first) or "asc" (oldest first). apiKey: optional override. */
 async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key) return [];
   const out = [];
   const seen = new Set();
@@ -362,7 +362,7 @@ export function parseQuery(query) {
  * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean }> }
  */
 export async function resolveHandleToWallet(query, options = {}) {
-  const apiKey = resolveBankrApiKey(options.bankrApiKey);
+  const apiKey = defaultBankrApiKey(options.bankrApiKey);
   const { normalized, isWallet } = parseQuery(query);
   if (!normalized) return { wallet: null, normalized: null, isWallet: false };
   if (isWallet) return { wallet: normalized, normalized, isWallet: true };
@@ -395,7 +395,7 @@ export async function resolveHandleToWallet(query, options = {}) {
  * @returns {Promise<string | null>} Resolved wallet (lowercase) or null.
  */
 async function resolveHandleViaDeploySimulate(handle, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key || !handle) return null;
   const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
   for (const type of typesToTry) {
@@ -431,7 +431,7 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
  *  @param sortOrder "newest" | "oldest" - newest first (default) or oldest first
  *  @param options { bankrApiKey?: string } - optional; when provided (e.g. from Discord /setup), use this key instead of env */
 export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = "newest", options = {}) {
-  const apiKey = resolveBankrApiKey(options.bankrApiKey);
+  const apiKey = defaultBankrApiKey(options.bankrApiKey);
   const { normalized, isWallet: isWalletQuery } = parseQuery(query);
   if (!normalized) {
     const q = String(query).trim();
@@ -580,7 +580,7 @@ export async function getBankrWalletLaunchRoleCounts(walletAddress, options = {}
   if (!w || !/^0x[a-f0-9]{40}$/.test(w)) {
     return { asDeployer: null, asFeeRecipient: null, source: null, bankrSearchUrl: null };
   }
-  const apiKey = resolveBankrApiKey(options.bankrApiKey);
+  const apiKey = defaultBankrApiKey(options.bankrApiKey);
   if (!apiKey) {
     return {
       asDeployer: null,
@@ -643,7 +643,7 @@ function feeWalletFromLaunchBeneficiary(launch) {
  * @param {{ bankrApiKey?: string }} [options]
  */
 export async function enrichLaunchWithBankrRoleCounts(launch, options = {}) {
-  const bankrApiKey = resolveBankrApiKey(options.bankrApiKey);
+  const bankrApiKey = defaultBankrApiKey(options.bankrApiKey);
   if (!bankrApiKey || !launch) return launch;
   const launcher = normLaunchWallet(launch?.launcher);
   const fee = feeWalletFromLaunchBeneficiary(launch);

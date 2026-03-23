@@ -6,7 +6,7 @@
  * Data sources (in order): Bankr API → Doppler Indexer → Chain (Airlock events)
  *
  * Env:
- *   BANKR_API_KEY / BANKR_API_KEYS - Bankr API key(s); multiple = round-robin for reads
+ *   BANKR_API_KEY - Bankr API key (Telegram-only multi-key: TELEGRAM_BANKR_API_KEYS)
  *   DISCORD_WEBHOOK_URL  - Discord webhook URL (optional)
  *   TELEGRAM_BOT_TOKEN   - Telegram bot token (optional)
  *   TELEGRAM_CHAT_ID     - Telegram group chat ID (optional)
@@ -31,7 +31,7 @@ import { fetchNewLaunches } from "./fetch-from-chain.js";
 import { formatUsd, getHotTokenStats } from "./token-stats.js";
 import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
-import { resolveBankrApiKey } from "./bankr-api-keys.js";
+import { defaultBankrApiKey } from "./bankr-env-key.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Cap pagination to avoid 429; only need recent launches for notify. Override with BANKR_LAUNCHES_LIMIT.
@@ -186,7 +186,7 @@ function formatBankrLaunch(l) {
 }
 
 async function fetchFromBankrApi(apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key) return null;
   try {
     const seen = new Set();
@@ -237,7 +237,7 @@ async function fetchFromBankrApi(apiKey) {
 
 /** Fetch one launch by token address (Bankr GET token-launches/:address). Returns full launch with deployer/feeRecipient or null. */
 async function fetchSingleBankrLaunch(tokenAddress, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (!key || !tokenAddress) return null;
   try {
     const url = `https://api.bankr.bot/token-launches/${encodeURIComponent(tokenAddress)}`;
@@ -262,7 +262,7 @@ export async function fetchLaunchByTokenAddress(tokenAddress, apiKey) {
 }
 
 async function fetchLaunches(apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   if (key && CHAIN_ID === 8453) {
     const bankrLaunches = await fetchFromBankrApi(key);
     if (bankrLaunches?.length > 0) return bankrLaunches;
@@ -1106,7 +1106,7 @@ export async function sendTelegramClaim(claim, options = {}) {
  * @param {{ bankrApiKey?: string }} [options] - When provided (e.g. from Discord tenant), use this key for Bankr API so cycle works without env key.
  */
 export async function runNotifyCycle(options = {}) {
-  const cycleApiKey = resolveBankrApiKey(options.bankrApiKey);
+  const cycleApiKey = defaultBankrApiKey(options.bankrApiKey);
   const seenArr = await loadSeen();
   const deployCounts = await loadDeployCounts();
   const feeRecipientCounts = await loadFeeRecipientCounts();

@@ -323,8 +323,8 @@ cp .env.example .env
 
 Edit `.env`:
 
-- `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed.
-- **`BANKR_API_KEYS`** (optional) — Comma- or newline-separated list of keys. The bot **round-robins** across them for reads (notify, `/lookup`, token stats, Telegram lookups) to spread rate limits. You can instead put multiple keys in **`BANKR_API_KEY`** separated by commas. **`/deploy`** uses the **first** key when no per-server key is set in `/setup`.
+- `BANKR_API_KEY` — **Recommended.** Bankr API key from [bankr.bot/api](https://bankr.bot/api). Bankr-only launches, no RPC needed. Used by Discord, notify, `/lookup`, etc.
+- **`TELEGRAM_BANKR_API_KEYS`** (optional) — Comma- or newline-separated keys used **only** for Telegram (personal DMs + group pasted `0x…ba3` lookups). **Round-robin** to spread Bankr rate limits. If unset, Telegram falls back to **`BANKR_API_KEY`** only.
 - `BANKR_LAUNCHES_LIMIT` — Max launches per fetch (default 500). Passed as `?limit=` to the API.
 - `FILTER_X_MATCH` — When `1` or `true`, the **main/alert feed** only notifies when deployer and fee recipient share the same X or Farcaster account (reduces spam). Watch-list matches are unchanged and still post to the watch channel.
 - `FILTER_MAX_DEPLOYS` — Max deploy count for launcher; skip if they've launched more (e.g. `2` = only first or second launch).
@@ -438,7 +438,7 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
      - **Per-server (Discord bot):** In the server where the bot is in, run **/setup telegram**. Set **group_chat_id** to the Telegram group ID, then **topic_firehose**, **topic_curated** (X only fee recipient), **topic_hot**, **topic_trending** to the four topic IDs.
    - **Delay for Telegram Hot/Trending:** Hot and Trending pings are sent to Discord first; then, by default, **1 minute later** they are sent to the Telegram Hot and Trending topics. You can change this later: set **TELEGRAM_HOT_PING_DELAY_MS** in env (default `60000` ms), or per server run **/setup telegram** and set **delay_hot_trending_sec** (e.g. `60` for 1 min, `0` for same time as Discord).
    - **Restrict to your group only:** Set **TELEGRAM_ALLOWED_CHAT_IDS** to your group’s chat ID (e.g. `-1001234567890`). The bot will only send to that chat; if someone adds the bot to another group, it will not post there. Use a comma-separated list for multiple groups. Leave unset to allow all.
-   - **In groups (same long-poll bot):** The bot treats **private chat** vs **group/supergroup** automatically. In a **group**, anyone can paste a **Bankr token** address (`0x…ba3`) in a normal message and the bot replies with a short token summary (needs **BANKR_API_KEY**). **Group admins** can turn that on/off with **`/tg_tokenlookup on`** / **`off`**. Anyone can use **`/tg_help`** and **`/tg_settings`**. Optional persistence: **TELEGRAM_GROUP_SETTINGS_FILE** (use a volume path on Railway). Personal watchlist commands (**`/start`**, **`/alerts`**, etc.) stay **DM-only**.
+   - **In groups (same long-poll bot):** The bot treats **private chat** vs **group/supergroup** automatically. In a **group**, anyone can paste a **Bankr token** address (`0x…ba3`) in a normal message and the bot replies with a short token summary (needs **`BANKR_API_KEY`** or **`TELEGRAM_BANKR_API_KEYS`**). **Group admins** can turn that on/off with **`/tg_tokenlookup on`** / **`off`**. Anyone can use **`/tg_help`** and **`/tg_settings`**. Optional persistence: **TELEGRAM_GROUP_SETTINGS_FILE** (use a volume path on Railway). Personal watchlist commands (**`/start`**, **`/alerts`**, etc.) stay **DM-only**.
 
 4. **Environment variables**
    ```bash

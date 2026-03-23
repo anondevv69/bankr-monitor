@@ -8,7 +8,7 @@
  * Usage: node src/token-stats.js <tokenAddress>
  * Example: node src/token-stats.js 0x9b40e8d9dda89230ea0e034ae2ef0f435db57ba3
  *
- * Env: BANKR_API_KEY or BANKR_API_KEYS (comma-separated; round-robin for reads)
+ * Env: BANKR_API_KEY (Telegram-only pool: TELEGRAM_BANKR_API_KEYS)
  *      DOPPLER_INDEXER_URL (optional; default https://bankr.indexer.doppler.lol for Base mainnet — set to your endpoint if different)
  *      CHAIN_ID (default 8453)
  */
@@ -18,7 +18,7 @@ import "dotenv/config";
 import { parseAbiItem } from "viem";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
 import { getClaimTxsFromBaseScan } from "./basescan-claims.js";
-import { resolveBankrApiKey } from "./bankr-api-keys.js";
+import { defaultBankrApiKey } from "./bankr-env-key.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
@@ -174,7 +174,7 @@ function ponderTimestampToMs(v) {
 }
 
 async function fetchBankrLaunch(tokenAddress, apiKey) {
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   const urls = [
     `${BANKR_LAUNCH_URL}/${tokenAddress}`,
     `${BANKR_LAUNCH_URL}/${tokenAddress.slice(0, 2) + tokenAddress.slice(2).toUpperCase()}`,
@@ -202,7 +202,7 @@ async function fetchBankrLaunch(tokenAddress, apiKey) {
 async function fetchBankrAgentProfile(tokenAddress, apiKey) {
   const addr = tokenAddress?.trim?.()?.toLowerCase?.();
   if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
-  const key = resolveBankrApiKey(apiKey);
+  const key = defaultBankrApiKey(apiKey);
   const headers = { Accept: "application/json" };
   if (key) headers["X-API-Key"] = key;
   try {
@@ -851,7 +851,7 @@ export async function getTokenFees(tokenAddress, options = {}) {
   const addr = normalizeAddress(tokenAddress);
   if (!addr) return { tokenAddress: "", name: "—", symbol: "—", launch: null, feeRecipient: null, feeWallet: null, cumulatedFees: null, volumeUsd: null, estimatedCreatorFeesUsd: null, formatUsd, error: "Invalid token address (0x + 40 hex)." };
 
-  const apiKey = resolveBankrApiKey(options.bankrApiKey);
+  const apiKey = defaultBankrApiKey(options.bankrApiKey);
   const [launch, doppler, poolState, dexMetrics, agentProfile] = await Promise.all([
     fetchBankrLaunch(addr, apiKey),
     fetchDopplerTokenVolume(addr),
