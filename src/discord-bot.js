@@ -1324,18 +1324,26 @@ function isInClaimQuietWindow() {
 }
 
 /** Telegram long-poll for /claims <wallet> and /topicid. Runs in background when TELEGRAM_BOT_TOKEN is set. */
-function startTelegramClaimsPolling(token, allowedChatIds) {
+function startTelegramClaimsPolling(token) {
   let offset = 0;
   const claimsRegex = /^\/claims\s+(0x[a-fA-F0-9]{40})$/;
   const topicIdRegex = /^\/(topicid|id)$/i;
   async function sendTg(chatId, text, opts = {}) {
     const body = { chat_id: chatId, text, ...opts };
     if (opts.message_thread_id != null) body.message_thread_id = opts.message_thread_id;
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).catch(() => {});
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!data.ok) {
+        console.warn("[Telegram sendMessage]", data.description || data.error_code || res.status, "chat", chatId);
+      }
+    } catch (e) {
+      console.warn("[Telegram sendMessage] fetch failed:", e.message);
+    }
   }
   async function poll() {
     try {
@@ -1363,7 +1371,7 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
           }
           continue;
         }
-        // /topicid or /id — always reply (ignore allowedChatIds) so you can discover chat + topic IDs
+        // /topicid or /id — reply in any group so you can discover chat + topic IDs
         if (topicIdRegex.test(text)) {
           const threadPart = threadId != null
             ? `Topic ID: \`${threadId}\`\n\nFor claim alerts in this topic set:\nTELEGRAM_CLAIM_TOPIC_ID=${threadId}`
@@ -1383,7 +1391,6 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
             text,
             fromUserId: fromUser?.id,
             isBot: fromUser?.is_bot === true,
-            allowedChatIds,
             send: (msg, opts = {}) =>
               sendTg(chatId, msg, {
                 ...opts,
@@ -1393,7 +1400,7 @@ function startTelegramClaimsPolling(token, allowedChatIds) {
           if (groupResult === "handled") continue;
         }
 
-        if (allowedChatIds?.length && !allowedChatIds.includes(String(chatId))) continue;
+        // /claims works in any group (TELEGRAM_ALLOWED_CHAT_IDS only restricts notify.js outbound posts)
         const m = text.match(claimsRegex);
         if (!m) continue;
         const wallet = m[1].toLowerCase();
@@ -1556,11 +1563,8 @@ client.once("ready", async () => {
   }
   // Telegram /claims <wallet> command (optional)
   const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-  const tgAllowedIds = process.env.TELEGRAM_ALLOWED_CHAT_IDS
-    ? String(process.env.TELEGRAM_ALLOWED_CHAT_IDS).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
   if (tgToken) {
-    startTelegramClaimsPolling(tgToken, tgAllowedIds);
+    startTelegramClaimsPolling(tgToken);
   }
   if (tgToken && isPersonalDmsEnabled()) {
     const personalUsersPath =

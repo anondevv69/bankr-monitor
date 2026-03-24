@@ -39,6 +39,22 @@ function parseCmd(text) {
 }
 
 /**
+ * One message often contains a pasted CA then several commands. Telegram passes the whole body as `text`;
+ * the first "word" is then the CA, so /token on a later line was ignored. Use the **last** line that starts
+ * with `/` for slash-command routing; keep full `text` for pasted-address detection.
+ */
+function pickSlashCommandLine(fullText) {
+  const lines = String(fullText || "")
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith("/")) return lines[i];
+  }
+  return String(fullText || "").trim();
+}
+
+/**
  * @param {object} p
  * @param {string} p.botToken
  * @param {string|number} p.chatId
@@ -46,18 +62,34 @@ function parseCmd(text) {
  * @param {string} p.text
  * @param {number|undefined} p.fromUserId
  * @param {boolean} [p.isBot]
- * @param {string[]|null} p.allowedChatIds — same semantics as TELEGRAM_ALLOWED_CHAT_IDS (null/empty = all chats)
  * @param {(msg: string, opts?: object) => Promise<void>} p.send
  * @returns {Promise<'handled'|'not_handled'>}
+ *
+ * Note: TELEGRAM_ALLOWED_CHAT_IDS does *not* apply here — it only limits **outbound** launch/alert posts
+ * in notify.js. Any group the bot is in can use /walletlookup, /lookup, paste …ba3, etc.
  */
 export async function handleTelegramGroupMessage(p) {
-  const { botToken, chatId, threadId, text, fromUserId, isBot, allowedChatIds, send } = p;
+  const { botToken, chatId, threadId, text, fromUserId, isBot, send } = p;
   if (isBot) return "not_handled";
 
-  const inAllowed = !allowedChatIds?.length || allowedChatIds.includes(String(chatId));
-  if (!inAllowed) return "not_handled";
+  const lineForSlash = pickSlashCommandLine(text);
+  const { cmd, rest } = parseCmd(lineForSlash);
 
-  const { cmd, rest } = parseCmd(text);
+  if (cmd === "/start") {
+    await send(
+      [
+        "In *groups*, use:",
+        "`/tg_help` — commands",
+        "`/token` `0x…ba3` — fee summary",
+        "`/walletlookup` / `/lookup` — wallet & tokens",
+        "",
+        "_Paste a Bankr CA on its own line for auto-reply (needs `BANKR_API_KEY`)._",
+        "Personal alerts & watchlist: open a *private DM* with this bot and send `/start` there.",
+      ].join("\n"),
+      { parse_mode: "Markdown" }
+    );
+    return "handled";
+  }
 
   if (cmd === "/tg_help") {
     await send(
@@ -123,7 +155,8 @@ export async function handleTelegramGroupMessage(p) {
     return "handled";
   }
 
-  if (text.startsWith("/")) return "not_handled";
+  // Unknown slash command (e.g. /claims) — fall through to discord-bot poll loop
+  if (lineForSlash.startsWith("/")) return "not_handled";
 
   const settings = await getTelegramGroupSettings(chatId);
   if (settings.tokenLookupInGroup === false) return "not_handled";

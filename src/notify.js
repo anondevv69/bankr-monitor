@@ -15,7 +15,7 @@
  *   TELEGRAM_TOPIC_HOT      - Topic ID for hot launches (env; per-tenant in bot)
  *   TELEGRAM_TOPIC_TRENDING - Topic ID for trending (env; per-tenant in bot)
  *   TELEGRAM_HOT_PING_DELAY_MS - Extra delay (ms) before sending hot/trending to Telegram after Discord (default 60000; bot only)
- *   TELEGRAM_ALLOWED_CHAT_IDS   - Comma-separated chat IDs; only these receive messages (e.g. your group). Unset = allow all.
+ *   TELEGRAM_ALLOWED_CHAT_IDS   - Comma-separated chat IDs; only these receive **outbound** notify posts from this process. Does not affect Discord bot group commands. Unset = allow all.
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
  *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
  *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
@@ -56,7 +56,7 @@ const FEE_RECIPIENT_COUNT_FILE =
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
-/** If set, only these chat IDs can receive messages (comma-separated). Stops others from using this bot in their groups. Leave unset to allow all. */
+/** If set, only these chat IDs receive outbound Telegram posts from notify (comma-separated). Interactive bot use in other groups is unaffected. Leave unset to allow all. */
 const TELEGRAM_ALLOWED_CHAT_IDS =
   process.env.TELEGRAM_ALLOWED_CHAT_IDS !== undefined
     ? String(process.env.TELEGRAM_ALLOWED_CHAT_IDS)
