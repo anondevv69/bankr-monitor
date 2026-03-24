@@ -112,7 +112,9 @@ export function formatTrendCardText(card) {
   lines.push(
     `• Traders: **${card.traders_24h}** · Trades: **${card.trades_24h}** · Buys / Sells: **${card.buy_tx_24h}** / **${card.sell_tx_24h}**`
   );
-  lines.push(`• Buy/sell ratio: **${card.buy_sell_ratio_24h.toFixed(2)}** · 1h buys/sells: **${card.buys_1h}** / **${card.sells_1h}**`);
+  lines.push(
+    `• Buy/sell ratio: **${card.buy_sell_ratio_24h.toFixed(2)}** · 1h: **${card.buys_1h}** / **${card.sells_1h}** · ~15m: **${card.buys_15m}** / **${card.sells_15m}** (${card.trades_15m} swaps)`
+  );
   lines.push("");
   lines.push(`🔥 **Trend:** **${card.trend_label}** (score **${card.trend_score}/100**)`);
   return lines.join("\n");
@@ -140,6 +142,7 @@ async function fetchSwapAggregates(poolAddress, chainId, indexerBase, sinceSec24
   const base = indexerBase.replace(/\/$/, "");
   const ts = String(sinceSec24);
   const t1 = nowSec() - 3600;
+  const t15 = nowSec() - 900;
 
   const countQuery = (typeArg) =>
     `query ($pool: String!, $chainId: Int!, $ts: BigInt!) {
@@ -195,11 +198,19 @@ async function fetchSwapAggregates(poolAddress, chainId, indexerBase, sinceSec24
   let buys1h = 0;
   let sells1h = 0;
   let vol1hFromSwaps = 0;
+  let buys15m = 0;
+  let sells15m = 0;
+  let trades15m = 0;
   for (const row of items) {
     volUsdFromSwaps += numFromScaled(row.swapValueUsd, USD_VOL_1E12);
     if (row.user) users.add(String(row.user).toLowerCase());
     const tst = Number(row.timestamp);
     if (!Number.isFinite(tst)) continue;
+    if (tst >= t15) {
+      trades15m++;
+      if (row.type === "buy") buys15m++;
+      else if (row.type === "sell") sells15m++;
+    }
     if (tst >= t1) {
       if (row.type === "buy") buys1h++;
       else if (row.type === "sell") sells1h++;
@@ -222,6 +233,9 @@ async function fetchSwapAggregates(poolAddress, chainId, indexerBase, sinceSec24
     tradersSample: users.size,
     buys1h,
     sells1h,
+    buys15m,
+    sells15m,
+    trades15m,
   };
 }
 
@@ -358,6 +372,9 @@ export async function buildTokenTrendCard(tokenAddress, options = {}) {
 
   let buys1h = 0;
   let sells1h = 0;
+  let buys15m = 0;
+  let sells15m = 0;
+  let trades15m = 0;
   if (poolAddr) {
     const sw = await fetchSwapAggregates(poolAddr, chainId, indexerBase, t24).catch(() => null);
     if (sw) {
@@ -372,6 +389,9 @@ export async function buildTokenTrendCard(tokenAddress, options = {}) {
       vol1h = Math.max(vol1Buckets, sw.vol1hFromSwaps || 0);
       buys1h = sw.buys1h;
       sells1h = sw.sells1h;
+      buys15m = sw.buys15m ?? 0;
+      sells15m = sw.sells15m ?? 0;
+      trades15m = sw.trades15m ?? 0;
     }
   }
 
@@ -426,6 +446,9 @@ export async function buildTokenTrendCard(tokenAddress, options = {}) {
     change_4h_pct: roundOrZero(change4hPct, 4),
     buys_1h: buys1h,
     sells_1h: sells1h,
+    buys_15m: buys15m,
+    sells_15m: sells15m,
+    trades_15m: trades15m,
     traders_24h: traders24h,
     trades_24h: trades24h,
     buy_tx_24h: buyTx24h,
@@ -510,6 +533,9 @@ function emptyCard(ca, chainId) {
     change_4h_pct: z,
     buys_1h: z,
     sells_1h: z,
+    buys_15m: z,
+    sells_15m: z,
+    trades_15m: z,
     traders_24h: z,
     trades_24h: z,
     buy_tx_24h: z,
@@ -517,6 +543,34 @@ function emptyCard(ca, chainId) {
     buy_sell_ratio_24h: z,
     trend_score: z,
     trend_label: "NOT_TRENDING",
+  };
+}
+
+/**
+ * Flat metrics for per-token activity watch thresholds (same GraphQL + swap sample as trend card).
+ * 15m/1h counts are from the last **1000** swaps in 24h — very active pools may undercount.
+ * @param {string} tokenAddress
+ * @param {{ dopplerIndexerUrl?: string, chainId?: number }} [options]
+ */
+export async function fetchTokenActivityWatchMetrics(tokenAddress, options = {}) {
+  const { card } = await buildTokenTrendCard(tokenAddress, options);
+  if (!card?.ca) return null;
+  return {
+    tokenAddress: card.ca,
+    label: card.token || null,
+    mcapUsd: card.mcap,
+    vol1hUsd: card.vol_1h,
+    vol24hUsd: card.vol_24h,
+    buys15m: card.buys_15m,
+    sells15m: card.sells_15m,
+    trades15m: card.trades_15m,
+    buys1h: card.buys_1h,
+    sells1h: card.sells_1h,
+    buys24h: card.buy_tx_24h,
+    sells24h: card.sell_tx_24h,
+    trades24h: card.trades_24h,
+    trendScore: card.trend_score,
+    trendLabel: card.trend_label,
   };
 }
 

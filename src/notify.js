@@ -540,21 +540,14 @@ export function buildTradeLinks(tokenAddress) {
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
 }
 
-/** Inline keyboard: GMGN, BB, FCW (same deep links as Discord embed trade line). */
+/** Inline keyboard: GMGN + BB only (no FCW/Warpcast — poor UX inside Telegram). */
 export function buildTelegramTradeKeyboardMarkup(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return null;
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
-  const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
   return {
-    inline_keyboard: [
-      [
-        { text: "🔵 GMGN", url: gmgnUrl },
-        { text: "🔥 BB", url: bbUrl },
-        { text: "🟣 FCW", url: fcwUrl },
-      ],
-    ],
+    inline_keyboard: [[{ text: "🔵 GMGN", url: gmgnUrl }, { text: "🔥 BB", url: bbUrl }]],
   };
 }
 
@@ -761,18 +754,16 @@ function formatDeployerOrFeeForTelegramHtml(obj) {
   return parts.length ? parts.join("\n") : "—";
 }
 
-/** Same destinations as {@link buildTradeLinks} but for Telegram HTML. */
+/** Telegram HTML trade line: GMGN + BB only (Discord {@link buildTradeLinks} still includes FCW). */
 export function buildTradeLinksHtml(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
-  const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
   return (
     `💱 <b>Trade</b> ` +
     `<a href="${escapeTelegramHtml(gmgnUrl)}">GMGN</a> · ` +
-    `<a href="${escapeTelegramHtml(bbUrl)}">BB</a> · ` +
-    `<a href="${escapeTelegramHtml(fcwUrl)}">FCW</a>`
+    `<a href="${escapeTelegramHtml(bbUrl)}">BB</a>`
   );
 }
 
@@ -1015,8 +1006,6 @@ export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
 
   lines.push("");
   lines.push(buildTradeLinksHtml(tokenAddress));
-  lines.push("");
-  lines.push(`<i>BankrMonitor · bankr.bot</i>`);
 
   let text = lines.join("\n");
   if (text.length > TELEGRAM_HTML_MAX) text = `${text.slice(0, TELEGRAM_HTML_MAX - 20)}…`;

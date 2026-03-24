@@ -3,6 +3,7 @@
  * Each Discord server has its own: API key, alert channels, rules, watchlist.
  */
 
+import { randomUUID } from "crypto";
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -76,6 +77,8 @@ export async function getTenant(guildId) {
     rules: { ...DEFAULT_RULES, ...t.rules },
     watchlist: { ...DEFAULT_WATCHLIST, ...t.watchlist },
     claimWatchTokens: Array.isArray(t.claimWatchTokens) ? t.claimWatchTokens : [],
+    /** Per-token activity alerts (mcap / buys / sells / swaps windows). See /activity-watch. */
+    activityWatchList: Array.isArray(t.activityWatchList) ? t.activityWatchList : [],
     /** Optional labels for claim-watch tokens: { [address]: label } */
     claimWatchLabels: typeof t.claimWatchLabels === "object" && t.claimWatchLabels !== null ? t.claimWatchLabels : {},
     /** Optional channel for fee-claim alerts only; falls back to watch then alert channel. */
@@ -115,6 +118,9 @@ export async function setTenant(guildId, updates) {
   }
   if (Array.isArray(updates.claimWatchTokens)) {
     next.claimWatchTokens = updates.claimWatchTokens;
+  }
+  if (Array.isArray(updates.activityWatchList)) {
+    next.activityWatchList = updates.activityWatchList;
   }
   if (updates.claimWatchLabels !== undefined && typeof updates.claimWatchLabels === "object" && updates.claimWatchLabels !== null) {
     next.claimWatchLabels = updates.claimWatchLabels;
@@ -354,4 +360,152 @@ export async function removeClaimTokenChannel(guildId, tokenAddress) {
   delete next[addr];
   await setTenant(guildId, { claimTokenChannels: next });
   return true;
+}
+
+/** @typedef {{
+ *   id: string,
+ *   tokenAddress: string,
+ *   label: string|null,
+ *   mcapUsdMin: number|null,
+ *   minBuys15m: number|null,
+ *   minSells15m: number|null,
+ *   minSwaps15m: number|null,
+ *   minBuys1h: number|null,
+ *   minSells1h: number|null,
+ *   minBuys24h: number|null,
+ *   minSells24h: number|null,
+ *   minTrades24h: number|null,
+ *   cooldownSec: number,
+ *   lastAlertAtMs: number|null,
+ *   createdAt: string,
+ * }} ActivityWatchEntry */
+
+function numOrNull(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * @param {string} guildId
+ * @param {{
+ *   tokenAddress: string,
+ *   label?: string|null,
+ *   mcapUsdMin?: number|null,
+ *   minBuys15m?: number|null,
+ *   minSells15m?: number|null,
+ *   minSwaps15m?: number|null,
+ *   minBuys1h?: number|null,
+ *   minSells1h?: number|null,
+ *   minBuys24h?: number|null,
+ *   minSells24h?: number|null,
+ *   minTrades24h?: number|null,
+ *   cooldownSec?: number,
+ * }} spec
+ * @returns {Promise<ActivityWatchEntry|null>} null if no thresholds
+ */
+export async function addActivityWatchEntry(guildId, spec) {
+  const addr = parseTokenAddress(spec.tokenAddress);
+  if (!addr || !addr.endsWith("ba3") || !guildId) return null;
+  const mcapUsdMin = numOrNull(spec.mcapUsdMin);
+  const minBuys15m = numOrNull(spec.minBuys15m);
+  const minSells15m = numOrNull(spec.minSells15m);
+  const minSwaps15m = numOrNull(spec.minSwaps15m);
+  const minBuys1h = numOrNull(spec.minBuys1h);
+  const minSells1h = numOrNull(spec.minSells1h);
+  const minBuys24h = numOrNull(spec.minBuys24h);
+  const minSells24h = numOrNull(spec.minSells24h);
+  const minTrades24h = numOrNull(spec.minTrades24h);
+  const hasAny =
+    mcapUsdMin ||
+    minBuys15m ||
+    minSells15m ||
+    minSwaps15m ||
+    minBuys1h ||
+    minSells1h ||
+    minBuys24h ||
+    minSells24h ||
+    minTrades24h;
+  if (!hasAny) return null;
+  const cooldownSec = Math.min(
+    86400,
+    Math.max(60, Math.trunc(Number(spec.cooldownSec) || 900))
+  );
+  const entry = {
+    id: randomUUID(),
+    tokenAddress: addr,
+    label: spec.label && String(spec.label).trim() ? String(spec.label).trim() : null,
+    mcapUsdMin,
+    minBuys15m,
+    minSells15m,
+    minSwaps15m,
+    minBuys1h,
+    minSells1h,
+    minBuys24h,
+    minSells24h,
+    minTrades24h,
+    cooldownSec,
+    lastAlertAtMs: null,
+    createdAt: new Date().toISOString(),
+  };
+  const tenant = await getTenant(guildId);
+  const list = [...(tenant?.activityWatchList || [])];
+  list.push(entry);
+  await setTenant(guildId, { activityWatchList: list });
+  return entry;
+}
+
+/** @returns {Promise<ActivityWatchEntry[]>} */
+export async function getActivityWatchList(guildId) {
+  const tenant = await getTenant(guildId);
+  return Array.isArray(tenant?.activityWatchList) ? tenant.activityWatchList : [];
+}
+
+/**
+ * Remove by entry `id` (from /activity-watch list) or by token address (removes all rules for that token).
+ * @returns {Promise<number>} number removed
+ */
+export async function removeActivityWatchEntries(guildId, idOrToken) {
+  if (!guildId || !idOrToken || typeof idOrToken !== "string") return 0;
+  const raw = idOrToken.trim();
+  const tenant = await getTenant(guildId);
+  const list = [...(tenant?.activityWatchList || [])];
+  const byId = list.filter((e) => e && e.id === raw);
+  if (byId.length > 0) {
+    const next = list.filter((e) => e.id !== raw);
+    await setTenant(guildId, { activityWatchList: next });
+    return byId.length;
+  }
+  const addr = parseTokenAddress(raw);
+  if (addr) {
+    const next = list.filter((e) => e.tokenAddress !== addr);
+    const n = list.length - next.length;
+    if (n > 0) await setTenant(guildId, { activityWatchList: next });
+    return n;
+  }
+  return 0;
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} entryId
+ * @param {number} lastAlertAtMs
+ */
+export async function touchActivityWatchAlert(guildId, entryId, lastAlertAtMs) {
+  const tenant = await getTenant(guildId);
+  const list = [...(tenant?.activityWatchList || [])];
+  const i = list.findIndex((e) => e.id === entryId);
+  if (i === -1) return false;
+  list[i] = { ...list[i], lastAlertAtMs };
+  await setTenant(guildId, { activityWatchList: list });
+  return true;
+}
+
+/** Guild IDs that have at least one activity-watch rule. */
+export async function listGuildIdsWithActivityWatches() {
+  const tenants = await loadAll();
+  return Object.keys(tenants).filter((id) => {
+    const w = tenants[id]?.activityWatchList;
+    return Array.isArray(w) && w.length > 0;
+  });
 }

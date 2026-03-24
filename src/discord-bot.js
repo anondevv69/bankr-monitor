@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import "dotenv/config";
 /**
- * Discord bot: /alert-watchlist (wallets + keywords), /claim-watch, /setup, /lookup, /wallet-lookup.
+ * Discord bot: /alert-watchlist, /activity-watch, /claim-watch, /setup, /lookup, /wallet-lookup.
  * Runs the notify loop in the background.
  * Launch alerts are posted by the bot to DISCORD_ALERT_CHANNEL_ID or DISCORD_WATCH_ALERT_CHANNEL_ID (not webhook).
  *
@@ -39,6 +39,9 @@ import {
   getClaimWatchTokens,
   addClaimWatchToken,
   removeClaimWatchToken,
+  addActivityWatchEntry,
+  getActivityWatchList,
+  removeActivityWatchEntries,
   getClaimTokenChannels,
   addClaimTokenChannel,
   removeClaimTokenChannel,
@@ -84,6 +87,11 @@ import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
 import { handleTelegramGroupMessage } from "./telegram-group-handlers.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
+import {
+  runActivityWatchPoll,
+  summarizeActivityWatchThresholds,
+  resolveActivityWatchChannelId,
+} from "./activity-watch.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -426,6 +434,41 @@ async function registerCommands(appId) {
           )
       )
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("activity-watch")
+      .setDescription("Alert when a token crosses mcap or buy/sell/swap thresholds (Doppler indexer)")
+      .addSubcommand((s) =>
+        s
+          .setName("add")
+          .setDescription("Add a rule — set at least one threshold; posts to watch/claims/curated channel")
+          .addStringOption((o) => o.setName("token").setDescription("Bankr token 0x…ba3").setRequired(true))
+          .addStringOption((o) => o.setName("name").setDescription("Optional label").setRequired(false))
+          .addIntegerOption((o) => o.setName("mcap_usd_min").setDescription("Alert when mcap ≥ this USD").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_buys_15m").setDescription("Buys in ~15m (swap sample) ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_sells_15m").setDescription("Sells in ~15m ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_swaps_15m").setDescription("Total swaps in ~15m ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_buys_1h").setDescription("Buys in ~1h ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_sells_1h").setDescription("Sells in ~1h ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_buys_24h").setDescription("Buys in 24h ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_sells_24h").setDescription("Sells in 24h ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) => o.setName("min_trades_24h").setDescription("Trades in 24h ≥").setMinValue(1).setRequired(false))
+          .addIntegerOption((o) =>
+            o
+              .setName("cooldown_minutes")
+              .setDescription("Minutes between repeat alerts (default 15)")
+              .setMinValue(1)
+              .setMaxValue(1440)
+              .setRequired(false)
+          )
+      )
+      .addSubcommand((s) =>
+        s
+          .setName("remove")
+          .setDescription("Remove by entry id from list, or by token address (removes all rules for token)")
+          .addStringOption((o) => o.setName("id_or_token").setDescription("Entry id (uuid) or 0x…ba3").setRequired(true))
+      )
+      .addSubcommand((s) => s.setName("list").setDescription("List activity-watch rules"))
+      .toJSON(),
     ...(HIDE_DEPLOY_COMMAND ? [] : [
       new SlashCommandBuilder()
         .setName("deploy")
@@ -684,7 +727,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("BankrMonitor: wallet lookup, alert watchlist, claim-watch, setup, lookup" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
+      .setDescription("BankrMonitor: lookup, alert-watchlist, activity-watch, claim-watch, setup" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
       .toJSON(),
   ];
 
@@ -1583,6 +1626,12 @@ client.once("ready", async () => {
       );
     }
   }
+
+  const ACTIVITY_WATCH_POLL_MS = Math.max(30_000, parseInt(process.env.ACTIVITY_WATCH_POLL_MS || "60000", 10));
+  setInterval(() => {
+    runActivityWatchPoll(client).catch((e) => console.error("activity-watch poll:", e.message));
+  }, ACTIVITY_WATCH_POLL_MS);
+  console.log(`Activity watch: poll every ${ACTIVITY_WATCH_POLL_MS / 1000}s — /activity-watch`);
 });
 
 // Prune stale lookup cache entries
@@ -2021,7 +2070,7 @@ client.on("interactionCreate", async (interaction) => {
       color: 0x0052_ff,
       title: "BankrMonitor – How to use",
       description:
-        "**Alert watchlist** for launches, **claim-watch** for fee claims, **wallet lookup**, and **/lookup** for deployments." +
+        "**Alert watchlist** for launches, **activity-watch** for per-token mcap/activity thresholds, **claim-watch** for fee claims, **wallet lookup**, and **/lookup** for deployments." +
         (HIDE_DEPLOY_COMMAND ? "" : " You can also **deploy** Bankr tokens from Discord.") +
         " Data: Bankr API.",
       fields: [
@@ -2072,6 +2121,12 @@ client.on("interactionCreate", async (interaction) => {
           name: "💰 /claim-watch",
           value:
             "**Claim watchlist + lookups.** Set **Claims** in **/setup channels**. **add** — token (0x…ba3); **list** / **remove**; **check** — claimed? **wallet** — what this wallet claimed.",
+          inline: false,
+        },
+        {
+          name: "📈 /activity-watch",
+          value:
+            "**Per-token thresholds** (Doppler indexer + swap sample). **add** — set at least one: **mcap_usd_min**, or min **buys/sells/swaps** for ~15m, ~1h, or 24h. **list** / **remove** (id or token). Alerts post to **watch** → **claims** → **curated** → **all launches** channel. **cooldown_minutes** avoids spam. 15m/1h counts use up to 1000 recent swaps.",
           inline: false,
         },
         {
@@ -2543,6 +2598,102 @@ client.on("interactionCreate", async (interaction) => {
       }
       return;
     }
+  }
+
+  if (interaction.commandName === "activity-watch") {
+    const guildId = interaction.guildId ?? null;
+    const sub = interaction.options.getSubcommand();
+    const tenant = guildId ? await getTenant(guildId) : null;
+    if (!guildId) {
+      await interaction.reply({ content: "Use **/activity-watch** in a server.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const chId = resolveActivityWatchChannelId(tenant);
+    if (!tenant || !chId) {
+      await interaction.reply({
+        content:
+          "Set **/setup channels** first — need **watch**, **claims**, **curated**, or **all launches** so activity alerts have a channel.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    try {
+      if (sub === "list") {
+        const list = await getActivityWatchList(guildId);
+        if (list.length === 0) {
+          await interaction.reply({
+            content: "No **activity-watch** rules. Use **/activity-watch add** with at least one threshold.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        const lines = list.map(
+          (e) =>
+            `• **${e.label || `${e.tokenAddress.slice(0, 10)}…`}** · \`${e.tokenAddress}\`\n  id: \`${e.id}\`\n  ${summarizeActivityWatchThresholds(e)} · cooldown ${Math.round(e.cooldownSec / 60)}m`
+        );
+        await interaction.reply({
+          content: `**Activity watch** (${list.length})\n\n${lines.join("\n\n")}\n\n_15m/1h use the last 1000 swaps in 24h (sample). Very active pools may undercount._`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (sub === "remove") {
+        if (!canManageServer(interaction)) {
+          await interaction.reply({ content: "Only server admins can remove rules.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const raw = interaction.options.getString("id_or_token")?.trim() ?? "";
+        const n = await removeActivityWatchEntries(guildId, raw);
+        await interaction.reply({
+          content: n > 0 ? `Removed **${n}** rule(s).` : "Nothing matched. Use **/activity-watch list** for entry ids.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (sub === "add") {
+        if (!canManageServer(interaction)) {
+          await interaction.reply({ content: "Only server admins can add rules.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const token = interaction.options.getString("token")?.trim();
+        const addr = token && /^0x[a-fA-F0-9]{40}$/i.test(token) ? token.toLowerCase() : null;
+        if (!addr || !addr.endsWith("ba3")) {
+          await interaction.reply({ content: "Invalid token — use a Bankr address (0x…ba3).", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const cdMin = interaction.options.getInteger("cooldown_minutes");
+        const spec = {
+          tokenAddress: addr,
+          label: interaction.options.getString("name")?.trim() || null,
+          mcapUsdMin: interaction.options.getInteger("mcap_usd_min"),
+          minBuys15m: interaction.options.getInteger("min_buys_15m"),
+          minSells15m: interaction.options.getInteger("min_sells_15m"),
+          minSwaps15m: interaction.options.getInteger("min_swaps_15m"),
+          minBuys1h: interaction.options.getInteger("min_buys_1h"),
+          minSells1h: interaction.options.getInteger("min_sells_1h"),
+          minBuys24h: interaction.options.getInteger("min_buys_24h"),
+          minSells24h: interaction.options.getInteger("min_sells_24h"),
+          minTrades24h: interaction.options.getInteger("min_trades_24h"),
+        };
+        if (cdMin != null) spec.cooldownSec = Math.min(86400, Math.max(60, cdMin * 60));
+        const entry = await addActivityWatchEntry(guildId, spec);
+        if (!entry) {
+          await interaction.reply({
+            content: "Set **at least one** threshold: mcap, or min buys/sells/swaps for a window.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await interaction.reply({
+          content: `Added rule \`${entry.id}\`\nToken: \`${entry.tokenAddress}\`\n${summarizeActivityWatchThresholds(entry)}\nAlerts → <#${chId}> · cooldown **${Math.round(entry.cooldownSec / 60)}** min\n\n_15m/1h: swap sample. 24h: indexer bucket._`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    } catch (e) {
+      await interaction.reply({ content: `activity-watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return;
   }
 
   if (interaction.commandName !== "alert-watchlist") return;
