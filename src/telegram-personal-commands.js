@@ -2,7 +2,21 @@
  * Commands for Telegram private chat (personal DM bot layer).
  */
 
-import { resolveHandleToWallet, parseQuery, lookupByDeployerOrFee } from "./lookup-deployer.js";
+import {
+  resolveHandleToWallet,
+  parseQuery,
+  lookupByDeployerOrFee,
+  launchWallet,
+  getBankrWalletLaunchRoleCounts,
+} from "./lookup-deployer.js";
+import { fetchIndexerTradingSnapshot } from "./token-trend-card.js";
+import {
+  buildTokenDetailTelegramHtml,
+  buildPasteTokenFeesTelegramHtml,
+  buildTelegramTradeKeyboardMarkup,
+  getDeployerFeedCount,
+  getFeeRecipientFeedCount,
+} from "./notify.js";
 import { getTokenFees, formatUsd } from "./token-stats.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import {
@@ -122,6 +136,59 @@ export function formatTokenFeesPlain(out, tokenAddress) {
   return lines.join("\n");
 }
 
+/**
+ * Same enrichment as Discord paste (indexer snapshot + feed / Bankr role counts).
+ * @param {Awaited<ReturnType<typeof getTokenFees>>} out
+ * @param {string} [bankrApiKey]
+ */
+export async function buildTelegramTokenDetailOptions(out, bankrApiKey) {
+  const tokenAddress = out.tokenAddress;
+  if (!tokenAddress) return {};
+  const deployWallet = out.launch ? launchWallet(out.launch, "deployer") : null;
+  const [indexerSnap, deployFeedN, feeFeedN, bankrRole] = await Promise.all([
+    fetchIndexerTradingSnapshot(tokenAddress).catch(() => null),
+    deployWallet ? getDeployerFeedCount(deployWallet).catch(() => null) : Promise.resolve(null),
+    out.feeWallet ? getFeeRecipientFeedCount(out.feeWallet).catch(() => null) : Promise.resolve(null),
+    (async () => {
+      if (!bankrApiKey) return { bankrDeploy: null, bankrFee: null };
+      const d = deployWallet?.toLowerCase() ?? null;
+      const f = out.feeWallet?.toLowerCase() ?? null;
+      try {
+        if (d && f && d === f) {
+          const c = await getBankrWalletLaunchRoleCounts(d, { bankrApiKey });
+          return { bankrDeploy: c.asDeployer ?? null, bankrFee: c.asFeeRecipient ?? null };
+        }
+        const [cDep, cFee] = await Promise.all([
+          d ? getBankrWalletLaunchRoleCounts(d, { bankrApiKey }).catch(() => null) : null,
+          f && f !== d ? getBankrWalletLaunchRoleCounts(f, { bankrApiKey }).catch(() => null) : null,
+        ]);
+        return {
+          bankrDeploy: cDep?.asDeployer ?? null,
+          bankrFee: f && f !== d ? cFee?.asFeeRecipient ?? null : null,
+        };
+      } catch {
+        return { bankrDeploy: null, bankrFee: null };
+      }
+    })(),
+  ]);
+  const feedCountOpts = {};
+  if (bankrRole.bankrDeploy != null) feedCountOpts.bankrDeployCount = bankrRole.bankrDeploy;
+  else if (deployFeedN != null && deployFeedN >= 1) feedCountOpts.deployerFeedCount = deployFeedN;
+  if (bankrRole.bankrFee != null) feedCountOpts.bankrFeeRecipientCount = bankrRole.bankrFee;
+  else if (feeFeedN != null && feeFeedN >= 1) feedCountOpts.feeRecipientFeedCount = feeFeedN;
+  return { ...feedCountOpts, indexerSnapshot: indexerSnap };
+}
+
+/** Discord-parity token card for Telegram (HTML + GMGN/BB buttons). */
+export async function sendTelegramTokenDetailReply(send, out, tokenAddress, bankrApiKey) {
+  const opts = await buildTelegramTokenDetailOptions(out, bankrApiKey);
+  let html = buildTokenDetailTelegramHtml(out, tokenAddress, opts);
+  const feesHtml = buildPasteTokenFeesTelegramHtml(out);
+  if (feesHtml) html += "\n\n" + feesHtml;
+  const keyboard = buildTelegramTradeKeyboardMarkup(tokenAddress);
+  await send(html, { parse_mode: "HTML", reply_markup: keyboard ?? undefined });
+}
+
 export async function runTokenLookupForChat(send, addr, bankrApiKey) {
   const tokenAddress = addr.toLowerCase();
   if (!isBankrTokenAddress(tokenAddress)) {
@@ -131,7 +198,7 @@ export async function runTokenLookupForChat(send, addr, bankrApiKey) {
   await send("Fetching token…");
   try {
     const out = await getTokenFees(tokenAddress, { bankrApiKey });
-    await send(formatTokenFeesPlain(out, tokenAddress));
+    await sendTelegramTokenDetailReply(send, out, tokenAddress, bankrApiKey);
   } catch (e) {
     await send(`Token lookup failed: ${e.message}`);
   }

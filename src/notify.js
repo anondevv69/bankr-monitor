@@ -540,15 +540,26 @@ export function buildTradeLinks(tokenAddress) {
   return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
 }
 
-/** Inline keyboard for Telegram: GMGN and BB only (no FCW). Returns null if invalid token. */
-function telegramTradeKeyboard(tokenAddress) {
+/** Inline keyboard: GMGN, BB, FCW (same deep links as Discord embed trade line). */
+export function buildTelegramTradeKeyboardMarkup(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return null;
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
   return {
-    inline_keyboard: [[{ text: "🔵 GMGN", url: gmgnUrl }, { text: "🔥 BB", url: bbUrl }]],
+    inline_keyboard: [
+      [
+        { text: "🔵 GMGN", url: gmgnUrl },
+        { text: "🔥 BB", url: bbUrl },
+        { text: "🟣 FCW", url: fcwUrl },
+      ],
+    ],
   };
+}
+
+function telegramTradeKeyboard(tokenAddress) {
+  return buildTelegramTradeKeyboardMarkup(tokenAddress);
 }
 
 /** Show exact count up to this value; above it show "5+" (wallet / X / Farcaster launch counts). */
@@ -716,6 +727,300 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   };
   if (img) embed.thumbnail = { url: img };
   return embed;
+}
+
+const TELEGRAM_HTML_MAX = 4096;
+
+/** Escape text for Telegram HTML parse_mode. */
+export function escapeTelegramHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function formatDeployerOrFeeForTelegramHtml(obj) {
+  if (!obj) return "—";
+  const wallet = obj.walletAddress ?? obj.wallet ?? null;
+  const parts = [];
+  if (wallet) {
+    const wl = walletLink(wallet);
+    parts.push(
+      `<b>Wallet:</b> ${wl ? `<a href="${escapeTelegramHtml(wl)}">${escapeTelegramHtml(wallet)}</a>` : `<code>${escapeTelegramHtml(wallet)}</code>`}`
+    );
+  }
+  const xUser = obj.xUsername ?? obj.x ?? null;
+  if (xUser) {
+    const u = String(xUser).replace(/^@/, "");
+    const xp = xProfileUrl(xUser);
+    parts.push(`<b>X:</b> <a href="${escapeTelegramHtml(xp)}">@${escapeTelegramHtml(u)}</a>`);
+  }
+  const fc = obj.farcasterUsername ?? obj.farcaster ?? obj.fcUsername ?? null;
+  if (fc) {
+    const fp = farcasterProfileUrl(fc);
+    parts.push(`<b>Farcaster:</b> <a href="${escapeTelegramHtml(fp)}">${escapeTelegramHtml(fc)}</a>`);
+  }
+  return parts.length ? parts.join("\n") : "—";
+}
+
+/** Same destinations as {@link buildTradeLinks} but for Telegram HTML. */
+export function buildTradeLinksHtml(tokenAddress) {
+  const addr = (tokenAddress || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
+  const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
+  const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
+  return (
+    `💱 <b>Trade</b> ` +
+    `<a href="${escapeTelegramHtml(gmgnUrl)}">GMGN</a> · ` +
+    `<a href="${escapeTelegramHtml(bbUrl)}">BB</a> · ` +
+    `<a href="${escapeTelegramHtml(fcwUrl)}">FCW</a>`
+  );
+}
+
+function formatClaimableOneLinerTelegram(hookFees, symbol) {
+  const DECIMALS = 18;
+  const wethAmount = Number(hookFees.beneficiaryFees0) / 10 ** DECIMALS;
+  const tokenAmount = Number(hookFees.beneficiaryFees1) / 10 ** DECIMALS;
+  const hasWeth = hookFees.beneficiaryFees0 > 0n;
+  const hasToken = hookFees.beneficiaryFees1 > 0n;
+  if (!hasWeth && !hasToken) return null;
+  function fmtToken(n) {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(0)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return n.toFixed(4);
+  }
+  const parts = [];
+  if (hasWeth) parts.push(`${wethAmount.toFixed(3)} WETH`);
+  if (hasToken) parts.push(`${fmtToken(tokenAmount)} ${symbol || "token"}`);
+  return parts.length ? `${parts.join(" + ")} (57% creator share)` : null;
+}
+
+/** Fee block for Telegram (HTML), aligned with Discord paste embed fees field. */
+export function buildPasteTokenFeesTelegramHtml(out) {
+  const feeParts = [];
+  const DEC = 18;
+  const claimableLine =
+    out.hookFees && (out.hookFees.beneficiaryFees0 > 0n || out.hookFees.beneficiaryFees1 > 0n)
+      ? formatClaimableOneLinerTelegram(out.hookFees, out.symbol)
+      : null;
+  const hasIndexerFees =
+    out.cumulatedFees &&
+    (out.cumulatedFees.token0Fees != null ||
+      out.cumulatedFees.token1Fees != null ||
+      out.cumulatedFees.totalFeesUsd != null);
+  const fmtT = (n) =>
+    n >= 1e9 ? `${(n / 1e9).toFixed(0)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(0)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(4);
+
+  if (hasIndexerFees) {
+    const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
+    const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
+    if (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null) {
+      feeParts.push(`<b>Historical accrued:</b> WETH ${w.toFixed(4)} • ${escapeTelegramHtml(out.symbol ?? "Token")} ${fmtT(t)}`);
+    }
+    if (out.cumulatedFees.totalFeesUsd != null && out.formatUsd) {
+      const usd = Number(out.cumulatedFees.totalFeesUsd);
+      if (!Number.isNaN(usd) && usd >= 0 && usd < 1e12) {
+        feeParts.push(`<b>Total (USD):</b> ${escapeTelegramHtml(out.formatUsd(out.cumulatedFees.totalFeesUsd) ?? String(out.cumulatedFees.totalFeesUsd))}`);
+      }
+    }
+  }
+
+  if (claimableLine) feeParts.push(`<b>Claimable:</b> ${escapeTelegramHtml(claimableLine)}`);
+
+  const ev = out.claimedFromEvents;
+  const eps = 1e-9;
+  if (ev != null) {
+    const claimedW = ev.claimedWeth ?? 0;
+    const claimedT = ev.claimedToken ?? 0;
+    if (claimedW > eps || claimedT > eps) {
+      feeParts.push(`<b>Already claimed (on-chain):</b> WETH ${claimedW.toFixed(4)} • Token ${fmtT(claimedT)}`);
+    }
+    if (ev.count > 0) {
+      feeParts.push("<b>Fee recipient has claimed for this pool:</b> Yes");
+      if (out.lastClaimTxHash) {
+        const txUrl = `https://basescan.org/tx/${out.lastClaimTxHash}`;
+        feeParts.push(`<b>Claim tx:</b> <a href="${escapeTelegramHtml(txUrl)}">BaseScan</a>`);
+      }
+    }
+  }
+
+  if (hasIndexerFees && out.hookFees && (out.cumulatedFees.token0Fees != null || out.cumulatedFees.token1Fees != null)) {
+    const w = Number(out.cumulatedFees.token0Fees ?? 0) / 10 ** DEC;
+    const t = Number(out.cumulatedFees.token1Fees ?? 0) / 10 ** DEC;
+    const cW = Number(out.hookFees.beneficiaryFees0) / 10 ** DEC;
+    const cT = Number(out.hookFees.beneficiaryFees1) / 10 ** DEC;
+    const totalAccrued = w + t;
+    const totalClaimable = cW + cT;
+    if (ev != null && ev.count > 0) {
+      if (totalClaimable < eps) feeParts.push("<b>Status:</b> ALL CLAIMED");
+      else if (totalClaimable < totalAccrued - eps) feeParts.push("<b>Status:</b> PARTIALLY CLAIMED");
+      else feeParts.push("<b>Status:</b> UNCLAIMED");
+    } else if (totalAccrued >= eps) {
+      if (totalClaimable >= eps) feeParts.push("<b>Status:</b> UNCLAIMED");
+      else if (totalClaimable < eps) feeParts.push("<b>Status:</b> ALL CLAIMED");
+    }
+  }
+
+  const retrievedAt = new Date().toLocaleString("en-US", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "America/New_York",
+  });
+  if (feeParts.length > 0) {
+    feeParts.push(`<i>Data retrieved: ${escapeTelegramHtml(retrievedAt)} ET</i>`);
+    return `<b>Fees</b>\n${feeParts.join("\n")}`;
+  }
+  if (out.launch) {
+    const lines = [];
+    if (out.estimatedCreatorFeesUsd != null && out.estimatedCreatorFeesUsd > 0 && out.formatUsd) {
+      lines.push(
+        `<b>Estimated creator fees</b> (57% of 1.2% of volume): ${escapeTelegramHtml(out.formatUsd(out.estimatedCreatorFeesUsd) ?? "—")}`
+      );
+    }
+    if (lines.length === 0) lines.push("No fee data yet recorded.");
+    lines.push(`<i>Data retrieved: ${escapeTelegramHtml(retrievedAt)} ET</i>`);
+    return `<b>Fees</b>\n${lines.join("\n")}`;
+  }
+  return "";
+}
+
+/**
+ * Rich Telegram HTML for a token (same data as {@link buildTokenDetailEmbed}).
+ * @param {object} out - getTokenFees result
+ * @param {string} tokenAddress
+ * @param {Parameters<typeof buildTokenDetailEmbed>[2]} options
+ */
+export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
+  if (out.error && !out.launch) {
+    return `<b>Token</b>\n${escapeTelegramHtml(out.error)}`;
+  }
+  const launchUrl = bankrLaunchUrl(tokenAddress);
+  const name = out.name ?? "—";
+  const symbol = out.symbol ?? "—";
+  const launch = out.launch ?? null;
+  const deployFeed = options.bankrDeployCount ?? options.deployerFeedCount;
+  const feeFeed = options.bankrFeeRecipientCount ?? options.feeRecipientFeedCount;
+  const idx = options.indexerSnapshot;
+
+  const lines = [];
+  lines.push(`<b>Bankr • ${escapeTelegramHtml(name)} ($${escapeTelegramHtml(symbol)})</b>`);
+  lines.push("");
+  lines.push("<b>Token</b>");
+  lines.push(`<b>Chain:</b> Base`);
+  lines.push(`<b>CA:</b> <code>${escapeTelegramHtml(tokenAddress)}</code>`);
+  lines.push(
+    `<b>Bankr:</b> <a href="${escapeTelegramHtml(launchUrl)}">View Launch</a>`
+  );
+
+  if (out.dexMetrics?.marketCap != null && out.formatUsd) {
+    const mc = out.formatUsd(out.dexMetrics.marketCap);
+    if (mc) lines.push(`<b>Market Cap:</b> ${escapeTelegramHtml(mc)}`);
+  }
+  const dexVolPositive = out.volumeUsd != null && Number(out.volumeUsd) > 0;
+  if (dexVolPositive && out.formatUsd) {
+    const vol = out.formatUsd(out.volumeUsd);
+    if (vol) lines.push(`<b>Volume:</b> ${escapeTelegramHtml(vol)}`);
+  }
+  if (idx?.vol24h > 0 && out.formatUsd) {
+    const iv = out.formatUsd(idx.vol24h);
+    const showIndexerVol = !dexVolPositive;
+    if (iv && showIndexerVol) {
+      const v1 = idx.vol1h > 0 ? ` · 1h: ${out.formatUsd(idx.vol1h)}` : "";
+      lines.push(`<b>Volume:</b> ${escapeTelegramHtml(iv + v1)}`);
+    }
+  }
+  const trades = out.dexMetrics?.trades24h;
+  const dexHasTrades = trades && (trades.buys > 0 || trades.sells > 0);
+  if (dexHasTrades) {
+    lines.push(`<b>24H:</b> 🟢 ${trades.buys} buys • 🔴 ${trades.sells} sells`);
+  } else if (idx && idx.buyTx24h + idx.sellTx24h > 0) {
+    lines.push(`<b>24H:</b> 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells`);
+  }
+
+  lines.push("");
+  let deployerVal = formatDeployerOrFeeForTelegramHtml(launch?.deployer);
+  const deployDisp = formatBankrRoleCountDisplay(deployFeed);
+  if (deployDisp != null) {
+    deployerVal =
+      deployerVal === "—"
+        ? `<b>Deploys:</b> ${escapeTelegramHtml(deployDisp)}`
+        : `${deployerVal}\n<b>Deploys:</b> ${escapeTelegramHtml(deployDisp)}`;
+  }
+  let feeRecipientVal = formatDeployerOrFeeForTelegramHtml(launch?.feeRecipient);
+  const feeDisp = formatBankrRoleCountDisplay(feeFeed);
+  if (feeDisp != null) {
+    feeRecipientVal =
+      feeRecipientVal === "—"
+        ? `<b>Recipient:</b> ${escapeTelegramHtml(feeDisp)}`
+        : `${feeRecipientVal}\n<b>Recipient:</b> ${escapeTelegramHtml(feeDisp)}`;
+  }
+  lines.push("<b>Deployer</b>");
+  lines.push(deployerVal);
+  lines.push("");
+  lines.push("<b>Fee Recipient</b>");
+  lines.push(feeRecipientVal);
+
+  if (launch?.tweetUrl) {
+    lines.push("");
+    lines.push(`<b>Tweet:</b> <a href="${escapeTelegramHtml(launch.tweetUrl)}">link</a>`);
+  }
+  const web = launch?.websiteUrl || launch?.website;
+  if (web) {
+    lines.push("");
+    lines.push(`<b>Website:</b> <a href="${escapeTelegramHtml(web)}">${escapeTelegramHtml(web)}</a>`);
+  }
+
+  if (idx && out.formatUsd) {
+    const fmt = out.formatUsd;
+    const sl = [];
+    sl.push("📊 <b>Token Stats</b>");
+    const priceStr =
+      idx.price > 0 && idx.price < 0.01
+        ? `$${idx.price.toExponential(2)}`
+        : idx.price > 0
+          ? `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`
+          : "—";
+    sl.push(`├ Price: ${escapeTelegramHtml(priceStr)} (${escapeTelegramHtml(formatTrendPctLine(idx.priceChange24hPct))})`);
+    if (idx.mcapUsd > 0) sl.push(`├ MC: ${escapeTelegramHtml(fmt(idx.mcapUsd))}`);
+    sl.push(
+      `├ Vol: ${idx.vol24h > 0 ? escapeTelegramHtml(fmt(idx.vol24h)) : "—"}${idx.vol1h > 0 ? ` (1h: ${escapeTelegramHtml(fmt(idx.vol1h))})` : ""}`
+    );
+    if (idx.lpUsd > 0) sl.push(`└ LP: ${escapeTelegramHtml(fmt(idx.lpUsd))}`);
+    else sl.push("└ LP: —");
+    sl.push("");
+    sl.push("📈 <b>Price Action</b>");
+    sl.push(
+      `├ 1H: ${escapeTelegramHtml(formatTrendPctLine(idx.change1hPct))} (B:${idx.buys1h}/S:${idx.sells1h})`
+    );
+    sl.push(`├ 2H: ${escapeTelegramHtml(formatTrendPctLine(idx.change2hPct))}`);
+    sl.push(`├ 4H: ${escapeTelegramHtml(formatTrendPctLine(idx.change4hPct))}`);
+    sl.push("");
+    sl.push("👥 <b>Trading Activity (24H)</b>");
+    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "N/A";
+    sl.push(`├ Traders: ${escapeTelegramHtml(tr)}`);
+    sl.push(`├ Trades: ${idx.trades24h > 0 ? idx.trades24h : "—"}`);
+    const b = idx.buyTx24h;
+    const se = idx.sellTx24h;
+    const total = b + se;
+    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
+    sl.push(`└ B/S: ${pctB}% (${b}/${se})`);
+    if (idx.trendLabel && idx.trendLabel !== "NOT_TRENDING") {
+      sl.push("");
+      sl.push(`<b>Trend:</b> ${escapeTelegramHtml(idx.trendLabel)} · ${idx.trendScore}/100`);
+    }
+    lines.push("");
+    lines.push("<b>Stats</b>");
+    lines.push(sl.join("\n"));
+  }
+
+  lines.push("");
+  lines.push(buildTradeLinksHtml(tokenAddress));
+  lines.push("");
+  lines.push(`<i>BankrMonitor · bankr.bot</i>`);
+
+  let text = lines.join("\n");
+  if (text.length > TELEGRAM_HTML_MAX) text = `${text.slice(0, TELEGRAM_HTML_MAX - 20)}…`;
+  return text;
 }
 
 /** Build launch embed (for webhook or bot). Exported for discord-bot. */
@@ -1278,7 +1583,13 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const isNotifyCli =
+  typeof process !== "undefined" &&
+  process.argv[1] &&
+  /(?:^|[\\/])notify\.js$/.test(String(process.argv[1]).replace(/\\/g, "/"));
+if (isNotifyCli) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

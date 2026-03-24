@@ -6,7 +6,7 @@
 import { getTokenFees } from "./token-stats.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import {
-  formatTokenFeesPlain,
+  sendTelegramTokenDetailReply,
   runTelegramWalletLookupCommand,
   runTelegramLookupCommand,
   runTelegramTokenSlashCommand,
@@ -174,9 +174,9 @@ export async function handleTelegramGroupMessage(p) {
   }
 
   try {
-    const out = await getTokenFees(addr, { bankrApiKey: pickTelegramBankrApiKeyRoundRobin() });
-    const msg = formatTokenFeesPlain(out, addr);
-    await send(msg);
+    const bankrApiKey = pickTelegramBankrApiKeyRoundRobin();
+    const out = await getTokenFees(addr, { bankrApiKey });
+    await sendTelegramTokenDetailReply(send, out, addr, bankrApiKey);
   } catch (e) {
     await send(`Token lookup failed: ${e.message}`);
   }
