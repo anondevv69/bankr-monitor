@@ -11,6 +11,18 @@ import {
   listGuildIdsWithActivityWatches,
 } from "./tenant-store.js";
 import { formatUsd } from "./token-stats.js";
+import {
+  getAllPersonalUsers,
+  isPersonalDmsEnabled,
+  isChatAllowedForPersonalFeatures,
+  touchPersonalActivityAlert,
+} from "./telegram-personal-store.js";
+import {
+  sendTelegramHtmlToChat,
+  escapeTelegramHtml,
+  buildTelegramTradeKeyboardMarkup,
+  buildTradeLinks,
+} from "./notify.js";
 
 /** @param {import("./tenant-store.js").ActivityWatchEntry} entry */
 export function summarizeActivityWatchThresholds(entry) {
@@ -69,6 +81,30 @@ export function evaluateActivityWatchConditions(entry, m) {
   return reasons;
 }
 
+/** Turn Discord-style **bold** segments into safe Telegram HTML. */
+function activityReasonLinesToTelegramHtml(reasons) {
+  return reasons.map((line) => {
+    const out = [];
+    let rest = line;
+    while (rest.length > 0) {
+      const open = rest.indexOf("**");
+      if (open === -1) {
+        out.push(escapeTelegramHtml(rest));
+        break;
+      }
+      if (open > 0) out.push(escapeTelegramHtml(rest.slice(0, open)));
+      const close = rest.indexOf("**", open + 2);
+      if (close === -1) {
+        out.push(escapeTelegramHtml(rest.slice(open)));
+        break;
+      }
+      out.push("<b>", escapeTelegramHtml(rest.slice(open + 2, close)), "</b>");
+      rest = rest.slice(close + 2);
+    }
+    return out.join("");
+  });
+}
+
 function metricsSnapshotLines(m) {
   return [
     `MCap: ${formatUsd(m.mcapUsd) ?? "—"} · Vol 1h/24h: ${formatUsd(m.vol1hUsd) ?? "—"} / ${formatUsd(m.vol24hUsd) ?? "—"}`,
@@ -89,6 +125,61 @@ export function resolveActivityWatchChannelId(tenant) {
     tenant.allLaunchesChannelId ||
     null
   );
+}
+
+/** Poll personal Telegram watchlist rows with type "activity" (same interval as Discord /activity-watch). */
+export async function runPersonalActivityWatchPoll() {
+  if (!isPersonalDmsEnabled() || !process.env.TELEGRAM_BOT_TOKEN) return;
+  const users = await getAllPersonalUsers();
+  const fetchOpts = {};
+  for (const user of users) {
+    if (!isChatAllowedForPersonalFeatures(user.chatId)) continue;
+    const rows = (user.watchlist || []).filter((e) => e?.type === "activity" && e.activity && e.value);
+    for (const row of rows) {
+      const entry = row.activity;
+      const tokenAddress = row.value;
+      const now = Date.now();
+      if (entry.lastAlertAtMs != null && now - entry.lastAlertAtMs < entry.cooldownSec * 1000) continue;
+      let m;
+      try {
+        m = await fetchTokenActivityWatchMetrics(tokenAddress, fetchOpts);
+      } catch {
+        continue;
+      }
+      if (!m) continue;
+      const reasons = evaluateActivityWatchConditions(entry, m);
+      if (reasons.length === 0) continue;
+
+      const launchUrl = `https://bankr.bot/launches/${tokenAddress}`;
+      const title = escapeTelegramHtml(m.label || "Token");
+      const ca = escapeTelegramHtml(tokenAddress);
+      const htmlReasons = activityReasonLinesToTelegramHtml(reasons);
+      const snap = metricsSnapshotLines(m)
+        .split("\n")
+        .map((ln) => escapeTelegramHtml(ln))
+        .join("\n");
+      const html = [
+        `<b>📈 Activity watch</b>`,
+        `<b>${title}</b> <code>${ca}</code>`,
+        "",
+        "<b>Triggered:</b>",
+        ...htmlReasons.map((r) => `• ${r}`),
+        "",
+        `<b>Snapshot</b>`,
+        snap,
+        "",
+        `<a href="${escapeTelegramHtml(launchUrl)}">Bankr launch</a>`,
+        `<i>Cooldown: ${escapeTelegramHtml(String(Math.round(entry.cooldownSec / 60)))}m · /activity remove</i>`,
+      ].join("\n");
+
+      const keyboard = buildTelegramTradeKeyboardMarkup(tokenAddress);
+      await sendTelegramHtmlToChat(user.chatId, html, {
+        skipAllowedCheck: true,
+        reply_markup: keyboard ?? undefined,
+      });
+      await touchPersonalActivityAlert(user.chatId, tokenAddress, now);
+    }
+  }
 }
 
 /**
@@ -133,7 +224,10 @@ export async function runActivityWatchPoll(client) {
         .setDescription(
           `**${m.label || "Token"}** · \`${entry.tokenAddress}\`\n\n**Triggered:**\n${reasons.map((r) => `• ${r}`).join("\n")}`
         )
-        .addFields({ name: "Snapshot", value: metricsSnapshotLines(m).slice(0, 1024) })
+        .addFields(
+          { name: "\u200b", value: buildTradeLinks(entry.tokenAddress), inline: false },
+          { name: "Snapshot", value: metricsSnapshotLines(m).slice(0, 1024) }
+        )
         .setURL(`https://bankr.bot/launches/${entry.tokenAddress}`)
         .setFooter({ text: `id: ${entry.id} · /activity-watch remove` });
 
@@ -141,4 +235,6 @@ export async function runActivityWatchPoll(client) {
       await touchActivityWatchAlert(guildId, entry.id, now);
     }
   }
+
+  await runPersonalActivityWatchPoll().catch((e) => console.error("personal activity-watch:", e.message));
 }

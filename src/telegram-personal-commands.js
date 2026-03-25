@@ -27,12 +27,64 @@ import {
   addWatchlistEntry,
   removeWatchlistEntry,
   updatePersonalSettings,
+  addPersonalActivityWatch,
+  removePersonalActivityWatch,
   TELEGRAM_PERSONAL_WATCHLIST_MAX,
 } from "./telegram-personal-store.js";
+import { summarizeActivityWatchThresholds } from "./activity-watch.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
 
 /** Max token rows per /lookup reply (Telegram ~4k limit). */
 const TELEGRAM_LOOKUP_MAX_ROWS = Math.min(Math.max(parseInt(process.env.TELEGRAM_LOOKUP_MAX_ROWS || "15", 10), 5), 35);
+
+function parsePositiveInt(raw) {
+  const n = Math.trunc(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n;
+}
+
+/** After subcommand word: `0x…ba3 mcap=50000 b15=10 cd=15` (cd = cooldown minutes, default 15). */
+function parseActivityAddRest(rest) {
+  const t = String(rest || "").trim();
+  const m = t.match(/0x[a-fA-F0-9]{40}/i);
+  const addr = m ? m[0].toLowerCase() : null;
+  const withoutAddr = m ? t.replace(m[0], " ").trim() : t;
+  const tokens = withoutAddr.split(/\s+/).filter(Boolean);
+  const kv = {};
+  for (const tok of tokens) {
+    const eq = tok.indexOf("=");
+    if (eq <= 0) continue;
+    const k = tok.slice(0, eq).toLowerCase();
+    kv[k] = tok.slice(eq + 1);
+  }
+  return { addr, kv };
+}
+
+function buildActivityRuleFromKv(kv) {
+  const pickInt = (...keys) => {
+    for (const k of keys) {
+      const raw = kv[k];
+      if (raw == null || raw === "") continue;
+      const n = parsePositiveInt(raw);
+      if (n != null) return n;
+    }
+    return null;
+  };
+  const rule = {
+    mcapUsdMin: pickInt("mcap", "mcap_usd_min"),
+    minBuys15m: pickInt("b15", "buys_15m", "min_buys_15m"),
+    minSells15m: pickInt("s15", "sells_15m", "min_sells_15m"),
+    minSwaps15m: pickInt("sw15", "swaps_15m", "min_swaps_15m"),
+    minBuys1h: pickInt("b1h", "buys_1h", "min_buys_1h"),
+    minSells1h: pickInt("s1h", "sells_1h", "min_sells_1h"),
+    minBuys24h: pickInt("b24", "buys_24h", "min_buys_24h"),
+    minSells24h: pickInt("s24", "sells_24h", "min_sells_24h"),
+    minTrades24h: pickInt("tr24", "trades_24h", "min_trades_24h"),
+  };
+  const cdMin = pickInt("cd", "cooldown", "cooldown_minutes");
+  if (cdMin != null) rule.cooldownSec = Math.min(1440, cdMin) * 60;
+  return rule;
+}
 
 /** Strip @BotName suffix from /command@bot */
 function parseCommandLine(text) {
@@ -299,6 +351,91 @@ export async function handlePersonalTelegramCommand(ctx) {
     return;
   }
 
+  if (cmd === "/activity") {
+    await registerPersonalUser(chatId);
+    const tail = rest.trim();
+    const parts = tail.split(/\s+/);
+    const sub = (parts[0] || "").toLowerCase();
+    const subRest = parts.slice(1).join(" ").trim();
+
+    if (!sub || sub === "help") {
+      await send(
+        [
+          "<b>Activity watch</b> (counts as 1 of your 5 watch items; DMs when thresholds hit)",
+          "",
+          "<code>/activity add &lt;0x…ba3&gt; mcap=&lt;usd&gt; b15=&lt;n&gt; s15=&lt;n&gt; sw15=&lt;n&gt; b1h=&lt;n&gt; s1h=&lt;n&gt; b24=&lt;n&gt; s24=&lt;n&gt; tr24=&lt;n&gt; cd=&lt;minutes&gt;</code>",
+          "Set <b>at least one</b> threshold. <code>cd</code> = minutes between repeat alerts (default 15).",
+          "",
+          "<code>/activity list</code>",
+          "<code>/activity remove &lt;0x…ba3&gt;</code>",
+          "",
+          "<i>Same metrics as Discord /activity-watch (Doppler indexer). 15m/1h = swap sample.</i>",
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    if (sub === "list") {
+      const u = await getPersonalUser(chatId);
+      const act = (u?.watchlist || []).filter((e) => e.type === "activity" && e.activity);
+      if (act.length === 0) {
+        await send("No activity watches. Use /activity add …");
+        return;
+      }
+      const lines = act.map((e) => {
+        const summ = summarizeActivityWatchThresholds(e.activity);
+        const cd = Math.round(e.activity.cooldownSec / 60);
+        return `• <code>${e.value}</code>\n  ${summ} · cd ${cd}m`;
+      });
+      await send(`<b>Activity watches</b> (${act.length})\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" });
+      return;
+    }
+
+    if (sub === "remove") {
+      const m = subRest.match(/0x[a-fA-F0-9]{40}/i);
+      if (!m) {
+        await send("Usage: /activity remove <0x…ba3>");
+        return;
+      }
+      const r = await removePersonalActivityWatch(chatId, m[0]);
+      await send(r.ok ? "Removed activity watch for that token." : "No activity rule for that token.");
+      return;
+    }
+
+    if (sub === "add") {
+      const { addr, kv } = parseActivityAddRest(subRest);
+      if (!addr || !isBankrTokenAddress(addr)) {
+        await send("Need a Bankr token address (0x…ba3) or URL containing it, plus key=value thresholds.");
+        return;
+      }
+      const rule = buildActivityRuleFromKv(kv);
+      const r = await addPersonalActivityWatch(chatId, addr, rule);
+      if (!r.ok) {
+        if (r.error === "LIMIT") {
+          return send(`Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items. Remove one with /remove or /activity remove.`);
+        }
+        if (r.error === "DUPLICATE_ACTIVITY") {
+          return send("You already have an activity watch for this token. /activity remove <0x…> first.");
+        }
+        if (r.error === "NO_THRESHOLDS") {
+          return send("Set at least one threshold (e.g. mcap=30000 or b15=5). See /activity help.");
+        }
+        if (r.error === "BAD_TOKEN") {
+          return send("Invalid token — use a Bankr address (0x…ba3).");
+        }
+        return send("Could not add activity watch.");
+      }
+      const a = r.user?.watchlist?.find((x) => x.type === "activity" && x.value === addr)?.activity;
+      const summ = a ? summarizeActivityWatchThresholds(a) : "";
+      const cd = a ? Math.round(a.cooldownSec / 60) : 15;
+      return send(`Added activity watch.\n${addr}\n${summ}\nCooldown: ${cd} min\n\nPoll uses ACTIVITY_WATCH_POLL_MS (same as Discord).`);
+    }
+
+    await send("Unknown subcommand. Try /activity help");
+    return;
+  }
+
   // Lone Bankr CA in a DM → token lookup (no /start required)
   const loneCa = trimmed.match(/^(0x[a-fA-F0-9]{40})$/i);
   if (loneCa && isBankrTokenAddress(loneCa[1])) {
@@ -323,8 +460,9 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/walletlookup <0x | @handle | URL> — resolve X/Farcaster to wallet only",
         "/lookup [deployer|fee|both] <0x | @handle | URL> — Bankr tokens for that wallet or account",
         "/token <0x…ba3 | Bankr launch URL>",
+        "/activity — mcap / buy-sell-swap thresholds (1 slot; see /activity help)",
         "",
-        `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items.`,
+        `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items (wallet, keyword, token, or activity).`,
       ].join("\n")
     );
     return;
@@ -414,8 +552,15 @@ export async function handlePersonalTelegramCommand(ctx) {
     const u = await getPersonalUser(chatId);
     const list = u?.watchlist || [];
     if (list.length === 0) return send("Watchlist empty.");
-    const lines = list.map((e) => `• ${e.type}: ${e.value}`);
-    return send(lines.join("\n"));
+    const lines = list.map((e) => {
+      if (e.type === "activity" && e.activity) {
+        const summ = summarizeActivityWatchThresholds(e.activity);
+        const cd = Math.round(e.activity.cooldownSec / 60);
+        return `• activity: ${e.value}\n  ${summ} · cd ${cd}m`;
+      }
+      return `• ${e.type}: ${e.value}`;
+    });
+    return send(lines.join("\n\n"));
   }
 
   if (cmd === "/walletlookup" || cmd === "/wallet") {

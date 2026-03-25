@@ -5,11 +5,27 @@
 
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { dirname, join } from "path";
+import { isBankrTokenAddress } from "./bankr-token.js";
 
 const FILE = process.env.TELEGRAM_PERSONAL_USERS_FILE || join(process.cwd(), ".telegram-personal-users.json");
 export const TELEGRAM_PERSONAL_WATCHLIST_MAX = 5;
 
-/** @typedef {{ type: 'wallet'|'keyword'|'token', value: string }} WatchEntry */
+/**
+ * @typedef {{
+ *   mcapUsdMin?: number|null,
+ *   minBuys15m?: number|null,
+ *   minSells15m?: number|null,
+ *   minSwaps15m?: number|null,
+ *   minBuys1h?: number|null,
+ *   minSells1h?: number|null,
+ *   minBuys24h?: number|null,
+ *   minSells24h?: number|null,
+ *   minTrades24h?: number|null,
+ *   cooldownSec: number,
+ *   lastAlertAtMs?: number|null,
+ * }} PersonalActivityRule */
+
+/** @typedef {{ type: 'wallet'|'keyword'|'token'|'activity', value: string, activity?: PersonalActivityRule }} WatchEntry */
 
 /** @typedef {{
  *   chatId: string,
@@ -93,6 +109,7 @@ export function userToWatchListSets(user) {
     if (e.type === "wallet") wallet.add(v);
     else if (e.type === "keyword") keywords.add(v);
     else if (e.type === "token") tokenAddresses.add(v);
+    // type "activity" — threshold DMs only; does not match launches/claims as token
   }
   return {
     x: new Set(),
@@ -183,9 +200,112 @@ export async function removeWatchlistEntry(chatId, valueRaw) {
     const u = users.find((x) => x.chatId === id);
     if (!u) return { ok: false, error: "NOUSER" };
     const before = u.watchlist.length;
-    u.watchlist = u.watchlist.filter((x) => String(x.value).trim().toLowerCase() !== needle);
+    // Do not remove type "activity" here — use /activity remove <0x> so token+activity can coexist
+    u.watchlist = u.watchlist.filter((x) => {
+      if (String(x.value).trim().toLowerCase() !== needle) return true;
+      return x.type === "activity";
+    });
     await saveUsers(users);
     return { ok: u.watchlist.length < before, user: u };
+  });
+}
+
+function normAddr40(s) {
+  if (!s || typeof s !== "string") return null;
+  const t = s.trim().toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(t) ? t : null;
+}
+
+function personalActivityHasAnyThreshold(a) {
+  return !!(
+    (a.mcapUsdMin != null && a.mcapUsdMin > 0) ||
+    (a.minBuys15m != null && a.minBuys15m > 0) ||
+    (a.minSells15m != null && a.minSells15m > 0) ||
+    (a.minSwaps15m != null && a.minSwaps15m > 0) ||
+    (a.minBuys1h != null && a.minBuys1h > 0) ||
+    (a.minSells1h != null && a.minSells1h > 0) ||
+    (a.minBuys24h != null && a.minBuys24h > 0) ||
+    (a.minSells24h != null && a.minSells24h > 0) ||
+    (a.minTrades24h != null && a.minTrades24h > 0)
+  );
+}
+
+/**
+ * Add one activity-threshold row (counts toward TELEGRAM_PERSONAL_WATCHLIST_MAX). One per token per user.
+ * @param {string} chatId
+ * @param {string} tokenAddress
+ * @param {Omit<PersonalActivityRule, 'lastAlertAtMs'> & { lastAlertAtMs?: number|null }} rule
+ */
+export async function addPersonalActivityWatch(chatId, tokenAddress, rule) {
+  const id = String(chatId);
+  const addr = normAddr40(tokenAddress);
+  if (!addr || !isBankrTokenAddress(addr)) return { ok: false, error: "BAD_TOKEN" };
+  const activity = {
+    mcapUsdMin: rule.mcapUsdMin ?? null,
+    minBuys15m: rule.minBuys15m ?? null,
+    minSells15m: rule.minSells15m ?? null,
+    minSwaps15m: rule.minSwaps15m ?? null,
+    minBuys1h: rule.minBuys1h ?? null,
+    minSells1h: rule.minSells1h ?? null,
+    minBuys24h: rule.minBuys24h ?? null,
+    minSells24h: rule.minSells24h ?? null,
+    minTrades24h: rule.minTrades24h ?? null,
+    cooldownSec: Math.min(86400, Math.max(60, Math.trunc(Number(rule.cooldownSec) || 900))),
+    lastAlertAtMs: rule.lastAlertAtMs ?? null,
+  };
+  if (!personalActivityHasAnyThreshold(activity)) return { ok: false, error: "NO_THRESHOLDS" };
+
+  return queue(async () => {
+    const users = await loadUsers();
+    let u = users.find((x) => x.chatId === id);
+    if (!u) {
+      u = defaultUser(id);
+      users.push(u);
+    }
+    if (u.watchlist.some((x) => x.type === "activity" && x.value === addr)) {
+      return { ok: false, error: "DUPLICATE_ACTIVITY" };
+    }
+    if (u.watchlist.length >= TELEGRAM_PERSONAL_WATCHLIST_MAX) return { ok: false, error: "LIMIT" };
+    u.watchlist.push({ type: "activity", value: addr, activity });
+    await saveUsers(users);
+    return { ok: true, user: u };
+  });
+}
+
+/** Remove only the activity row for this token (not wallet/token/keyword rows). */
+export async function removePersonalActivityWatch(chatId, tokenAddress) {
+  const id = String(chatId);
+  const addr = normAddr40(tokenAddress);
+  if (!addr) return { ok: false, error: "BAD_TOKEN" };
+  return queue(async () => {
+    const users = await loadUsers();
+    const u = users.find((x) => x.chatId === id);
+    if (!u) return { ok: false, error: "NOUSER" };
+    const before = u.watchlist.length;
+    u.watchlist = u.watchlist.filter((x) => !(x.type === "activity" && x.value === addr));
+    await saveUsers(users);
+    return { ok: u.watchlist.length < before, user: u };
+  });
+}
+
+export async function touchPersonalActivityAlert(chatId, tokenAddress, lastAlertAtMs) {
+  const id = String(chatId);
+  const addr = normAddr40(tokenAddress);
+  if (!addr) return false;
+  return queue(async () => {
+    const users = await loadUsers();
+    const u = users.find((x) => x.chatId === id);
+    if (!u) return false;
+    let found = false;
+    u.watchlist = u.watchlist.map((e) => {
+      if (e.type === "activity" && e.value === addr && e.activity) {
+        found = true;
+        return { ...e, activity: { ...e.activity, lastAlertAtMs } };
+      }
+      return e;
+    });
+    if (found) await saveUsers(users);
+    return found;
   });
 }
 

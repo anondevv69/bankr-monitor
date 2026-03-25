@@ -730,6 +730,34 @@ export function escapeTelegramHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * Send HTML to any Telegram chat. Personal DMs must use skipAllowedCheck: true (TELEGRAM_ALLOWED_CHAT_IDS is for channel posts).
+ * @param {string|number} chatId
+ * @param {string} html
+ * @param {{ skipAllowedCheck?: boolean, reply_markup?: object }} [options]
+ */
+export async function sendTelegramHtmlToChat(chatId, html, options = {}) {
+  if (!TELEGRAM_TOKEN || chatId == null || chatId === "") return;
+  if (!options.skipAllowedCheck && !allowedTelegramChat(chatId)) return;
+  const text = String(html || "").slice(0, TELEGRAM_HTML_MAX);
+  if (!text) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...(options.reply_markup ? { reply_markup: options.reply_markup } : {}),
+      }),
+    });
+  } catch (e) {
+    console.error("Telegram HTML chat send error:", e.message);
+  }
+}
+
 function formatDeployerOrFeeForTelegramHtml(obj) {
   if (!obj) return "—";
   const wallet = obj.walletAddress ?? obj.wallet ?? null;
