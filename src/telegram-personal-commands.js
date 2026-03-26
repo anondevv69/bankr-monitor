@@ -285,7 +285,7 @@ export async function buildTelegramTokenDetailOptions(out, bankrApiKey) {
   return { ...feedCountOpts, indexerSnapshot: indexerSnap };
 }
 
-/** Discord-parity token card for Telegram (HTML + GMGN/BB buttons). */
+/** Discord-parity token card for Telegram (HTML + GMGN / BB / Sigma buttons). */
 export async function sendTelegramTokenDetailReply(send, out, tokenAddress, bankrApiKey) {
   const opts = await buildTelegramTokenDetailOptions(out, bankrApiKey);
   let html = buildTokenDetailTelegramHtml(out, tokenAddress, opts);

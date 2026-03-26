@@ -86,6 +86,7 @@ import {
 import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
 import { handleTelegramGroupMessage } from "./telegram-group-handlers.js";
+import { registerTelegramBotCommands } from "./telegram-register-commands.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
 import {
   runActivityWatchPoll,
@@ -135,10 +136,12 @@ const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(
 );
 /** Hot launch ping: min holder count to trigger "20+ holders" (indexer). Set to 0 to disable. */
 const HOT_LAUNCH_MIN_HOLDERS = Math.max(0, parseInt(process.env.HOT_LAUNCH_MIN_HOLDERS || "20", 10));
-/** Trending: min buys in 5m to post to trending channel/topic (separate from hot). Set to 0 to disable. Default 15. */
-const TRENDING_MIN_BUYS_5M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_5M || "15", 10));
-/** Trending: min buys in 1h to post to trending (API has 5m/1h only; 1h used for "50 in 30m" style). Set to 0 to disable. Default 50. */
-const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "50", 10));
+/** Trending: min buys in ~30m (DexScreener m30 when present, else floor(1h/2)). Set to 0 to disable. Default 20. */
+const TRENDING_MIN_BUYS_30M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_30M ?? "20", 10));
+/** Trending: min buys in 5m (DexScreener m5). Set to 0 to disable. Default 0 (use TRENDING_MIN_BUYS_30M). */
+const TRENDING_MIN_BUYS_5M = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_5M || "0", 10));
+/** Trending: min buys in 1h. Set to 0 to disable. Default 0. */
+const TRENDING_MIN_BUYS_1H = Math.max(0, parseInt(process.env.TRENDING_MIN_BUYS_1H || "0", 10));
 /** Min Doppler-indexed pool volume (USD, ~1h from 15m buckets) to count as hot. 0 = off. */
 const HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD = Math.max(0, parseFloat(process.env.HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD || "0"));
 /** Min Doppler 24h bucket volume (USD) to count as trending. 0 = off. */
@@ -147,6 +150,26 @@ const TRENDING_MIN_INDEXER_VOL_24H_USD = Math.max(0, parseFloat(process.env.TREN
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
 /** Extra delay (ms) before sending hot/trending pings to Telegram (after Discord). Default 60s so Telegram is ~1 min after Discord. */
 const TELEGRAM_HOT_PING_DELAY_MS = Math.max(0, parseInt(process.env.TELEGRAM_HOT_PING_DELAY_MS || "60000", 10));
+
+function hasTrendingBuyOrVolThreshold() {
+  return (
+    TRENDING_MIN_BUYS_30M > 0 ||
+    TRENDING_MIN_BUYS_5M > 0 ||
+    TRENDING_MIN_BUYS_1H > 0 ||
+    TRENDING_MIN_INDEXER_VOL_24H_USD > 0
+  );
+}
+
+/**
+ * Use DISCORD_TRENDING_ALERT_CHANNEL_ID when set and trending is not explicitly off.
+ * If TRENDING_ENABLED is unset/false but buy/volume thresholds are set, still post (common misconfig fix).
+ */
+function envTrendingDiscordEnabled() {
+  if (!TRENDING_ALERT_CHANNEL_ID) return false;
+  const v = String(process.env.TRENDING_ENABLED ?? "").toLowerCase();
+  if (v === "false" || v === "0" || v === "off") return false;
+  return TRENDING_ENABLED || hasTrendingBuyOrVolThreshold();
+}
 /** Role IDs to mention on hot launch ping (comma-separated). E.g. HOT_LAUNCH_DISCORD_ROLE_IDS=123,456 */
 const HOT_LAUNCH_DISCORD_ROLE_IDS = (process.env.HOT_LAUNCH_DISCORD_ROLE_IDS || "")
   .split(",")
@@ -832,7 +855,7 @@ function buildRolePingContent(roleIds, suffix = "🔥 **Hot token**") {
   return parts.join(" ");
 }
 
-/** Schedule a delayed check for "hot" (buys/holders) and "trending" (higher buy threshold). Sends only to hot/trending channels, not firehose. */
+/** Schedule a delayed check for "hot" (buys/holders) and "trending" (~30m / 5m / 1h buys or indexer 24h vol). Sends only to hot/trending channels, not firehose. */
 function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTrendingChannelIds = [], telegramChatIds, telegramHotTargets = [], telegramTrendingTargets = [], bankrApiKey, hotPingConfigByGuildId = {}, telegramHotPingDelayMs: overrideDelayMs } = {}) {
   if (!isBankrTokenAddress(launch?.tokenAddress)) return;
   const hasHotDest = discordHotChannelIds.length > 0 || (telegramHotTargets?.length > 0);
@@ -842,6 +865,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
   if (
     (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 &&
       HOT_LAUNCH_MIN_HOLDERS <= 0 &&
+      TRENDING_MIN_BUYS_30M <= 0 &&
       TRENDING_MIN_BUYS_5M <= 0 &&
       TRENDING_MIN_BUYS_1H <= 0 &&
       HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD <= 0 &&
@@ -857,6 +881,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       const stats = await getHotTokenStats(launch.tokenAddress);
       if (!stats) return;
       const buys5m = stats.buys5m ?? 0;
+      const buys30m = stats.buys30m ?? 0;
       const buys1h = stats.buys1h ?? 0;
       const hotByBuys = HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 && buys5m >= HOT_LAUNCH_MIN_BUYS_FIRST_MIN;
       const hotByHolders =
@@ -867,8 +892,10 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 && iv1 >= HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD;
       const trendingByIndexerVol =
         TRENDING_MIN_INDEXER_VOL_24H_USD > 0 && iv24 >= TRENDING_MIN_INDEXER_VOL_24H_USD;
-      const isHot = hotByBuys || hotByHolders || hotByIndexerVol;
+      const isHot =
+        HOT_LAUNCH_ENABLED && (hotByBuys || hotByHolders || hotByIndexerVol);
       const isTrending =
+        (TRENDING_MIN_BUYS_30M > 0 && buys30m >= TRENDING_MIN_BUYS_30M) ||
         (TRENDING_MIN_BUYS_5M > 0 && buys5m >= TRENDING_MIN_BUYS_5M) ||
         (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H) ||
         trendingByIndexerVol;
@@ -898,6 +925,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         holderCount: stats.holderCount,
         isTrending,
         buys5m,
+        buys30m,
         buys1h,
         marketCapFormatted: mcFormatted || null,
         deployedTelegram: deployedTelegram || null,
@@ -940,7 +968,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       } else {
         embedHot.title = `👥 Hot: ${launchForEmbed.name} ($${launchForEmbed.symbol}) — 20+ holders`;
       }
-      const trendTitleParts = [`${buys5m} buys (5m) · ${buys1h} (1h)`];
+      const trendTitleParts = [`${buys30m} buys (~30m) · ${buys5m} (5m) · ${buys1h} (1h)`];
       if (trendingByIndexerVol) {
         const v24 = formatUsd(iv24) ?? `$${iv24.toFixed(0)}`;
         trendTitleParts.push(`24h vol ${v24} (indexer)`);
@@ -1087,17 +1115,18 @@ async function runNotify() {
         schedulePersonalLaunchDms(launchForEmbeds);
       }
       if (
-        HOT_LAUNCH_ENABLED &&
         newLaunches.length > 0 &&
         (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
           HOT_LAUNCH_MIN_HOLDERS > 0 ||
+          TRENDING_MIN_BUYS_30M > 0 ||
           TRENDING_MIN_BUYS_5M > 0 ||
           TRENDING_MIN_BUYS_1H > 0 ||
           HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
           TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
       ) {
-        const discordHotIds = HOT_LAUNCH_ALERT_CHANNEL_ID ? [HOT_LAUNCH_ALERT_CHANNEL_ID] : [];
-        const discordTrendingIds = TRENDING_ENABLED && TRENDING_ALERT_CHANNEL_ID ? [TRENDING_ALERT_CHANNEL_ID] : [];
+        const discordHotIds =
+          HOT_LAUNCH_ENABLED && HOT_LAUNCH_ALERT_CHANNEL_ID ? [HOT_LAUNCH_ALERT_CHANNEL_ID] : [];
+        const discordTrendingIds = envTrendingDiscordEnabled() ? [TRENDING_ALERT_CHANNEL_ID] : [];
         const envChat = process.env.TELEGRAM_CHAT_ID;
         const envHot = process.env.TELEGRAM_TOPIC_HOT;
         const envTrend = process.env.TELEGRAM_TOPIC_TRENDING;
@@ -1189,12 +1218,11 @@ async function runNotify() {
           }
           schedulePersonalLaunchDms(launchForEmbeds);
         }
-        const anyHotEnabled = tenantsWithChannels.some((t) => t.hotLaunchEnabled !== false);
         if (
-          anyHotEnabled &&
           newLaunches.length > 0 &&
           (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
           HOT_LAUNCH_MIN_HOLDERS > 0 ||
+          TRENDING_MIN_BUYS_30M > 0 ||
           TRENDING_MIN_BUYS_5M > 0 ||
           TRENDING_MIN_BUYS_1H > 0 ||
           HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
@@ -1215,9 +1243,12 @@ async function runNotify() {
             if (envTrend != null) telegramTrendingTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envTrend });
           }
           for (const tenant of tenantsWithChannels) {
-            if (tenant.hotLaunchEnabled === false) continue;
-            if (tenant.hotAlertChannelId) discordHotChannelIds.push(tenant.hotAlertChannelId);
-            if (tenant.trendingEnabled && tenant.trendingAlertChannelId) discordTrendingChannelIds.push(tenant.trendingAlertChannelId);
+            if (tenant.hotLaunchEnabled !== false && tenant.hotAlertChannelId) {
+              discordHotChannelIds.push(tenant.hotAlertChannelId);
+            }
+            if (tenant.trendingEnabled && tenant.trendingAlertChannelId) {
+              discordTrendingChannelIds.push(tenant.trendingAlertChannelId);
+            }
             if (tenant.telegramChatId) {
               const th = tenant.telegramTopicHot ?? null;
               const tr = tenant.telegramTopicTrending ?? null;
@@ -1471,7 +1502,7 @@ function startTelegramClaimsPolling(token) {
   }
   poll();
   console.log(
-    "Telegram: /claims <wallet>, /topicid|/id; groups: paste …ba3, /walletlookup, /lookup, /token; /tg_help; /tg_tokenlookup on|off (admins)"
+    "Telegram: setMyCommands (private + group menus); /claims <wallet>, /topicid|/id; groups: paste …ba3, lookups, /tg_help"
   );
 }
 
@@ -1491,6 +1522,22 @@ client.once("ready", async () => {
   }
   if (!ALL_LAUNCHES_CHANNEL_ID && !ALERT_CHANNEL_ID && !WATCH_ALERT_CHANNEL_ID) {
     console.log("No Discord channel IDs in env; alerts go to each server's /setup channels or notify.js webhook.");
+  }
+  if (hasTrendingBuyOrVolThreshold()) {
+    if (envTrendingDiscordEnabled()) {
+      console.log(
+        `[Trending] Discord env → channel ${TRENDING_ALERT_CHANNEL_ID} · 30m≥${TRENDING_MIN_BUYS_30M} 5m≥${TRENDING_MIN_BUYS_5M} 1h≥${TRENDING_MIN_BUYS_1H} (DexScreener ~${HOT_LAUNCH_DELAY_MS / 1000}s after launch)`
+      );
+    } else {
+      const te = String(process.env.TRENDING_ENABLED ?? "").toLowerCase();
+      if (!TRENDING_ALERT_CHANNEL_ID) {
+        console.warn(
+          "[Trending] Thresholds are set but DISCORD_TRENDING_ALERT_CHANNEL_ID is missing (env bots). Multi-tenant: set trending channel via /setup."
+        );
+      } else if (te === "false" || te === "0" || te === "off") {
+        console.warn("[Trending] TRENDING_ENABLED=false blocks Discord trending despite thresholds. Set true or unset.");
+      }
+    }
   }
   const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
   if (hasEnvChannels && (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID)) {
@@ -1604,9 +1651,10 @@ client.once("ready", async () => {
       console.log(`Telegram claim alerts → chat ${String(tgClaimChatId).slice(0, 12)}… topic: (not set — posts to General; set TELEGRAM_CLAIM_TOPIC_ID or send /topicid in the topic)`);
     }
   }
-  // Telegram /claims <wallet> command (optional)
+  // Telegram: "/" menu (setMyCommands) + long-poll for DMs & groups
   const tgToken = process.env.TELEGRAM_BOT_TOKEN;
   if (tgToken) {
+    await registerTelegramBotCommands(tgToken);
     startTelegramClaimsPolling(tgToken);
   }
   if (tgToken && isPersonalDmsEnabled()) {

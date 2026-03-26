@@ -520,34 +520,49 @@ function bankrLaunchUrl(tokenAddress) {
 }
 
 const GMGN_REFERRAL = "infobot";
+/** @see https://t.me/Sigma_buyBot — token deep link uses ?start=xinfo-0x… */
+const SIGMA_BOT_USERNAME = String(process.env.TELEGRAM_SIGMA_BOT_USERNAME || "Sigma_buyBot").replace(/^@/, "");
 
-/** GMGN + BB only (Markdown), for claim alerts. */
+function sigmaTelegramTradeUrl(addr) {
+  return `https://t.me/${SIGMA_BOT_USERNAME}?start=xinfo-${addr}`;
+}
+
+/** GMGN + BB + Sigma (Markdown), for claim alerts. */
 export function buildGmgnBbTradeMarkdown(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
-  return `[GMGN](${gmgnUrl}) • [BB](${bbUrl})`;
+  const sigmaUrl = sigmaTelegramTradeUrl(addr);
+  return `[GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [Sigma](${sigmaUrl})`;
 }
 
-/** Trade links for a Base token (GMGN Telegram, BB, FCW). Used in token detail + Discord claim embeds. */
+/** Trade links for a Base token (GMGN, BB, Sigma, FCW). Used in token detail + Discord claim embeds. */
 export function buildTradeLinks(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  const sigmaUrl = sigmaTelegramTradeUrl(addr);
   const fcwUrl = `https://warpcast.com/~/wallet/swap?token=${addr}&chain=base`;
-  return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [FCW](${fcwUrl})`;
+  return `💱 Trade [GMGN](${gmgnUrl}) • [BB](${bbUrl}) • [Sigma](${sigmaUrl}) • [FCW](${fcwUrl})`;
 }
 
-/** Inline keyboard: GMGN + BB only (no FCW/Warpcast — poor UX inside Telegram). */
+/** Inline keyboard: GMGN + BB + Sigma (no FCW/Warpcast — poor UX inside Telegram). */
 export function buildTelegramTradeKeyboardMarkup(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return null;
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  const sigmaUrl = sigmaTelegramTradeUrl(addr);
   return {
-    inline_keyboard: [[{ text: "🔵 GMGN", url: gmgnUrl }, { text: "🔥 BB", url: bbUrl }]],
+    inline_keyboard: [
+      [
+        { text: "🔵 GMGN", url: gmgnUrl },
+        { text: "🔥 BB", url: bbUrl },
+        { text: "Σ Sigma", url: sigmaUrl },
+      ],
+    ],
   };
 }
 
@@ -782,16 +797,18 @@ function formatDeployerOrFeeForTelegramHtml(obj) {
   return parts.length ? parts.join("\n") : "—";
 }
 
-/** Telegram HTML trade line: GMGN + BB only (Discord {@link buildTradeLinks} still includes FCW). */
+/** Telegram HTML trade line: GMGN + BB + Sigma (Discord {@link buildTradeLinks} also includes FCW). */
 export function buildTradeLinksHtml(tokenAddress) {
   const addr = (tokenAddress || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(addr)) return "—";
   const gmgnUrl = `https://t.me/GMGN_swap_bot?start=i_${GMGN_REFERRAL}_c_${addr}`;
   const bbUrl = `https://t.me/based_eth_bot?start=r_${GMGN_REFERRAL}_b_${addr}`;
+  const sigmaUrl = sigmaTelegramTradeUrl(addr);
   return (
     `💱 <b>Trade</b> ` +
     `<a href="${escapeTelegramHtml(gmgnUrl)}">GMGN</a> · ` +
-    `<a href="${escapeTelegramHtml(bbUrl)}">BB</a>`
+    `<a href="${escapeTelegramHtml(bbUrl)}">BB</a> · ` +
+    `<a href="${escapeTelegramHtml(sigmaUrl)}">Sigma</a>`
   );
 }
 
@@ -1280,8 +1297,8 @@ export async function sendTelegram(launch, options = {}) {
 }
 
 /** Send a short "hot" or "trending" ping to Telegram.
- * Hot: 5–10+ buys in first minute and/or 20+ holders. Trending: higher buy threshold (e.g. 15+ in 5m).
- * options.messageThreadId — forum topic ID. options.trending — use "TRENDING" title and buys5m/1h line. */
+ * Hot: 5–10+ buys in first minute and/or 20+ holders. Trending: ~30m / 5m / 1h buy lines from DexScreener.
+ * options.messageThreadId — forum topic ID. options.trending — use "TRENDING" title and buy lines. */
 export async function sendTelegramHotPing(launch, stats, options = {}) {
   const chatId = options.chatId ?? TELEGRAM_CHAT;
   if (!TELEGRAM_TOKEN || !chatId || !stats) return;
@@ -1296,13 +1313,15 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
     holderCount,
     isTrending,
     buys5m,
+    buys30m,
     buys1h,
     indexerVol1h,
     indexerVol24h,
   } = stats;
   const trending = options.trending === true || isTrending === true;
   if (trending) {
-    const hasDexTrend = (buys5m ?? 0) > 0 || (buys1h ?? 0) > 0;
+    const hasDexTrend =
+      (buys30m ?? 0) > 0 || (buys5m ?? 0) > 0 || (buys1h ?? 0) > 0;
     if (!hasDexTrend && !trendingByIndexerVol) return;
   } else if (!hotByBuys && !hotByHolders && !hotByIndexerVol) return;
   const launchUrl = bankrLaunchUrl(launch.tokenAddress);
@@ -1310,7 +1329,9 @@ export async function sendTelegramHotPing(launch, stats, options = {}) {
   let title;
   if (trending) {
     title = "📈 *TRENDING*";
-    const parts = [`📈 ${buys5m ?? 0} buys (5m) · ${buys1h ?? 0} (1h)`];
+    const parts = [
+      `📈 ${buys30m ?? 0} buys (~30m) · ${buys5m ?? 0} (5m) · ${buys1h ?? 0} (1h)`,
+    ];
     if (trendingByIndexerVol && indexerVol24h != null && Number(indexerVol24h) > 0) {
       const v = formatUsd(indexerVol24h) ?? String(indexerVol24h);
       parts.push(`Doppler 24h vol ${v}`);

@@ -67,7 +67,7 @@ function parseIndexerPoolBucketMetrics(pool) {
 
 /**
  * Fetch Base token metrics from DexScreener (market cap, 24h buys/sells, optional m5/h1). No API key required.
- * @returns {{ marketCap: number, trades24h: { buys: number, sells: number }, buys5m?: number, buys1h?: number } | null}
+ * @returns {{ marketCap: number, trades24h: { buys: number, sells: number }, buys5m?: number, buys15m?: number, buys30m?: number, buys1h?: number } | null}
  */
 async function fetchDexScreenerBaseToken(tokenAddress) {
   try {
@@ -93,6 +93,8 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
     const buys = h24?.buys ?? 0;
     const sells = h24?.sells ?? 0;
     const m5 = txns?.m5;
+    const m15 = txns?.m15;
+    const m30 = txns?.m30;
     const h1 = txns?.h1;
     const result = {
       marketCap: marketCap != null ? Number(marketCap) : null,
@@ -102,6 +104,8 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
       result.pairCreatedAt = pairCreatedAt;
     }
     if (m5 && typeof m5.buys === "number") result.buys5m = m5.buys;
+    if (m15 && typeof m15.buys === "number") result.buys15m = m15.buys;
+    if (m30 && typeof m30.buys === "number") result.buys30m = m30.buys;
     if (h1 && typeof h1.buys === "number") result.buys1h = h1.buys;
     return result;
   } catch {
@@ -112,7 +116,7 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
 /**
  * Fetch stats used for "hot launch" alerts: buys in last 5m/1h and holder count.
  * Deploy time (Bankr API still preferred in bot): Doppler token.pool.createdAt → firstSeenAt → Dex pairCreatedAt.
- * @returns {{ buys5m: number, buys1h: number, holderCount: number|null, marketCap: number|null, deployedAtMs: number|null } | null}
+ * @returns {{ buys5m: number, buys30m: number, buys1h: number, holderCount: number|null, marketCap: number|null, deployedAtMs: number|null } | null}
  */
 export async function getHotTokenStats(tokenAddress) {
   const addr = normalizeAddress(tokenAddress);
@@ -124,6 +128,10 @@ export async function getHotTokenStats(tokenAddress) {
     ]);
     const buys5m = dex?.buys5m ?? dex?.trades24h?.buys ?? 0;
     const buys1h = dex?.buys1h ?? dex?.trades24h?.buys ?? 0;
+    let buys30m = dex?.buys30m != null && Number.isFinite(Number(dex.buys30m)) ? Number(dex.buys30m) : 0;
+    if (buys30m <= 0 && dex?.buys1h != null && Number.isFinite(Number(dex.buys1h))) {
+      buys30m = Math.floor(Number(dex.buys1h) / 2);
+    }
     const holderCount = doppler?.holderCount != null ? Number(doppler.holderCount) : null;
     const marketCap = dex?.marketCap != null && Number.isFinite(dex.marketCap) ? dex.marketCap : null;
     const poolCreatedMs = ponderTimestampToMs(doppler?.pool?.createdAt);
@@ -137,6 +145,7 @@ export async function getHotTokenStats(tokenAddress) {
     const bucket = parseIndexerPoolBucketMetrics(doppler?.pool);
     return {
       buys5m: Number(buys5m),
+      buys30m,
       buys1h: Number(buys1h),
       holderCount,
       marketCap,
