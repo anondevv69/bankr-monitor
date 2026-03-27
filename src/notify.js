@@ -32,6 +32,7 @@ import { formatUsd, getHotTokenStats } from "./token-stats.js";
 import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
+import { getAddress } from "viem";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Cap pagination to avoid 429; only need recent launches for notify. Override with BANKR_LAUNCHES_LIMIT.
@@ -520,11 +521,26 @@ function bankrLaunchUrl(tokenAddress) {
 }
 
 const GMGN_REFERRAL = "infobot";
-/** @see https://t.me/Sigma_buyBot — token deep link uses ?start=xinfo-0x… */
-const SIGMA_BOT_USERNAME = String(process.env.TELEGRAM_SIGMA_BOT_USERNAME || "Sigma_buyBot").replace(/^@/, "");
+/** @see https://t.me/Sigma_buyBot — token deep link uses ?start=xinfo-0x… (Sigma expects EIP-55 checksum in the path). */
+const SIGMA_BOT_RAW = String(process.env.TELEGRAM_SIGMA_BOT_USERNAME || "Sigma_buyBot")
+  .replace(/^@/, "")
+  .trim();
+/** Telegram’s @info is a generic contact; mis-set env often yields t.me/info — force Sigma bot. */
+const SIGMA_BOT_USERNAME =
+  !SIGMA_BOT_RAW || SIGMA_BOT_RAW.toLowerCase() === "info" ? "Sigma_buyBot" : SIGMA_BOT_RAW;
 
 function sigmaTelegramTradeUrl(addr) {
-  return `https://t.me/${SIGMA_BOT_USERNAME}?start=xinfo-${addr}`;
+  const raw = String(addr || "").trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(raw)) {
+    return `https://t.me/${SIGMA_BOT_USERNAME}?start=xinfo-${raw}`;
+  }
+  let tokenPart = raw.toLowerCase();
+  try {
+    tokenPart = getAddress(raw);
+  } catch {
+    /* keep lowercase */
+  }
+  return `https://t.me/${SIGMA_BOT_USERNAME}?start=xinfo-${tokenPart}`;
 }
 
 /** GMGN + BB + Sigma (Markdown), for claim alerts. */
