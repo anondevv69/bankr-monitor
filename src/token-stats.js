@@ -98,6 +98,7 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
     const h1 = txns?.h1;
     const result = {
       marketCap: marketCap != null ? Number(marketCap) : null,
+      liquidityUsd: best.liquidity?.usd != null ? Number(best.liquidity.usd) : null,
       trades24h: { buys: Number(buys), sells: Number(sells) },
     };
     if (Number.isFinite(pairCreatedAt) && pairCreatedAt > 0) {
@@ -111,6 +112,23 @@ async function fetchDexScreenerBaseToken(tokenAddress) {
   } catch {
     return null;
   }
+}
+
+/**
+ * DexScreener mcap + liquidity on Base (for cashtag resolution when indexer omits a token).
+ * @param {string} tokenAddress
+ * @returns {Promise<{ marketCapUsd: number|null, liquidityUsd: number|null, trades24h: { buys: number, sells: number } } | null>}
+ */
+export async function fetchDexScreenerMetricsForToken(tokenAddress) {
+  const r = await fetchDexScreenerBaseToken(tokenAddress);
+  if (!r) return null;
+  const m = r.marketCap;
+  const liq = r.liquidityUsd;
+  return {
+    marketCapUsd: m != null && Number.isFinite(m) ? m : null,
+    liquidityUsd: liq != null && Number.isFinite(liq) ? liq : null,
+    trades24h: r.trades24h ?? { buys: 0, sells: 0 },
+  };
 }
 
 /**

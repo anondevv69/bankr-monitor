@@ -77,6 +77,7 @@ function getSearchResultArrays(json) {
   const byDeployer = json.groups?.byDeployer?.results ?? [];
   const byFee = json.groups?.byFeeRecipient?.results ?? [];
   const byWallet = json.groups?.byWallet?.results ?? [];
+  const byTokens = json.groups?.tokens?.results ?? [];
   const exactMatch = json.exactMatch && json.exactMatch.status === "deployed" ? [json.exactMatch] : [];
   const flat =
     Array.isArray(json.results) ? json.results
@@ -92,7 +93,7 @@ function getSearchResultArrays(json) {
     json.groups?.byWallet?.totalCount ??
     json.totalCount ??
     0;
-  const arrays = [...exactMatch, ...byDeployer, ...byFee, ...byWallet, ...flat];
+  const arrays = [...exactMatch, ...byDeployer, ...byFee, ...byWallet, ...byTokens, ...flat];
   return { arrays, total: total || (exactMatch.length > 0 ? 1 : 0) };
 }
 
@@ -112,7 +113,7 @@ function mergeLaunchesWithoutDuplicates(launches, toAdd) {
  * Returns { launches, totalCount } or null on failure.
  * apiKey: optional override (e.g. tenant's key); else round-robin env keys.
  * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
-async function fetchSearch(query, apiKey) {
+export async function fetchSearch(query, apiKey) {
   const key = defaultBankrApiKey(apiKey);
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;

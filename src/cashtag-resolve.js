@@ -1,10 +1,13 @@
 /**
- * Resolve cashtags ($TST) to Bankr token CAs via Doppler indexer (symbol search → filter → rank by mcap).
- * Contract address is authoritative; symbol is only a search key.
+ * Resolve cashtags ($TST) to Bankr token CAs: Doppler indexer symbol search + Bankr search API (groups.tokens)
+ * + rank by max(indexer mcap, DexScreener mcap). Some launches are not yet in the indexer; Bankr search fills the gap.
  */
 
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { numFromScaled } from "./token-trend-card.js";
+import { defaultBankrApiKey } from "./bankr-env-key.js";
+import { fetchSearch } from "./lookup-deployer.js";
+import { fetchDexScreenerMetricsForToken } from "./token-stats.js";
 
 /**
  * @typedef {object} CashtagResolveResult
@@ -33,6 +36,8 @@ const CASHTAG_RESOLVE_TTL_MS = Math.min(
 const MIN_LIQ_USD = Math.max(0, parseFloat(process.env.CASHTAG_MIN_LIQUIDITY_USD || "20000") || 20000);
 const MIN_VOL24_USD = Math.max(0, parseFloat(process.env.CASHTAG_MIN_VOLUME24_USD || "50000") || 50000);
 const SYMBOL_QUERY_LIMIT = Math.min(Math.max(parseInt(process.env.CASHTAG_SYMBOL_QUERY_LIMIT || "200", 10), 20), 500);
+const MAX_CANDIDATE_ADDRESSES = Math.min(Math.max(parseInt(process.env.CASHTAG_MAX_CANDIDATES || "50", 10), 15), 80);
+const DEX_FETCH_CONCURRENCY = Math.min(Math.max(parseInt(process.env.CASHTAG_DEX_FETCH_CONCURRENCY || "6", 10), 2), 12);
 
 /** @type {Map<string, { at: number, value: CashtagResolveResult | null }>} */
 const resolveCache = new Map();
@@ -148,6 +153,78 @@ async function fetchCandidatesForSymbol(indexerBase, chainId, normalizedUpper) {
   return merged;
 }
 
+/**
+ * Bankr search API returns symbol matches under groups.tokens — includes tokens not yet in the Doppler indexer.
+ * @param {string} normalizedUpper
+ * @param {string | undefined} apiKey
+ * @returns {Promise<object[]>}
+ */
+async function fetchBankrSearchLaunchesForSymbol(normalizedUpper, apiKey) {
+  const res = await fetchSearch(normalizedUpper, defaultBankrApiKey(apiKey));
+  return res?.launches ?? [];
+}
+
+/**
+ * @param {object[]} indexerItems
+ * @param {object[]} bankrLaunches
+ * @param {string} normalizedUpper
+ * @returns {{ addr: string, t: object }[]}
+ */
+function mergeIndexerAndBankrLaunches(indexerItems, bankrLaunches, normalizedUpper) {
+  /** @type {Map<string, { t: object | null, launch: object | null }>} */
+  const map = new Map();
+  for (const t of indexerItems) {
+    const a = (t.address || "").toLowerCase();
+    if (!a || !isBankrTokenAddress(a)) continue;
+    map.set(a, { t, launch: null });
+  }
+  for (const l of bankrLaunches) {
+    if (l.status !== "deployed") continue;
+    if (String(l.chain || "").toLowerCase() !== "base") continue;
+    if (String(l.tokenSymbol || "").toUpperCase() !== normalizedUpper) continue;
+    const a = l.tokenAddress?.toLowerCase();
+    if (!a || !isBankrTokenAddress(a)) continue;
+    const prev = map.get(a);
+    if (!prev) map.set(a, { t: null, launch: l });
+    else prev.launch = l;
+  }
+  const rows = [];
+  for (const [addr, entry] of map) {
+    const t =
+      entry.t ??
+      ({
+        address: entry.launch.tokenAddress,
+        name: entry.launch.tokenName,
+        symbol: entry.launch.tokenSymbol,
+        pool: null,
+        volumeUsd: null,
+      });
+    rows.push({ addr, t });
+  }
+  return rows;
+}
+
+/** Prefer all indexer-missing (Bankr-only) rows, then top indexer mcap rows, up to max. */
+function capCandidateRows(rows, max) {
+  if (rows.length <= max) return rows;
+  const indexerMcap = (r) => numFromScaled(r.t.pool?.marketCapUsd, USD_1E18);
+  const noPool = rows.filter((r) => !r.t.pool);
+  const withPool = rows.filter((r) => r.t.pool);
+  withPool.sort((a, b) => indexerMcap(b) - indexerMcap(a));
+  if (noPool.length >= max) return noPool.slice(0, max);
+  const budget = max - noPool.length;
+  return [...noPool, ...withPool.slice(0, Math.max(0, budget))];
+}
+
+async function mapInChunks(items, chunkSize, fn) {
+  const out = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    out.push(...(await Promise.all(chunk.map(fn))));
+  }
+  return out;
+}
+
 function passesLiquidityVolumeFloor(liquidityUsd, volume24hUsd) {
   return liquidityUsd >= MIN_LIQ_USD || volume24hUsd >= MIN_VOL24_USD;
 }
@@ -160,9 +237,9 @@ function rankScore(mcapUsd, liquidityUsd, volume24hUsd, stale) {
 }
 
 /**
- * Resolve a ticker to the Bankr token with highest indexed mcap among symbol matches.
+ * Resolve a ticker to the Bankr token with highest mcap (indexer vs DexScreener, merged with Bankr search).
  * @param {string} rawSymbol - e.g. TST (no $)
- * @param {{ chainId?: number, dopplerIndexerUrl?: string, bypassCache?: boolean }} [options]
+ * @param {{ chainId?: number, dopplerIndexerUrl?: string, bypassCache?: boolean, bankrApiKey?: string }} [options]
  * @returns {Promise<CashtagResolveResult | null>}
  */
 export async function resolveCashtagToBankrToken(rawSymbol, options = {}) {
@@ -185,29 +262,41 @@ export async function resolveCashtagToBankrToken(rawSymbol, options = {}) {
     }
   }
 
-  const candidates = await fetchCandidatesForSymbol(indexerBase, chainId, normalized);
-  const bankrOnly = candidates.filter((t) => isBankrTokenAddress(t.address));
-  if (bankrOnly.length === 0) {
+  const [indexerItems, bankrLaunches] = await Promise.all([
+    fetchCandidatesForSymbol(indexerBase, chainId, normalized),
+    fetchBankrSearchLaunchesForSymbol(normalized, options.bankrApiKey),
+  ]);
+
+  const rows = mergeIndexerAndBankrLaunches(indexerItems, bankrLaunches, normalized);
+  if (rows.length === 0) {
     if (!options.bypassCache) resolveCache.set(cacheKey, { at: Date.now(), value: null });
     return null;
   }
 
-  const scored = bankrOnly.map((t) => {
+  const capped = capCandidateRows(rows, MAX_CANDIDATE_ADDRESSES);
+
+  const scored = await mapInChunks(capped, DEX_FETCH_CONCURRENCY, async ({ addr, t }) => {
     const pool = t.pool;
-    const mcapUsd = numFromScaled(pool?.marketCapUsd, USD_1E18);
-    const liquidityUsd = numFromScaled(pool?.dollarLiquidity, USD_1E18);
+    const idxMcap = numFromScaled(pool?.marketCapUsd, USD_1E18);
+    const idxLiq = numFromScaled(pool?.dollarLiquidity, USD_1E18);
     const volPool = numFromScaled(pool?.volumeUsd, USD_1E18);
     const volTok = numFromScaled(t.volumeUsd, USD_1E18);
+    const dex = await fetchDexScreenerMetricsForToken(addr);
+    const dexMcap = dex?.marketCapUsd ?? 0;
+    const dexLiq = dex?.liquidityUsd ?? 0;
+    const mcapUsd = Math.max(idxMcap, dexMcap);
+    const liquidityUsd = Math.max(idxLiq, dexLiq);
     const volume24hUsd = Math.max(volPool, volTok);
-    const stale = isPoolActivityStale(pool, t);
-    return {
-      t,
-      mcapUsd,
-      liquidityUsd,
-      volume24hUsd,
-      stale,
-      score: rankScore(mcapUsd, liquidityUsd, volume24hUsd, stale),
-    };
+    let stale;
+    if (pool) {
+      stale = isPoolActivityStale(pool, t);
+    } else {
+      const tr = dex?.trades24h;
+      const n = (tr?.buys ?? 0) + (tr?.sells ?? 0);
+      stale = n <= 0 && (mcapUsd <= 0 || liquidityUsd < 100);
+    }
+    const score = rankScore(mcapUsd, liquidityUsd, volume24hUsd, stale);
+    return { t, mcapUsd, liquidityUsd, volume24hUsd, stale, score };
   });
 
   const eligible = scored.filter((x) => passesLiquidityVolumeFloor(x.liquidityUsd, x.volume24hUsd));
