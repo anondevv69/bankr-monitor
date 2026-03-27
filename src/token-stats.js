@@ -19,6 +19,7 @@ import { parseAbiItem } from "viem";
 import { DOPPLER_CONTRACTS_BASE } from "./config.js";
 import { getClaimTxsFromBaseScan } from "./basescan-claims.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
+import { fetchSearch } from "./lookup-deployer.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 // Production indexer default for Base mainnet; override via env (e.g. your DM'd endpoint).
@@ -206,20 +207,59 @@ async function fetchBankrLaunch(tokenAddress, apiKey) {
     `${BANKR_LAUNCH_URL}/${tokenAddress}`,
     `${BANKR_LAUNCH_URL}/${tokenAddress.slice(0, 2) + tokenAddress.slice(2).toUpperCase()}`,
   ];
-  const headers = { Accept: "application/json" };
-  if (key) headers["X-API-Key"] = key;
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, { headers });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const launch = json.launch ?? null;
-      if (launch) return launch;
-    } catch {
-      /* try next */
+  const tryHeaders = (withApiKey) => {
+    const headers = { Accept: "application/json" };
+    if (withApiKey && key) headers["X-API-Key"] = key;
+    return headers;
+  };
+  const attempt = async (withApiKey) => {
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { headers: tryHeaders(withApiKey) });
+        if (!res.ok) continue;
+        const json = await res.json();
+        const launch = json.launch ?? null;
+        if (launch) return launch;
+      } catch {
+        /* try next */
+      }
     }
+    return null;
+  };
+  let launch = await attempt(true);
+  if (launch) return launch;
+  if (key) {
+    launch = await attempt(false);
+    if (launch) return launch;
   }
   return null;
+}
+
+/**
+ * When GET /token-launches/:ca fails (401 with bad key, 429, blips), search?q=ca often still returns exactMatch with full deployer/feeRecipient.
+ * @param {string} tokenAddress
+ * @param {string | undefined} apiKey
+ * @returns {Promise<object | null>}
+ */
+async function fetchBankrLaunchFromSearch(tokenAddress, apiKey) {
+  const addr = tokenAddress.toLowerCase();
+  try {
+    const sr = await fetchSearch(tokenAddress, defaultBankrApiKey(apiKey));
+    for (const l of sr?.launches ?? []) {
+      if (l.status !== "deployed") continue;
+      if (String(l.tokenAddress || "").toLowerCase() !== addr) continue;
+      return l;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function fetchBankrLaunchResolved(tokenAddress, apiKey) {
+  const direct = await fetchBankrLaunch(tokenAddress, apiKey);
+  if (direct) return direct;
+  return fetchBankrLaunchFromSearch(tokenAddress, apiKey);
 }
 
 /**
@@ -880,7 +920,7 @@ export async function getTokenFees(tokenAddress, options = {}) {
 
   const apiKey = defaultBankrApiKey(options.bankrApiKey);
   const [launch, doppler, poolState, dexMetrics, agentProfile] = await Promise.all([
-    fetchBankrLaunch(addr, apiKey),
+    fetchBankrLaunchResolved(addr, apiKey),
     fetchDopplerTokenVolume(addr),
     fetchDopplerPoolState(addr),
     fetchDexScreenerBaseToken(addr),
