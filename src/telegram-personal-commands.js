@@ -33,6 +33,7 @@ import {
 } from "./telegram-personal-store.js";
 import { summarizeActivityWatchThresholds } from "./activity-watch.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
+import { resolveCashtagToBankrToken, formatCashtagResolvePreambleHtml } from "./cashtag-resolve.js";
 
 /** Max token rows per /lookup reply (Telegram ~4k limit). */
 const TELEGRAM_LOOKUP_MAX_ROWS = Math.min(Math.max(parseInt(process.env.TELEGRAM_LOOKUP_MAX_ROWS || "15", 10), 5), 35);
@@ -295,13 +296,22 @@ export async function sendTelegramTokenDetailReply(send, out, tokenAddress, bank
   await send(html, { parse_mode: "HTML", reply_markup: keyboard ?? undefined });
 }
 
-export async function runTokenLookupForChat(send, addr, bankrApiKey) {
+/**
+ * @param {(msg: string, opts?: object) => Promise<void>} send
+ * @param {string} addr
+ * @param {string} bankrApiKey
+ * @param {{ preambleHtml?: string }} [opts]
+ */
+export async function runTokenLookupForChat(send, addr, bankrApiKey, opts = {}) {
   const tokenAddress = addr.toLowerCase();
   if (!isBankrTokenAddress(tokenAddress)) {
     await send("Need a Bankr token address (0x…ba3) or Bankr launch URL.");
     return;
   }
-  await send("Fetching token…");
+  const fetchLine = opts.preambleHtml
+    ? `${opts.preambleHtml}\n\nFetching token…`
+    : "Fetching token…";
+  await send(fetchLine, opts.preambleHtml ? { parse_mode: "HTML" } : undefined);
   try {
     const out = await getTokenFees(tokenAddress, { bankrApiKey });
     await sendTelegramTokenDetailReply(send, out, tokenAddress, bankrApiKey);
@@ -367,17 +377,32 @@ export async function runTelegramLookupCommand(send, rest) {
 /** Shared /token command (DMs + groups). */
 export async function runTelegramTokenSlashCommand(send, rest) {
   if (!rest?.trim()) {
-    await send("Usage: /token <0x…ba3 or Bankr launch URL>");
+    await send("Usage: /token <0x…ba3 | $TICKER | Bankr launch URL>");
     return;
   }
   if (!hasTelegramBankrApiKeys()) {
     await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY for token lookup.");
     return;
   }
+  const trimmed = rest.trim();
+  const cashtagOnly = trimmed.match(/^\$([A-Za-z0-9_]{2,15})$/);
+  if (cashtagOnly && !/0x[a-fA-F0-9]{40}/i.test(trimmed)) {
+    const resolved = await resolveCashtagToBankrToken(cashtagOnly[1]);
+    if (!resolved) {
+      await send(
+        `No Bankr token on this chain matched $${cashtagOnly[1].toUpperCase()} (or below liquidity/volume floors). Try a \`0x…ba3\` address.`
+      );
+      return;
+    }
+    await runTokenLookupForChat(send, resolved.address, pickTelegramBankrApiKeyRoundRobin(), {
+      preambleHtml: formatCashtagResolvePreambleHtml(resolved),
+    });
+    return;
+  }
   const m = rest.match(/0x[a-fA-F0-9]{40}/);
   const addr = m ? m[0].toLowerCase() : null;
   if (!addr || !isBankrTokenAddress(addr)) {
-    await send("Need a Bankr token address (0x…ba3) or URL containing it.");
+    await send("Need a Bankr token address (0x…ba3), `$TICKER`, or URL containing the CA.");
     return;
   }
   await runTokenLookupForChat(send, addr, pickTelegramBankrApiKeyRoundRobin());
@@ -506,6 +531,24 @@ export async function handlePersonalTelegramCommand(ctx) {
     return send(`Added activity watch.\n${addr}\n${summ}\nCooldown: ${cd} min\n\nPoll uses ACTIVITY_WATCH_POLL_MS (same as Discord).`);
   }
 
+  // Lone $TICKER in a DM → resolve to Bankr token (highest mcap on indexer) then fee card
+  const loneCashtag = trimmed.match(/^\$([A-Za-z0-9_]{2,15})$/);
+  if (loneCashtag) {
+    if (!hasTelegramBankrApiKeys()) {
+      return send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot for token lookup.");
+    }
+    const resolved = await resolveCashtagToBankrToken(loneCashtag[1]);
+    if (!resolved) {
+      return send(
+        `No Bankr token on this chain matched $${loneCashtag[1].toUpperCase()} (or below liquidity/volume floors). Paste a \`0x…ba3\` address.`
+      );
+    }
+    await runTokenLookupForChat(send, resolved.address, pickTelegramBankrApiKeyRoundRobin(), {
+      preambleHtml: formatCashtagResolvePreambleHtml(resolved),
+    });
+    return;
+  }
+
   // Lone Bankr CA in a DM → token lookup (no /start required)
   const loneCa = trimmed.match(/^(0x[a-fA-F0-9]{40})$/i);
   if (loneCa && isBankrTokenAddress(loneCa[1])) {
@@ -529,7 +572,7 @@ export async function handlePersonalTelegramCommand(ctx) {
         "/alerts — show toggles; `/alerts launch|claims|trending|hot` (launch & claims need items on /watchlist)",
         "/walletlookup <0x | @handle | URL> — resolve X/Farcaster to wallet only",
         "/lookup [deployer|fee|both] <0x | @handle | URL> — Bankr tokens for that wallet or account",
-        "/token <0x…ba3 | Bankr launch URL>",
+        "/token <0x…ba3 | $TICKER | Bankr launch URL>",
         "/activity <0x…ba3> mcap 30000 — threshold DMs (1 slot; /activity help)",
         "",
         `Max ${TELEGRAM_PERSONAL_WATCHLIST_MAX} watch items (wallet, keyword, token, or activity).`,

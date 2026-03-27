@@ -13,6 +13,7 @@ import {
 } from "./telegram-personal-commands.js";
 import { getTelegramGroupSettings, updateTelegramGroupSettings } from "./telegram-group-settings.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
+import { extractTickers, resolveCashtagToBankrToken, formatCashtagResolvePreambleHtml } from "./cashtag-resolve.js";
 
 /** @returns {Promise<boolean>} */
 export async function isTelegramChatAdmin(botToken, chatId, userId) {
@@ -99,8 +100,8 @@ export async function handleTelegramGroupMessage(p) {
         "*Lookups (anyone):*",
         "`/walletlookup` — X/Farcaster / URL → wallet",
         "`/lookup` — Bankr tokens for wallet or profile",
-        "`/token` — fee summary for a `0x…ba3`",
-        "_Paste a Bankr contract (`…ba3`) in chat → token summary when auto-lookup is ON._",
+        "`/token` — fee summary for `0x…ba3` or `$TICKER` (resolves to highest-mcap Bankr match)",
+        "_Paste a Bankr contract (`…ba3`) or a cashtag (`$SYMBOL`) → token summary when auto-lookup is ON._",
         "",
         "*Admin:*",
         "`/tg_settings` — auto-reply on paste on/off",
@@ -162,12 +163,26 @@ export async function handleTelegramGroupMessage(p) {
   if (settings.tokenLookupInGroup === false) return "not_handled";
 
   const all = text.match(/0x[a-fA-F0-9]{40}/g);
-  if (!all?.length) return "not_handled";
-  const uniq = [...new Set(all.map((a) => a.toLowerCase()))];
+  const uniq = all?.length ? [...new Set(all.map((a) => a.toLowerCase()))] : [];
   const bankr = uniq.filter(isBankrTokenAddress);
-  if (bankr.length === 0) return "not_handled";
 
-  const addr = bankr[0];
+  let addr = bankr[0] ?? null;
+  let preambleHtml;
+
+  if (!addr) {
+    if (uniq.length > 0) return "not_handled";
+    const tickers = extractTickers(text);
+    if (tickers.length === 0) return "not_handled";
+    if (!hasTelegramBankrApiKeys()) {
+      await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot host for group token lookup.");
+      return "handled";
+    }
+    const resolved = await resolveCashtagToBankrToken(tickers[0]);
+    if (!resolved) return "not_handled";
+    addr = resolved.address;
+    preambleHtml = formatCashtagResolvePreambleHtml(resolved);
+  }
+
   if (!hasTelegramBankrApiKeys()) {
     await send("Set TELEGRAM_BANKR_API_KEYS or BANKR_API_KEY on the bot host for group token lookup.");
     return "handled";
@@ -176,6 +191,9 @@ export async function handleTelegramGroupMessage(p) {
   try {
     const bankrApiKey = pickTelegramBankrApiKeyRoundRobin();
     const out = await getTokenFees(addr, { bankrApiKey });
+    if (preambleHtml) {
+      await send(preambleHtml, { parse_mode: "HTML" });
+    }
     await sendTelegramTokenDetailReply(send, out, addr, bankrApiKey);
   } catch (e) {
     await send(`Token lookup failed: ${e.message}`);

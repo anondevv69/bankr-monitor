@@ -1,7 +1,7 @@
 /**
  * Schedule Telegram *personal* DMs.
  * - Watchlist launch + claim DMs: immediate by default (same time we process the event).
- * - Hot/trending personal DMs: TELEGRAM_DM_DELAY_MS or TELEGRAM_HOT_PING_DELAY_MS (default 60s).
+ * - Hot/trending personal DMs: TELEGRAM_DM_DELAY_MS or TELEGRAM_HOT_PING_DELAY_MS (default 30s).
  */
 
 import { sendTelegram, sendTelegramHotPing, sendTelegramClaim } from "./notify.js";
@@ -42,22 +42,23 @@ function buildPersonalClaimPrepend(user, claim) {
   return `💰 *Claim alert*\n_Matched because:_\n${bullets}`;
 }
 
-/** Delay before personal *hot/trending* DMs (keeps group/DM hot+trending behind Discord if configured). */
+/** Delay before personal *hot/trending* DMs (after Discord; same default as group Telegram). */
 export function getTelegramPersonalDmDelayMs() {
   const dm = parseInt(process.env.TELEGRAM_DM_DELAY_MS ?? "", 10);
   if (!Number.isNaN(dm) && dm >= 0) return dm;
-  const hot = parseInt(process.env.TELEGRAM_HOT_PING_DELAY_MS ?? "60000", 10);
-  return Math.max(0, Number.isNaN(hot) ? 60000 : hot);
+  const hot = parseInt(process.env.TELEGRAM_HOT_PING_DELAY_MS ?? "30000", 10);
+  return Math.max(0, Number.isNaN(hot) ? 30000 : hot);
 }
 
-/** Optional extra delay for watchlist launch/claim DMs (default 0 = fire with the firehose pipeline). */
+/** Delay for watchlist launch + claim personal DMs after Discord (default 30s; 0 = same time as pipeline). */
 export function getTelegramPersonalWatchlistDmDelayMs() {
   const w = parseInt(process.env.TELEGRAM_DM_WATCHLIST_DELAY_MS ?? "", 10);
   if (!Number.isNaN(w) && w >= 0) return w;
-  return 0;
+  const fallback = parseInt(process.env.TELEGRAM_OUTBOUND_DELAY_MS ?? process.env.TELEGRAM_HOT_PING_DELAY_MS ?? "30000", 10);
+  return Math.max(0, Number.isNaN(fallback) ? 30000 : fallback);
 }
 
-/** After Discord + group Telegram paths run for a new launch, queue personal watchlist DMs (no hot/trending delay by default). */
+/** After Discord + group Telegram paths run for a new launch, queue personal watchlist DMs (TELEGRAM_DM_WATCHLIST_DELAY_MS / default 30s). */
 export function schedulePersonalLaunchDms(launch) {
   if (!isPersonalDmsEnabled() || !process.env.TELEGRAM_BOT_TOKEN) return;
   const delay = getTelegramPersonalWatchlistDmDelayMs();

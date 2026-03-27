@@ -75,6 +75,7 @@ import { getFeesSummaryOnChainOnly } from "./fees-for-wallet.js";
 import { getClaimState, setClaimState } from "./claim-watch-store.js";
 import { start as startDopplerClaimWatcher, onFeeClaim, getWalletClaims, getTokenClaims } from "./watchers/dopplerClaimWatcher.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
+import { extractTickers, resolveCashtagToBankrToken } from "./cashtag-resolve.js";
 import { isWatchMatchForTenant, getWatchMatchReasons } from "./watch-match.js";
 import {
   schedulePersonalLaunchDms,
@@ -148,8 +149,22 @@ const HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD = Math.max(0, parseFloat(process.env.HOT
 const TRENDING_MIN_INDEXER_VOL_24H_USD = Math.max(0, parseFloat(process.env.TRENDING_MIN_INDEXER_VOL_24H_USD || "0"));
 /** Delay (ms) after first ping before checking hot stats. Default 65s so DexScreener m5 ≈ buys in first minute. */
 const HOT_LAUNCH_DELAY_MS = Math.max(30_000, parseInt(process.env.HOT_LAUNCH_DELAY_MS || "65000", 10));
-/** Extra delay (ms) before sending hot/trending pings to Telegram (after Discord). Default 60s so Telegram is ~1 min after Discord. */
-const TELEGRAM_HOT_PING_DELAY_MS = Math.max(0, parseInt(process.env.TELEGRAM_HOT_PING_DELAY_MS || "60000", 10));
+/** Extra delay (ms) after Discord before Telegram hot/trending (and default for other Telegram outbounds). Default 30s. */
+const TELEGRAM_HOT_PING_DELAY_MS = Math.max(0, parseInt(process.env.TELEGRAM_HOT_PING_DELAY_MS || "30000", 10));
+/** Firehose/curated/claim Telegram after Discord; falls back to TELEGRAM_HOT_PING_DELAY_MS. Default 30s. */
+const TELEGRAM_OUTBOUND_DELAY_MS = Math.max(
+  0,
+  parseInt(process.env.TELEGRAM_OUTBOUND_DELAY_MS ?? String(TELEGRAM_HOT_PING_DELAY_MS), 10)
+);
+
+/** Firehose/curated/tenant Telegram launch posts — after Discord, by TELEGRAM_OUTBOUND_DELAY_MS (default 30s). */
+function scheduleTelegramLaunchSend(launchForEmbeds, options = {}) {
+  if (TELEGRAM_OUTBOUND_DELAY_MS <= 0) {
+    void sendTelegram(launchForEmbeds, options).catch(() => {});
+  } else {
+    setTimeout(() => void sendTelegram(launchForEmbeds, options).catch(() => {}), TELEGRAM_OUTBOUND_DELAY_MS);
+  }
+}
 
 function hasTrendingBuyOrVolThreshold() {
   return (
@@ -1010,57 +1025,49 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         }
       }
       schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
-      const seenTg = new Set();
-      for (const chatId of telegramChatIds || []) {
-        const key = `${chatId}`;
-        if (seenTg.has(key)) continue;
-        seenTg.add(key);
-        if (isHot) await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
-      }
-      const sendTgHot = isHot && (telegramHotTargets?.length > 0);
-      const sendTgTrending = isTrending && (telegramTrendingTargets?.length > 0);
-      const tgTopicTargets = sendTgHot || sendTgTrending;
-      if (tgTopicTargets && telegramDelayMs > 0) {
-        setTimeout(async () => {
+      const sendTgHotTopics = isHot && (telegramHotTargets?.length > 0);
+      const sendTgTrendingTopics = isTrending && (telegramTrendingTargets?.length > 0);
+      const needsTelegramHotTrend =
+        (isHot && ((telegramChatIds || []).length > 0 || sendTgHotTopics)) || sendTgTrendingTopics;
+      if (needsTelegramHotTrend) {
+        const runTelegramHotTrend = async () => {
           try {
             const seen = new Set();
-            if (sendTgHot) {
-              for (const t of telegramHotTargets || []) {
-                const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+            if (isHot) {
+              for (const chatId of telegramChatIds || []) {
+                const key = `g:${chatId}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
+                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
+              }
+              for (const t of telegramHotTargets || []) {
+                const key = `h:${t.chatId}:${t.messageThreadId ?? ""}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                await sendTelegramHotPing(launchForEmbed, hotStats, {
+                  chatId: t.chatId,
+                  messageThreadId: t.messageThreadId,
+                }).catch(() => {});
               }
             }
-            if (sendTgTrending) {
+            if (isTrending) {
               for (const t of telegramTrendingTargets || []) {
-                const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
+                const key = `tr:${t.chatId}:${t.messageThreadId ?? ""}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId, trending: true }).catch(() => {});
+                await sendTelegramHotPing(launchForEmbed, hotStats, {
+                  chatId: t.chatId,
+                  messageThreadId: t.messageThreadId,
+                  trending: true,
+                }).catch(() => {});
               }
             }
           } catch (e) {
-            console.error("Telegram hot/trending delayed ping failed:", e.message);
+            console.error("Telegram hot/trending ping failed:", e.message);
           }
-        }, telegramDelayMs);
-      } else if (tgTopicTargets) {
-        if (sendTgHot) {
-          for (const t of telegramHotTargets || []) {
-            const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-            if (seenTg.has(key)) continue;
-            seenTg.add(key);
-            await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId }).catch(() => {});
-          }
-        }
-        if (sendTgTrending) {
-          for (const t of telegramTrendingTargets || []) {
-            const key = `${t.chatId}:${t.messageThreadId ?? ""}`;
-            if (seenTg.has(key)) continue;
-            seenTg.add(key);
-            await sendTelegramHotPing(launchForEmbed, hotStats, { chatId: t.chatId, messageThreadId: t.messageThreadId, trending: true }).catch(() => {});
-          }
-        }
+        };
+        if (telegramDelayMs > 0) setTimeout(runTelegramHotTrend, telegramDelayMs);
+        else void runTelegramHotTrend();
       }
     } catch (e) {
       console.error("Hot launch check failed:", e.message);
@@ -1105,12 +1112,12 @@ async function runNotify() {
         if (watchChannel && showInWatch) await postOnce(watchChannel);
         const envFirehoseTopic = process.env.TELEGRAM_TOPIC_FIREHOSE;
         const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
-        await sendTelegram(launchForEmbeds, envFirehoseTopic != null ? { messageThreadId: envFirehoseTopic } : {}).catch(() => {});
+        scheduleTelegramLaunchSend(launchForEmbeds, envFirehoseTopic != null ? { messageThreadId: envFirehoseTopic } : {});
         const sendToEnvCurated =
           envCuratedTopic != null &&
           (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : launch.passedFilters !== false);
         if (sendToEnvCurated) {
-          await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
+          scheduleTelegramLaunchSend(launchForEmbeds, { messageThreadId: envCuratedTopic });
         }
         schedulePersonalLaunchDms(launchForEmbeds);
       }
@@ -1199,21 +1206,21 @@ async function runNotify() {
               const tgChat = tenant.telegramChatId;
               const topicFirehose = tenant.telegramTopicFirehose ?? undefined;
               const topicCurated = tenant.telegramTopicCurated ?? undefined;
-              await sendTelegram(launchForEmbeds, { chatId: tgChat, messageThreadId: topicFirehose }).catch(() => {});
+              scheduleTelegramLaunchSend(launchForEmbeds, { chatId: tgChat, messageThreadId: topicFirehose });
               if (showInCurated && topicCurated != null) {
-                await sendTelegram(launchForEmbeds, { chatId: tgChat, messageThreadId: topicCurated }).catch(() => {});
+                scheduleTelegramLaunchSend(launchForEmbeds, { chatId: tgChat, messageThreadId: topicCurated });
               }
             }
           }
           if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
             const envTopicFirehose = process.env.TELEGRAM_TOPIC_FIREHOSE != null ? process.env.TELEGRAM_TOPIC_FIREHOSE : undefined;
             const envCuratedTopic = process.env.TELEGRAM_TOPIC_CURATED;
-            await sendTelegram(launchForEmbeds, { messageThreadId: envTopicFirehose }).catch(() => {});
+            scheduleTelegramLaunchSend(launchForEmbeds, { messageThreadId: envTopicFirehose });
             const sendToEnvCurated =
               envCuratedTopic != null &&
               (TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X ? feeRecipientHasX(launch) : tenantPassesFilters(launch, {}));
             if (sendToEnvCurated) {
-              await sendTelegram(launchForEmbeds, { messageThreadId: envCuratedTopic }).catch(() => {});
+              scheduleTelegramLaunchSend(launchForEmbeds, { messageThreadId: envCuratedTopic });
             }
           }
           schedulePersonalLaunchDms(launchForEmbeds);
@@ -1633,10 +1640,18 @@ client.once("ready", async () => {
 
     const tgClaimChat = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
     if (process.env.TELEGRAM_BOT_TOKEN && tgClaimChat) {
-      await sendTelegramClaim(claim, {
+      const claimOpts = {
         chatId: tgClaimChat,
         messageThreadId: process.env.TELEGRAM_CLAIM_TOPIC_ID,
-      }).catch((e) => console.error("Telegram claim send:", e.message));
+      };
+      if (TELEGRAM_OUTBOUND_DELAY_MS <= 0) {
+        await sendTelegramClaim(claim, claimOpts).catch((e) => console.error("Telegram claim send:", e.message));
+      } else {
+        setTimeout(
+          () => void sendTelegramClaim(claim, claimOpts).catch((e) => console.error("Telegram claim send:", e.message)),
+          TELEGRAM_OUTBOUND_DELAY_MS
+        );
+      }
     }
     schedulePersonalClaimDms(claim);
   });
@@ -1942,24 +1957,46 @@ client.on("messageCreate", async (message) => {
   const addresses = allAddrs ? [...new Set(allAddrs.map((a) => a.toLowerCase()))] : [];
   const bankrTokens = addresses.filter((a) => a.endsWith("ba3")); // Bankr token CAs end in BA3
 
+  let tokenAddress = bankrTokens[0] ?? null;
+  let resolvedFromCashtag = null;
+
   if (mentioned) {
-    if (bankrTokens.length === 0) {
-      await message
-        .reply(
-          "Mention me with a **Bankr token contract** (address ending in **…ba3**). Example: `@Bot 0x…ba3`\n\nFor wallet / handle search use **/lookup**."
-        )
-        .catch(() => {});
-      return;
+    if (!tokenAddress) {
+      const tickers = extractTickers(message.content);
+      if (tickers.length === 0) {
+        await message
+          .reply(
+            "Mention me with a **Bankr token** (`0x…ba3`) or a cashtag (**$TICKER** — resolves to highest-mcap Bankr match). Example: `@Bot 0x…ba3` or `@Bot $PEPE`\n\nFor wallet / handle search use **/lookup**."
+          )
+          .catch(() => {});
+        return;
+      }
+      const r = await resolveCashtagToBankrToken(tickers[0]);
+      if (!r) {
+        await message
+          .reply(`No Bankr token matched **$${tickers[0]}** on this chain (or below liquidity/volume floors). Paste a \`0x…ba3\` address.`)
+          .catch(() => {});
+        return;
+      }
+      tokenAddress = r.address;
+      resolvedFromCashtag = r;
     }
-    const tokenAddress = bankrTokens[0];
     await replyFeesForMessage(message, tokenAddress);
     debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "mention fees", tokenAddress);
     return;
   }
 
-  // Paste: only Bankr token CAs (0x...ba3) — use /lookup for handles, URLs, and non-Bankr wallets
-  if (bankrTokens.length === 0) return;
-  const tokenAddress = bankrTokens[0];
+  // Paste: Bankr CAs (…ba3) or cashtag $TICKER (no non-Bankr hex in message)
+  if (!tokenAddress) {
+    if (addresses.length > 0) return;
+    const tickers = extractTickers(message.content);
+    if (tickers.length === 0) return;
+    const r = await resolveCashtagToBankrToken(tickers[0]);
+    if (!r) return;
+    tokenAddress = r.address;
+    resolvedFromCashtag = r;
+  }
+
   await message.channel.sendTyping().catch(() => {});
   try {
     const tenant = message.guildId ? await getTenant(message.guildId) : null;
@@ -1987,7 +2024,10 @@ client.on("messageCreate", async (message) => {
       const insertAt = tradeIdx >= 0 ? tradeIdx : embed.fields.length;
       embed.fields.splice(insertAt, 0, { name: "Fees", value: feesValue.slice(0, 4096), inline: false });
     }
-    await message.reply({ embeds: [embed] }).catch(() => {});
+    const pastePrefix = resolvedFromCashtag
+      ? `**$${resolvedFromCashtag.symbol}** → \`${tokenAddress}\`${resolvedFromCashtag.stale ? " _(stale — weak recent activity in indexer)_" : ""}\n`
+      : undefined;
+    await message.reply({ embeds: [embed], ...(pastePrefix ? { content: pastePrefix } : {}) }).catch(() => {});
     debugLogActivity(message.guild?.name ?? message.guildId, message.author?.tag ?? "?", "paste token", tokenAddress);
   } catch (e) {
     console.error("Token paste failed:", e.message);
@@ -2063,16 +2103,11 @@ client.on("interactionCreate", async (interaction) => {
         : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
         const isWalletQuery = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
-        const inGuild = !!interaction.guildId;
         let hint = "";
         if (!isWalletQuery && !resolvedWallet) {
           hint = !apiKey
             ? "\n\nCouldn't resolve this handle to a wallet. Ask your server admin to set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster handles and search by wallet."
             : "\n\nBankr didn't return a linked wallet for this handle from our last request. Use the search link or try a **0x…** address.";
-        } else if (isWalletQuery) {
-          hint = inGuild
-            ? "\n\nIf the link above shows results on Bankr, ask your server admin to set an API key in **/setup** so lookup can use the list API."
-            : "\n\nIf the link above shows results on Bankr, set **BANKR_API_KEY** (from [bankr.bot/api](https://bankr.bot/api)) in this bot's env so lookup can use the list API.";
         } else if (resolvedWallet && !isWalletQuery) {
           hint =
             "\n\nThe wallet was resolved from your handle, but no matching launches were merged from the API in this session. **Open the Bankr search link** to see tokens the site still lists for this wallet.";

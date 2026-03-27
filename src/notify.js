@@ -14,7 +14,7 @@
  *   TELEGRAM_TOPIC_CURATED  - Topic ID for curated (X / fee recipient only)
  *   TELEGRAM_TOPIC_HOT      - Topic ID for hot launches (env; per-tenant in bot)
  *   TELEGRAM_TOPIC_TRENDING - Topic ID for trending (env; per-tenant in bot)
- *   TELEGRAM_HOT_PING_DELAY_MS - Extra delay (ms) before sending hot/trending to Telegram after Discord (default 60000; bot only)
+ *   TELEGRAM_HOT_PING_DELAY_MS / TELEGRAM_OUTBOUND_DELAY_MS - Delay (ms) Telegram after Discord (default 30000; bot + notify CLI)
  *   TELEGRAM_ALLOWED_CHAT_IDS   - Comma-separated chat IDs; only these receive **outbound** notify posts from this process. Does not affect Discord bot group commands. Unset = allow all.
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
  *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
@@ -1630,10 +1630,21 @@ async function main() {
   }
 
   const firehoseThreadId = telegramThreadId(process.env.TELEGRAM_TOPIC_FIREHOSE);
+  const tgAfterDiscordMs = Math.max(
+    0,
+    parseInt(process.env.TELEGRAM_OUTBOUND_DELAY_MS ?? process.env.TELEGRAM_HOT_PING_DELAY_MS ?? "30000", 10)
+  );
   const { newLaunches } = await runNotifyCycle();
   for (const launch of newLaunches) {
     await sendDiscordWebhook(launch);
-    await sendTelegram(launch, { messageThreadId: firehoseThreadId });
+    if (tgAfterDiscordMs <= 0) {
+      await sendTelegram(launch, { messageThreadId: firehoseThreadId });
+    } else {
+      setTimeout(
+        () => void sendTelegram(launch, { messageThreadId: firehoseThreadId }).catch(() => {}),
+        tgAfterDiscordMs
+      );
+    }
   }
 }
 
