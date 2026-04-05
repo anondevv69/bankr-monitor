@@ -62,6 +62,8 @@ Outbound posts and **interactive** Telegram commands (`/lookup`, `/token`, paste
 
 Licensed under **[LICENSE](LICENSE)** (MIT).
 
-Thanks to **rayblanco.eth** and everyone who runs forks, tests, and reports issues.
+Thank you to anyone who forks this project or contributes future updates. An **agent skill** will be published here as well.
 
-If this project helps you, **donations are welcome** — **`rayblanco.eth`** (ENS). Optional; the project stays free to self-host.
+**See an example of how it works:** join the Telegram group **[Bankr monitor](https://t.me/bankrmonitor)**, or message the bot in Telegram: **[@Bankrmonitor_bot](https://t.me/Bankrmonitor_bot)**.
+
+Donations are welcome to **`rayblanco.eth`** (ENS). The project stays free to self-host.
