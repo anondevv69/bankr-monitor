@@ -57,6 +57,10 @@ See also [CAPABILITIES.md](CAPABILITIES.md) for the full command list.
 
 Community testing and feedback help BankrMonitor — with appreciation to **rayblanco.eth** and everyone who runs forks and reports issues.
 
+### Donations
+
+If BankrMonitor is useful to you, donations are welcome — send to **`rayblanco.eth`** (ENS). There is no obligation; the project stays MIT-licensed and free to self-host.
+
 ### Security & secrets
 
 - **[SECURITY.md](SECURITY.md)** — what must never be committed (Discord/Telegram/Bankr tokens, webhooks, etc.).
