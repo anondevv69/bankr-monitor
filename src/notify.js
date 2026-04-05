@@ -627,6 +627,97 @@ function formatTrendPctLine(n) {
 }
 
 /**
+ * Full Stats block for token paste/detail — always shown. Indexer fills most lines; DEX/Bankr backfills MC/vol/B·S when possible.
+ * @param {IndexerTradingSnapshot | null | undefined} idx
+ * @param {object} out - getTokenFees result
+ * @param {{ maxLen?: number }} [opts] Discord field values max 1024
+ * @returns {string}
+ */
+export function buildTokenStatsMarkdown(idx, out, opts = {}) {
+  const maxLen = opts.maxLen ?? 1024;
+  const fmt = out.formatUsd;
+  const lines = [];
+  lines.push("📊 **Token Stats**");
+  if (idx && idx.price > 0) {
+    const priceStr =
+      idx.price < 0.01 ? `$${idx.price.toExponential(2)}` : `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`;
+    lines.push(`├ Price: ${priceStr} (${formatTrendPctLine(idx.priceChange24hPct)})`);
+  } else {
+    lines.push("├ Price: —");
+  }
+
+  let mcLine = "—";
+  if (idx && idx.mcapUsd > 0 && fmt) {
+    mcLine = fmt(idx.mcapUsd);
+  } else if (out.dexMetrics?.marketCap != null && fmt) {
+    const m = fmt(out.dexMetrics.marketCap);
+    if (m) mcLine = `${m} _(DEX)_`;
+  }
+  lines.push(`├ MC: ${mcLine}`);
+
+  let volLine = "—";
+  if (idx && idx.vol24h > 0 && fmt) {
+    volLine = fmt(idx.vol24h);
+    if (idx.vol1h > 0) volLine += ` (1h: ${fmt(idx.vol1h)})`;
+  } else if (out.volumeUsd != null && Number(out.volumeUsd) > 0 && fmt) {
+    const v = fmt(out.volumeUsd);
+    if (v) volLine = `${v} _(Bankr)_`;
+  }
+  lines.push(`├ Vol: ${volLine}`);
+
+  if (idx && idx.lpUsd > 0 && fmt) {
+    lines.push(`└ LP: ${fmt(idx.lpUsd)}`);
+  } else {
+    lines.push("└ LP: —");
+  }
+
+  lines.push("");
+  lines.push("📈 **Price Action**");
+  if (idx) {
+    lines.push(`├ 1H: ${formatTrendPctLine(idx.change1hPct)} (B:${idx.buys1h}/S:${idx.sells1h})`);
+    lines.push(`├ 2H: ${formatTrendPctLine(idx.change2hPct)}`);
+    lines.push(`├ 4H: ${formatTrendPctLine(idx.change4hPct)}`);
+  } else {
+    lines.push("├ 1H: — (B:—/S:—)");
+    lines.push("├ 2H: —");
+    lines.push("├ 4H: —");
+  }
+
+  lines.push("");
+  lines.push("👥 **Trading Activity (24H)**");
+  const dexT = out.dexMetrics?.trades24h;
+  if (idx && (idx.traders24h > 0 || idx.trades24h > 0 || idx.buyTx24h + idx.sellTx24h > 0)) {
+    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "—";
+    lines.push(`├ Traders: ${tr}`);
+    lines.push(`├ Trades: ${idx.trades24h > 0 ? String(idx.trades24h) : "—"}`);
+    const b = idx.buyTx24h;
+    const se = idx.sellTx24h;
+    const total = b + se;
+    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
+    lines.push(`└ B/S: ${pctB}% (${b}/${se})`);
+  } else if (dexT && (dexT.buys > 0 || dexT.sells > 0)) {
+    lines.push("├ Traders: —");
+    lines.push("├ Trades: —");
+    lines.push(`└ B/S: — (${dexT.buys}/${dexT.sells}) _(DEX 24h)_`);
+  } else {
+    lines.push("├ Traders: —");
+    lines.push("├ Trades: —");
+    lines.push("└ B/S: — (—/—)");
+  }
+
+  lines.push("");
+  if (idx) {
+    lines.push(`**Trend:** ${idx.trendLabel} · ${idx.trendScore}/100`);
+  } else {
+    lines.push("**Trend:** — _(indexer pending)_");
+  }
+
+  let result = lines.join("\n");
+  if (result.length > maxLen) result = `${result.slice(0, maxLen - 1)}…`;
+  return result;
+}
+
+/**
  * Build rich embed for a single Bankr token (paste address, etc.).
  * @param {object} out - getTokenFees result
  * @param {string} tokenAddress
@@ -699,45 +790,7 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   if (launch?.tweetUrl) fields.push({ name: "Tweet", value: launch.tweetUrl, inline: false });
   if (launch?.websiteUrl || launch?.website) fields.push({ name: "Website", value: launch.websiteUrl || launch.website || "—", inline: true });
 
-  if (idx && out.formatUsd) {
-    const fmt = out.formatUsd;
-    const lines = [];
-    lines.push("📊 **Token Stats**");
-    const priceStr =
-      idx.price > 0 && idx.price < 0.01
-        ? `$${idx.price.toExponential(2)}`
-        : idx.price > 0
-          ? `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`
-          : "—";
-    lines.push(`├ Price: ${priceStr} (${formatTrendPctLine(idx.priceChange24hPct)})`);
-    if (idx.mcapUsd > 0) lines.push(`├ MC: ${fmt(idx.mcapUsd)}`);
-    lines.push(
-      `├ Vol: ${idx.vol24h > 0 ? fmt(idx.vol24h) : "—"}${idx.vol1h > 0 ? ` (1h: ${fmt(idx.vol1h)})` : ""}`
-    );
-    if (idx.lpUsd > 0) lines.push(`└ LP: ${fmt(idx.lpUsd)}`);
-    else lines.push("└ LP: —");
-    lines.push("");
-    lines.push("📈 **Price Action**");
-    lines.push(`├ 1H: ${formatTrendPctLine(idx.change1hPct)} (B:${idx.buys1h}/S:${idx.sells1h})`);
-    lines.push(`├ 2H: ${formatTrendPctLine(idx.change2hPct)}`);
-    lines.push(`├ 4H: ${formatTrendPctLine(idx.change4hPct)}`);
-    lines.push("");
-    lines.push("👥 **Trading Activity (24H)**");
-    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "N/A";
-    lines.push(`├ Traders: ${tr}`);
-    lines.push(`├ Trades: ${idx.trades24h > 0 ? idx.trades24h : "—"}`);
-    const b = idx.buyTx24h;
-    const se = idx.sellTx24h;
-    const total = b + se;
-    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
-    lines.push(`└ B/S: ${pctB}% (${b}/${se})`);
-    if (idx.trendLabel && idx.trendLabel !== "NOT_TRENDING") {
-      lines.push("");
-      lines.push(`**Trend:** ${idx.trendLabel} · ${idx.trendScore}/100`);
-    }
-    const value = lines.join("\n").slice(0, 1024);
-    fields.push({ name: "Stats", value, inline: false });
-  }
+  fields.push({ name: "Stats", value: buildTokenStatsMarkdown(idx, out), inline: false });
 
   fields.push({ name: "\u200b", value: buildTradeLinks(tokenAddress), inline: false });
 
@@ -761,6 +814,97 @@ const TELEGRAM_TOKEN_BODY_MAX = 3600;
 export function escapeTelegramHtml(s) {
   if (s == null) return "";
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Same stats block as {@link buildTokenStatsMarkdown} for Telegram HTML.
+ * @param {IndexerTradingSnapshot | null | undefined} idx
+ * @param {object} out
+ * @returns {string}
+ */
+export function buildTokenStatsTelegramHtml(idx, out) {
+  const fmt = out.formatUsd;
+  const lines = [];
+  lines.push("📊 <b>Token Stats</b>");
+  if (idx && idx.price > 0) {
+    const priceStr =
+      idx.price < 0.01 ? `$${idx.price.toExponential(2)}` : `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`;
+    lines.push(
+      `├ Price: ${escapeTelegramHtml(priceStr)} (${escapeTelegramHtml(formatTrendPctLine(idx.priceChange24hPct))})`
+    );
+  } else {
+    lines.push("├ Price: —");
+  }
+
+  let mcLine = "—";
+  if (idx && idx.mcapUsd > 0 && fmt) {
+    mcLine = escapeTelegramHtml(fmt(idx.mcapUsd));
+  } else if (out.dexMetrics?.marketCap != null && fmt) {
+    const m = fmt(out.dexMetrics.marketCap);
+    if (m) mcLine = `${escapeTelegramHtml(m)} <i>(DEX)</i>`;
+  }
+  lines.push(`├ MC: ${mcLine}`);
+
+  let volLine = "—";
+  if (idx && idx.vol24h > 0 && fmt) {
+    volLine = escapeTelegramHtml(fmt(idx.vol24h));
+    if (idx.vol1h > 0) volLine += ` (1h: ${escapeTelegramHtml(fmt(idx.vol1h))})`;
+  } else if (out.volumeUsd != null && Number(out.volumeUsd) > 0 && fmt) {
+    const v = fmt(out.volumeUsd);
+    if (v) volLine = `${escapeTelegramHtml(v)} <i>(Bankr)</i>`;
+  }
+  lines.push(`├ Vol: ${volLine}`);
+
+  if (idx && idx.lpUsd > 0 && fmt) {
+    lines.push(`└ LP: ${escapeTelegramHtml(fmt(idx.lpUsd))}`);
+  } else {
+    lines.push("└ LP: —");
+  }
+
+  lines.push("");
+  lines.push("📈 <b>Price Action</b>");
+  if (idx) {
+    lines.push(
+      `├ 1H: ${escapeTelegramHtml(formatTrendPctLine(idx.change1hPct))} (B:${idx.buys1h}/S:${idx.sells1h})`
+    );
+    lines.push(`├ 2H: ${escapeTelegramHtml(formatTrendPctLine(idx.change2hPct))}`);
+    lines.push(`├ 4H: ${escapeTelegramHtml(formatTrendPctLine(idx.change4hPct))}`);
+  } else {
+    lines.push("├ 1H: — (B:—/S:—)");
+    lines.push("├ 2H: —");
+    lines.push("├ 4H: —");
+  }
+
+  lines.push("");
+  lines.push("👥 <b>Trading Activity (24H)</b>");
+  const dexT = out.dexMetrics?.trades24h;
+  if (idx && (idx.traders24h > 0 || idx.trades24h > 0 || idx.buyTx24h + idx.sellTx24h > 0)) {
+    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "—";
+    lines.push(`├ Traders: ${escapeTelegramHtml(tr)}`);
+    lines.push(`├ Trades: ${idx.trades24h > 0 ? idx.trades24h : "—"}`);
+    const b = idx.buyTx24h;
+    const se = idx.sellTx24h;
+    const total = b + se;
+    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
+    lines.push(`└ B/S: ${pctB}% (${b}/${se})`);
+  } else if (dexT && (dexT.buys > 0 || dexT.sells > 0)) {
+    lines.push("├ Traders: —");
+    lines.push("├ Trades: —");
+    lines.push(`└ B/S: — (${dexT.buys}/${dexT.sells}) <i>(DEX 24h)</i>`);
+  } else {
+    lines.push("├ Traders: —");
+    lines.push("├ Trades: —");
+    lines.push("└ B/S: — (—/—)");
+  }
+
+  lines.push("");
+  if (idx) {
+    lines.push(`<b>Trend:</b> ${escapeTelegramHtml(idx.trendLabel)} · ${idx.trendScore}/100`);
+  } else {
+    lines.push("<b>Trend:</b> — <i>(indexer pending)</i>");
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -991,13 +1135,6 @@ export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
     lines.push(`<b>24H:</b> 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells`);
   }
 
-  if (launch && !idx) {
-    lines.push("");
-    lines.push(
-      "<i>Extended pool stats (volume, price, trend, fees history) need the Doppler indexer to have this pool—same card logic as Discord.</i>"
-    );
-  }
-
   lines.push("");
   let deployerVal = formatDeployerOrFeeForTelegramHtml(launch?.deployer);
   const deployDisp = formatBankrRoleCountDisplay(deployFeed);
@@ -1031,48 +1168,9 @@ export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
     lines.push(`<b>Website:</b> <a href="${escapeTelegramHtml(web)}">${escapeTelegramHtml(web)}</a>`);
   }
 
-  if (idx && out.formatUsd) {
-    const fmt = out.formatUsd;
-    const sl = [];
-    sl.push("📊 <b>Token Stats</b>");
-    const priceStr =
-      idx.price > 0 && idx.price < 0.01
-        ? `$${idx.price.toExponential(2)}`
-        : idx.price > 0
-          ? `$${idx.price.toFixed(8).replace(/\.?0+$/, "")}`
-          : "—";
-    sl.push(`├ Price: ${escapeTelegramHtml(priceStr)} (${escapeTelegramHtml(formatTrendPctLine(idx.priceChange24hPct))})`);
-    if (idx.mcapUsd > 0) sl.push(`├ MC: ${escapeTelegramHtml(fmt(idx.mcapUsd))}`);
-    sl.push(
-      `├ Vol: ${idx.vol24h > 0 ? escapeTelegramHtml(fmt(idx.vol24h)) : "—"}${idx.vol1h > 0 ? ` (1h: ${escapeTelegramHtml(fmt(idx.vol1h))})` : ""}`
-    );
-    if (idx.lpUsd > 0) sl.push(`└ LP: ${escapeTelegramHtml(fmt(idx.lpUsd))}`);
-    else sl.push("└ LP: —");
-    sl.push("");
-    sl.push("📈 <b>Price Action</b>");
-    sl.push(
-      `├ 1H: ${escapeTelegramHtml(formatTrendPctLine(idx.change1hPct))} (B:${idx.buys1h}/S:${idx.sells1h})`
-    );
-    sl.push(`├ 2H: ${escapeTelegramHtml(formatTrendPctLine(idx.change2hPct))}`);
-    sl.push(`├ 4H: ${escapeTelegramHtml(formatTrendPctLine(idx.change4hPct))}`);
-    sl.push("");
-    sl.push("👥 <b>Trading Activity (24H)</b>");
-    const tr = idx.traders24h > 0 ? String(idx.traders24h) : "N/A";
-    sl.push(`├ Traders: ${escapeTelegramHtml(tr)}`);
-    sl.push(`├ Trades: ${idx.trades24h > 0 ? idx.trades24h : "—"}`);
-    const b = idx.buyTx24h;
-    const se = idx.sellTx24h;
-    const total = b + se;
-    const pctB = total > 0 ? Math.round((b / total) * 100) : 0;
-    sl.push(`└ B/S: ${pctB}% (${b}/${se})`);
-    if (idx.trendLabel && idx.trendLabel !== "NOT_TRENDING") {
-      sl.push("");
-      sl.push(`<b>Trend:</b> ${escapeTelegramHtml(idx.trendLabel)} · ${idx.trendScore}/100`);
-    }
-    lines.push("");
-    lines.push("<b>Stats</b>");
-    lines.push(sl.join("\n"));
-  }
+  lines.push("");
+  lines.push("<b>Stats</b>");
+  lines.push(buildTokenStatsTelegramHtml(idx, out));
 
   lines.push("");
   lines.push(buildTradeLinksHtml(tokenAddress));
