@@ -55,7 +55,17 @@ See also [CAPABILITIES.md](CAPABILITIES.md) for the full command list.
 
 ### Thanks
 
-Community testing and feedback help improve BankrMonitor — with appreciation to **rayblanco.eth** and everyone who runs forks and reports issues.
+Community testing and feedback help BankrMonitor — with appreciation to **rayblanco.eth** and everyone who runs forks and reports issues.
+
+### Security & secrets
+
+- **[SECURITY.md](SECURITY.md)** — what must never be committed (Discord/Telegram/Bankr tokens, webhooks, etc.).
+- Public **API base URLs** in docs (e.g. `api.bankr.bot`, indexer GraphQL) are not secrets; **keys and tokens** are.
+
+### Telegram deployment
+
+- **[docs/TELEGRAM_DEPLOY.md](docs/TELEGRAM_DEPLOY.md)** — step-by-step: BotFather, env vars, `npm start`, Railway/volume, troubleshooting (privacy mode, `deleteWebhook`).
+- Telegram features use the **same** process as the Discord bot; you still need **`DISCORD_BOT_TOKEN`** to start the app even if you only use Telegram for users.
 
 ---
 
@@ -305,9 +315,10 @@ Uses the Bankr API (launch metadata: deployer, fee recipient) and optional Doppl
 Find Bankr tokens where a given wallet is deployer or fee recipient, or where an X/Farcaster handle is associated:
 
 ```bash
-BANKR_API_KEY=bk_xxx npm run lookup -- 0x62Bcefd446f97526ECC1375D02e014cFb8b48BA3
-npm run lookup -- @vyrozas
-npm run lookup -- dwr.eth
+# Use BANKR_API_KEY from your .env — do not paste real keys into the shell history.
+npm run lookup -- 0x000000000000000000000000000000000000ba3
+npm run lookup -- @example_handle
+npm run lookup -- example.eth
 ```
 
 Searches the most recent launches (up to `BANKR_LAUNCHES_LIMIT`, default 500). The script requests up to 50 results per page from the Bankr search API and shows **total token count**; if the API returns fewer (e.g. a 5-result cap), the CLI and Discord **lookup** still show “Total: N token(s)” and link to the full list at [bankr.bot/launches/search](https://bankr.bot/launches/search?q=). Discord shows “Showing 1–25 of N” when there are more than 25; use the site for full list and pagination.
@@ -467,16 +478,17 @@ Example: one channel for all deploys, another for “quality” deploys (same X 
      - **Env (single group):** Set `TELEGRAM_CHAT_ID` to the group ID. Set `TELEGRAM_TOPIC_FIREHOSE`, `TELEGRAM_TOPIC_CURATED`, `TELEGRAM_TOPIC_HOT`, `TELEGRAM_TOPIC_TRENDING` to the four topic IDs (integers or numeric strings).
      - **Per-server (Discord bot):** In the server where the bot is in, run **/setup telegram**. Set **group_chat_id** to the Telegram group ID, then **topic_firehose**, **topic_curated** (X only fee recipient), **topic_hot**, **topic_trending** to the four topic IDs.
    - **Delay for Telegram Hot/Trending:** Hot and Trending pings are sent to Discord first; then, by default, **1 minute later** they are sent to the Telegram Hot and Trending topics. You can change this later: set **TELEGRAM_HOT_PING_DELAY_MS** in env (default `60000` ms), or per server run **/setup telegram** and set **delay_hot_trending_sec** (e.g. `60` for 1 min, `0` for same time as Discord).
-   - **Restrict outbound alerts to your main group:** Set **TELEGRAM_ALLOWED_CHAT_IDS** to that group’s chat ID (e.g. `-1003710206776`). **notify** (launch/claim posts) will only go to those chats; if someone adds the bot elsewhere, it won’t post firehose/claims there. **Interactive** commands (`/walletlookup`, `/lookup`, pastes, `/claims`, etc.) still work in **any** group the bot is in. Use a comma-separated list for multiple alert destinations. Leave unset to allow outbound to all configured `TELEGRAM_CHAT_ID` targets.
+   - **Restrict outbound alerts to your main group:** Set **TELEGRAM_ALLOWED_CHAT_IDS** to that group’s chat ID (e.g. `-1001234567890`). **notify** (launch/claim posts) will only go to those chats; if someone adds the bot elsewhere, it won’t post firehose/claims there. **Interactive** commands (`/walletlookup`, `/lookup`, pastes, `/claims`, etc.) still work in **any** group the bot is in. Use a comma-separated list for multiple alert destinations. Leave unset to allow outbound to all configured `TELEGRAM_CHAT_ID` targets.
    - **In groups (same long-poll bot):** Anyone can use **`/walletlookup`**, **`/lookup`**, and **`/token`**. Paste a **Bankr** contract (`0x…ba3`) or put the address in a **photo caption** for a short token summary (needs **`BANKR_API_KEY`** or **`TELEGRAM_BANKR_API_KEYS`**). **`/start`** in a group replies with group command hints; full personal flow (**`/alerts`**, watchlist, etc.) is **DM-only**. **Admins** can disable paste auto-reply with **`/tg_tokenlookup off`**. If pasted addresses never trigger replies, set **@BotFather** → **`/setprivacy`** → **Disable** so the bot can see normal group messages. **`/tg_help`** / **`/tg_settings`**. Optional: **TELEGRAM_GROUP_SETTINGS_FILE** (volume on Railway).
    - **Group replies need the Discord bot process:** Interactive Telegram is handled by **`getUpdates` long-poll** inside the **Discord bot** (`node discord-bot.js` / your Railway service that runs it). The standalone **`notify`** worker alone does **not** answer `/token` or pastes in groups. If nothing ever replies, ensure **no webhook** is set on the same bot token (`https://api.telegram.org/bot<TOKEN>/deleteWebhook`), check server logs for **`[Telegram sendMessage]`** errors, and send **`/topicid`** in the group to confirm the bot receives updates.
 
 4. **Environment variables**
    ```bash
-   BANKR_API_KEY=bk_xxx           # Recommended: Bankr-only launches
-   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-   TELEGRAM_BOT_TOKEN=123456:ABC...
-   TELEGRAM_CHAT_ID=-1001234567890   # Group or channel ID
+   # Use placeholders in docs only — set real values in .env or host secrets, never commit them.
+   BANKR_API_KEY=<your_key_from_bankr.bot_api>
+   DISCORD_WEBHOOK_URL=<your_webhook_url>
+   TELEGRAM_BOT_TOKEN=<your_botfather_token>
+   TELEGRAM_CHAT_ID=-1001234567890   # Example shape; use your real group/channel ID
    # Optional: topic IDs for group with 4 feeds (integers)
    TELEGRAM_TOPIC_FIREHOSE=2         # All launches
    TELEGRAM_TOPIC_CURATED=3          # X only fee recipient (see TELEGRAM_CURATED_FEE_RECIPIENT_HAS_X)

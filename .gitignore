@@ -6,4 +6,9 @@ node_modules/
 .bankr-last-block.json
 .bankr-deploy-counts.json
 .bankr-tenants.json
+.bankr-fee-recipient-counts.json
 .bankr-claim-state.json
+.telegram-personal-users.json
+.telegram-group-settings.json
+.env.local
+.env.*.local

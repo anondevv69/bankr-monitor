@@ -12,7 +12,7 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 - **Query params:** `q=<wallet|handle>`, `limit` (default 25), `offset`
 - **Headers:** `Accept: application/json`, `User-Agent: BankrMonitor/1.0 (...)`, and optionally `X-API-Key: <BANKR_API_KEY>` (from env or /setup).
 - **Response shape we handle:**
-  - **`exactMatch`** – When the query matches a **single** launch (e.g. one token where this wallet is fee recipient), Bankr returns that launch in `exactMatch`, not in `groups`. We **must** read `exactMatch` and treat it as one result (see `getSearchResultArrays` in `src/lookup-deployer.js`). Example: `?q=0x7878724b28afcfd452ea22d14b89493af38a7d41` → one launch (McClaw) in `exactMatch`.
+  - **`exactMatch`** – When the query matches a **single** launch (e.g. one token where this wallet is fee recipient), Bankr returns that launch in `exactMatch`, not in `groups`. We **must** read `exactMatch` and treat it as one result (see `getSearchResultArrays` in `src/lookup-deployer.js`). Example: `?q=0x…` (full wallet) → one launch in `exactMatch`.
   - **`groups.byDeployer.results`**, **`groups.byFeeRecipient.results`**, **`groups.byWallet.results`** – Paginated lists when there are multiple matches.
 - **Code:** `fetchSearch()` in `src/lookup-deployer.js`; parsing in `getSearchResultArrays()`.
 
@@ -42,16 +42,16 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 
 ## If “No Bankr tokens found” but the website shows a result
 
-- The **website** (e.g. [bankr.bot/launches/search?q=0x7878...](https://bankr.bot/launches/search?q=0x7878724b28afcfd452ea22d14b89493af38a7d41)) uses the same **search** endpoint. If the browser shows one launch (e.g. McClaw) and the bot says “No Bankr tokens found”, then either:
+- The **website** ([bankr.bot/launches/search](https://bankr.bot/launches/search)) uses the same **search** endpoint. If the browser shows one launch and the bot says “No Bankr tokens found”, then either:
   1. **Bot is on an old build** – Ensure the deploy includes the commit that parses **`exactMatch`** (see `getSearchResultArrays`).
   2. **Search request from the bot fails** – From Railway the request might get 403, timeout, or empty body. Check deploy logs for `[Agent profiles]`-style or any fetch errors; we send `User-Agent` so the server can allow the client.
   3. **API key** – For **list**-based fallback and for X/FC resolution we need an API key in /setup or `BANKR_API_KEY`. For a **plain wallet** search, the **search** endpoint can return `exactMatch` without a key; if that request fails from your host, the key won’t help for that single request.
 
 ---
 
-## Single launch page (e.g. McClaw)
+## Single launch page
 
-- **Website:** [bankr.bot/launches/0xa1530f0d110d15425546db73a6ebc55bac821ba3](https://bankr.bot/launches/0xa1530f0d110d15425546db73a6ebc55bac821ba3)
+- **Website:** `https://bankr.bot/launches/<token_address>` (replace with a real `0x…` token address when testing).
 - We don’t fetch “one launch by token address” for lookup; we get that token when it appears in **search** (e.g. `exactMatch`) or in the **list** when filtering by wallet. For **fees** for one token we use the token-launches launch endpoint (see `token-stats.js` / fee flow).
 
 ---
