@@ -753,7 +753,9 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
   return embed;
 }
 
-const TELEGRAM_HTML_MAX = 4096;
+export const TELEGRAM_HTML_MAX = 4096;
+/** Main token card body budget; fees HTML is appended after—Telegram sendMessage limit is {@link TELEGRAM_HTML_MAX}. */
+const TELEGRAM_TOKEN_BODY_MAX = 3600;
 
 /** Escape text for Telegram HTML parse_mode. */
 export function escapeTelegramHtml(s) {
@@ -989,6 +991,13 @@ export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
     lines.push(`<b>24H:</b> 🟢 ${idx.buyTx24h} buys • 🔴 ${idx.sellTx24h} sells`);
   }
 
+  if (launch && !idx) {
+    lines.push("");
+    lines.push(
+      "<i>Extended pool stats (volume, price, trend, fees history) need the Doppler indexer to have this pool—same card logic as Discord.</i>"
+    );
+  }
+
   lines.push("");
   let deployerVal = formatDeployerOrFeeForTelegramHtml(launch?.deployer);
   const deployDisp = formatBankrRoleCountDisplay(deployFeed);
@@ -1069,7 +1078,7 @@ export function buildTokenDetailTelegramHtml(out, tokenAddress, options = {}) {
   lines.push(buildTradeLinksHtml(tokenAddress));
 
   let text = lines.join("\n");
-  if (text.length > TELEGRAM_HTML_MAX) text = `${text.slice(0, TELEGRAM_HTML_MAX - 20)}…`;
+  if (text.length > TELEGRAM_TOKEN_BODY_MAX) text = `${text.slice(0, TELEGRAM_TOKEN_BODY_MAX - 20)}…`;
   return text;
 }
 

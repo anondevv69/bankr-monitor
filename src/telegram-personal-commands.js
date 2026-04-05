@@ -16,6 +16,7 @@ import {
   buildTelegramTradeKeyboardMarkup,
   getDeployerFeedCount,
   getFeeRecipientFeedCount,
+  TELEGRAM_HTML_MAX,
 } from "./notify.js";
 import { getTokenFees, formatUsd } from "./token-stats.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
@@ -291,9 +292,12 @@ export async function sendTelegramTokenDetailReply(send, out, tokenAddress, bank
   const opts = await buildTelegramTokenDetailOptions(out, bankrApiKey);
   let html = buildTokenDetailTelegramHtml(out, tokenAddress, opts);
   const feesHtml = buildPasteTokenFeesTelegramHtml(out);
-  if (feesHtml) html += "\n\n" + feesHtml;
+  let combined = feesHtml ? `${html}\n\n${feesHtml}` : html;
+  if (combined.length > TELEGRAM_HTML_MAX) {
+    combined = `${combined.slice(0, TELEGRAM_HTML_MAX - 1)}…`;
+  }
   const keyboard = buildTelegramTradeKeyboardMarkup(tokenAddress);
-  await send(html, { parse_mode: "HTML", reply_markup: keyboard ?? undefined });
+  await send(combined, { parse_mode: "HTML", reply_markup: keyboard ?? undefined });
 }
 
 /**
