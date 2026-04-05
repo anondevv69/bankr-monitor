@@ -88,7 +88,7 @@ See [RAILWAY_AND_TENANT_STORAGE.md](RAILWAY_AND_TENANT_STORAGE.md).
 |--------|-------------|
 | Bot never replies in **groups** | [@BotFather](https://t.me/BotFather) → **`/setprivacy`** → **Disable** for your bot so it can read messages. |
 | Commands work in DM but not group | Same as above; ensure the bot is in the group. |
-| **`409 Conflict`** / webhook errors | Long-poll requires **no webhook**. Run: `https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook` (replace token only in your secure shell, never commit). |
+| **`409 Conflict`** / webhook errors | Long-poll requires **no webhook**. Call Telegram’s **`deleteWebhook`** for your bot (see Telegram Bot API docs; use your token only in a private shell, never commit). |
 | Outbound posts missing | Set **`TELEGRAM_BOT_TOKEN`** + **`TELEGRAM_CHAT_ID`**; check **`TELEGRAM_ALLOWED_CHAT_IDS`** isn’t blocking the destination. |
 
 ## 7. What does *not* run on Telegram alone

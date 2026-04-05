@@ -6,14 +6,14 @@ Do **not** commit real values for:
 
 - **`DISCORD_BOT_TOKEN`** — Discord bot token ([Developer Portal](https://discord.com/developers/applications))
 - **`TELEGRAM_BOT_TOKEN`** — from [@BotFather](https://t.me/BotFather)
-- **`BANKR_API_KEY`** / **`TELEGRAM_BANKR_API_KEYS`** — [bankr.bot/api](https://bankr.bot/api)
+- **`BANKR_API_KEY`** / **`TELEGRAM_BANKR_API_KEYS`** — from your Bankr developer account (get keys only from official Bankr channels; never commit them)
 - **`BASESCAN_API_KEY`**, **`DISCORD_WEBHOOK_URL`**, **`DISCORD_DEBUG_WEBHOOK_URL`**, **`ALCHEMY_KEY`**, or any other third-party API keys
 
 The repo includes **`.env.example`** with **placeholders only**. Copy to **`.env`** locally (`.env` is gitignored) and set secrets in your host’s **environment variables** or **secrets manager** (e.g. Railway Variables, GitHub Actions Secrets).
 
-## Public endpoints (OK to document)
+## Third-party URLs in docs
 
-Documented URLs such as `https://api.bankr.bot`, `https://bankr.indexer.doppler.lol/graphql`, and `https://api.telegram.org/bot<TOKEN>/...` are **public** APIs. Replace **`<TOKEN>`** with your own bot token at runtime — **never** paste a live token into the repo, issues, or screenshots.
+Documentation may mention public **product pages** or **developer portals**. **Credentials** (bot tokens, API keys, webhooks) are never “public” — keep them out of the repo, issues, and screenshots even when docs show example URL shapes.
 
 ## If a secret was exposed
 
