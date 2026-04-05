@@ -2,6 +2,7 @@
   "name": "bankr-monitor",
   "version": "1.0.0",
   "description": "Fetch and monitor tokens deployed via Bankr on Base (Doppler protocol)",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "check:indexer": "node src/check-indexer.js",

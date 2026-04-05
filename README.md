@@ -13,7 +13,7 @@ Once these are done, you can invite the bot to many servers and let each server 
 | Step | What to do |
 |------|-------------|
 | **1. Deploy Doppler indexer** | Run the [doppler-indexer](https://github.com/whetstoneresearch/doppler-indexer) on Railway (Postgres + indexer service). See **Self-hosting the Doppler indexer on Railway** below. |
-| **2. Set BankrMonitor env** | In the place where the bot runs (Railway, VPS, or `.env`): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DOPPLER_INDEXER_URL` (your indexer URL), `RPC_URL` (Base RPC), and optionally `BANKR_API_KEY` (so /lookup and paste/mention fee replies work without 403). |
+| **2. Set BankrMonitor env** | In the place where the bot runs (Railway, VPS, or `.env`): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DOPPLER_INDEXER_URL` (your indexer URL), `RPC_URL` (Base RPC), and optionally `BANKR_API_KEY` (so /lookup and paste/mention fee replies work without 403). For **`/deploy`**, use a key with Agent API (write). Set `HIDE_DEPLOY_COMMAND=true` only if you want to disable the deploy command. |
 | **3. Run the bot** | `npm start` (or deploy the Discord bot service). Optional: run `npm run fee-api` if you want the claimable-fees API. |
 | **4. Share** | Invite the bot to servers. Each server runs **/setup full** (or subcommands) and **/alert-watchlist add** for wallets/keywords. Use **/setup show** / **/setup channels** / **/setup rules** to edit. |
 
@@ -26,6 +26,36 @@ Verify the indexer: `DOPPLER_INDEXER_URL=https://your-indexer.up.railway.app npm
 3. Redeploy. The tenants file will live on the volume and survive future deploys. Optionally set **`SEEN_FILE=/data/bankr-seen.json`** and **`WATCH_FILE=/data/bankr-watch.json`** so the launch “seen” list and global watch list also persist.
 
 For full Railway + volume details see [docs/RAILWAY_AND_TENANT_STORAGE.md](docs/RAILWAY_AND_TENANT_STORAGE.md).
+
+---
+
+## Open source & self-hosting
+
+This project is **open source** under the [MIT License](LICENSE). You may download, fork, modify, and run your own bot.
+
+### Discord `/deploy` (optional token launches)
+
+The bot can expose **`/deploy`** so server admins (Manage Server) can launch Bankr tokens via the [Bankr Deploy API](https://docs.bankr.bot/token-launching/deploy-api) (`POST https://api.bankr.bot/token-launches/deploy`). Implementation: [`src/deploy-token.js`](src/deploy-token.js).
+
+- **Default:** `/deploy` is **registered** (`HIDE_DEPLOY_COMMAND` unset or `false`). Restart the bot after changing this so slash commands refresh.
+- **Requirements:** A Bankr API key with **Agent API (write)** access from [bankr.bot/api](https://bankr.bot/api). In Discord, the server’s key from **`/setup full`** is used when set; otherwise **`BANKR_API_KEY`** from the environment.
+- **To hide deploy** (e.g. you run a public bot and don’t want users launching tokens): set **`HIDE_DEPLOY_COMMAND=true`** in the bot’s environment.
+
+See also [CAPABILITIES.md](CAPABILITIES.md) for the full command list.
+
+### Tips for your GitHub repo
+
+| Tip | Why |
+|-----|-----|
+| **Description** | Short line, e.g. *Discord & Telegram bot for Bankr token launches on Base — alerts, lookups, cashtags, optional /deploy.* |
+| **Topics** | `bankr`, `doppler`, `base`, `discord-js`, `telegram`, `defi`, `token` — helps discovery. |
+| **README** | Point to `.env.example`, Railway volume notes, and **never commit secrets**. |
+| **Security** | Enable Dependabot; use **Secrets** for tokens in CI; add `.env` to `.gitignore` (already ignored if present). |
+| **License** | The repo includes `LICENSE` (MIT) — keep it or replace with a license you prefer. |
+
+### Thanks
+
+Community testing and feedback help improve BankrMonitor — with appreciation to **rayblanco.eth** and everyone who runs forks and reports issues.
 
 ---
 

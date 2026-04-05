@@ -127,8 +127,9 @@ const LOOKUP_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.LOOKUP_PAGE_SIZE
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 const lookupCache = new Map(); // messageId -> { matches, query, by, searchUrl, totalCount, possiblyCapped, createdAt }
 
-/** When true, /deploy is not registered and is hidden from help. Deploy handler code remains so it can be re-enabled by setting to false. */
-const HIDE_DEPLOY_COMMAND = true;
+/** When true, /deploy is not registered and is hidden from help. Default: show /deploy for self-hosted forks (set HIDE_DEPLOY_COMMAND=true to disable). */
+const HIDE_DEPLOY_COMMAND =
+  process.env.HIDE_DEPLOY_COMMAND === "true" || process.env.HIDE_DEPLOY_COMMAND === "1";
 
 /** Hot launch ping: min buys in first minute to trigger (DexScreener m5 at ~65s ≈ first minute). Set to 0 to disable. Use 5–10 for "first minute" pings. */
 const HOT_LAUNCH_MIN_BUYS_FIRST_MIN = Math.max(

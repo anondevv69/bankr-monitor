@@ -9,7 +9,7 @@
 | **/setup** | **full**, **api_key**, **channels** (includes ping toggles + roles), **rules**, **telegram**, **show**. |
 | **/claim-watch** | Claim watchlist: **add** / **remove** / **list** tokens; **check** / **wallet** lookups. |
 | **/lookup** | Search Bankr tokens by **deployer** or **fee recipient**. Query can be a **wallet** (0x…), **X handle** (@user or x.com link), or **Farcaster** (handle or warpcast link). Option **by**: Deployer / Fee recipient / Both. Returns token list (latest 5 we can show + link to full list on Bankr), with pagination when we have more than 5. |
-| **/deploy** | *(hidden by default)* Deploy a Bankr token from Discord. Re-enable by setting `HIDE_DEPLOY_COMMAND = false` in discord-bot.js. |
+| **/deploy** | Deploy a Bankr token from Discord (server admins). Requires a Bankr API key with Agent API (write). **Hidden** if env `HIDE_DEPLOY_COMMAND=true`. |
 | **/help** | In-bot help embed. |
 
 **Notification channels (optional, env or per-server /setup):**
