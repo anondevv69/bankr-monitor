@@ -20,6 +20,40 @@ For a **command-by-command** list, see **[CAPABILITIES.md](CAPABILITIES.md)**.
 
 ---
 
+## Examples (screenshots)
+
+Public on-chain / public profile data only — **no API keys or secrets** appear in these views.
+
+### Telegram
+
+**Trending** — token, market cap, deploy time, contract, launcher & fee recipient (with X links when available), short-term buy stats, quick trade buttons.
+
+![Telegram: trending alert example](docs/readme/telegram-trending.png)
+
+**Fee claim** — for **claim watch**, when fees move: ticker, contract, WETH amount, explorer link, trade shortcuts.
+
+![Telegram: fee claim notification example](docs/readme/telegram-fee-claim.png)
+
+### Discord
+
+**Watch list match** — ping when a **watched wallet** shows up on a new launch (here as fee recipient).
+
+![Discord: watch list match example](docs/readme/discord-watchlist-match.png)
+
+**Token card** — summary for a Bankr token: chain, CA, market cap, activity, deployer & recipient, trade links.
+
+![Discord: token summary embed example](docs/readme/discord-token-summary.png)
+
+**/lookup** — tie an **X profile URL** to a wallet and list **Bankr tokens** (with pagination).
+
+![Discord: slash lookup example](docs/readme/discord-lookup.png)
+
+**/wallet-lookup** — resolve a **handle** to a wallet, then use **`/lookup`** for deployments.
+
+![Discord: wallet-lookup example](docs/readme/discord-wallet-lookup.png)
+
+---
+
 ## Setup: Discord
 
 1. Create a **Discord application** and bot in the Discord Developer Portal. Copy the **bot token** and **application ID** — treat them as **secrets** (see **[SECURITY.md](SECURITY.md)**).
