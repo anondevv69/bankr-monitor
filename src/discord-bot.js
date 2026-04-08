@@ -222,6 +222,17 @@ function canManageServer(interaction) {
   return perms?.has(PermissionFlagsBits.ManageGuild) || perms?.has(PermissionFlagsBits.Administrator);
 }
 
+/** Discord `content` max length (embeds use separate limits). */
+const DISCORD_CONTENT_MAX = 2000;
+
+function clampDiscordContent(text, max = DISCORD_CONTENT_MAX) {
+  const s = String(text ?? "");
+  if (s.length <= max) return s;
+  const note = "\n… _(truncated — Discord 2000 char limit)_";
+  const cut = max - note.length;
+  return (cut > 0 ? s.slice(0, cut) : s.slice(0, max)) + note;
+}
+
 /** Send a line to the debug webhook (activity log). No-op if DISCORD_DEBUG_WEBHOOK_URL not set. */
 function debugLogActivity(serverNameOrId, userTag, action, detail) {
   if (!DEBUG_WEBHOOK_URL) return;
@@ -238,8 +249,9 @@ function debugLogError(err, context) {
   if (!DEBUG_WEBHOOK_URL) return;
   const message = err?.message ?? String(err);
   const stack = err?.stack?.slice(0, 800);
+  const errBlock = clampDiscordContent(`**Error** ${context ? `(${context})` : ""}\n\`\`\`\n${message}${stack ? `\n${stack}` : ""}\n\`\`\``, 1900);
   const body = JSON.stringify({
-    content: `**Error** ${context ? `(${context})` : ""}\n\`\`\`\n${message}${stack ? `\n${stack}` : ""}\n\`\`\``,
+    content: errBlock,
   });
   fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body }).catch(() => {});
 }
@@ -1786,12 +1798,12 @@ async function replyFeesForMessage(message, tokenAddress) {
         lines.push(`  [View](https://bankr.bot/launches/${t.tokenAddress})`);
       }
       lines.push("", "_Claim at [Bankr terminal](https://bankr.bot/terminal). No indexer needed — data from chain._");
-      await message.reply(lines.join("\n")).catch(() => {});
+      await message.reply(clampDiscordContent(lines.join("\n"))).catch(() => {});
       return;
     }
     await message.reply((out.error || recipient.error) || "Not a Bankr token or fee recipient, or no claimable fees found.").catch(() => {});
   } catch (e) {
-    await message.reply(`Fees lookup failed: ${e.message}`).catch(() => {});
+    await message.reply(clampDiscordContent(`Fees lookup failed: ${e.message}`, 1900)).catch(() => {});
   }
 }
 
@@ -1914,7 +1926,7 @@ function formatFeesTokenReply(out, tokenAddress) {
   if (!hasHookData && !hasIndexerFees && estimatedCreatorFeesUsd != null && estimatedCreatorFeesUsd > 0) {
     lines.push(`**Estimated** creator fees (57% of 1.2% of volume): ${fmt(estimatedCreatorFeesUsd) ?? "—"}`);
   }
-  return lines.join("\n").trim();
+  return clampDiscordContent(lines.join("\n").trim());
 }
 
 /** Fees field for paste-token embed: indexer/hook signal only; omit empty “0 / unknown” claim noise. */
@@ -2085,7 +2097,7 @@ client.on("messageCreate", async (message) => {
   } catch (e) {
     console.error("Token paste failed:", e.message);
     debugLogError(e, "messageCreate paste");
-    await message.reply(`Token lookup failed: ${e.message}`).catch(() => {});
+    await message.reply(clampDiscordContent(`Token lookup failed: ${e.message}`, 1900)).catch(() => {});
   }
 });
 
@@ -2137,7 +2149,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (e) {
       console.error("Wallet lookup failed:", e.message);
       debugLogError(e, "wallet-lookup");
-      await interaction.editReply({ content: `Resolve failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: clampDiscordContent(`Resolve failed: ${e.message}`, 1900) }).catch(() => {});
     }
     return;
   }
@@ -2169,7 +2181,7 @@ client.on("interactionCreate", async (interaction) => {
           ? `**Wallet for ${searchQ}:** \`${resolvedWallet}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
           : `No Bankr tokens found for **${searchQ}**.\n**[Full search on Bankr →](${searchUrl})**`;
         await interaction.editReply({
-          content: `${emptyBody}${hint}`,
+          content: clampDiscordContent(`${emptyBody}${hint}`),
         });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/lookup", `${searchQ} (0 results)`);
         return;
@@ -2196,7 +2208,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (e) {
       console.error("Lookup failed:", e.message);
       debugLogError(e, "lookup");
-      await interaction.editReply({ content: `Lookup failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: clampDiscordContent(`Lookup failed: ${e.message}`, 1900) }).catch(() => {});
     }
     return;
   }
@@ -2356,7 +2368,7 @@ client.on("interactionCreate", async (interaction) => {
     } catch (e) {
       console.error("Deploy failed:", e.message);
       debugLogError(e, "deploy");
-      await interaction.editReply({ content: `Deploy failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: clampDiscordContent(`Deploy failed: ${e.message}`, 1900) }).catch(() => {});
     }
     return;
   }
@@ -2455,7 +2467,7 @@ client.on("interactionCreate", async (interaction) => {
           "**Tip:** Firehose = every deploy. Curated = rules. **/alert-watchlist** = wallets & keywords (X/FC URLs resolve to wallet).",
           "Use **/setup show** to view everything; **/setup channels** to change channels and pings.",
         ];
-        await interaction.editReply({ content: lines.filter(Boolean).join("\n") });
+        await interaction.editReply({ content: clampDiscordContent(lines.filter(Boolean).join("\n")) });
         return;
       }
 
@@ -2493,7 +2505,7 @@ client.on("interactionCreate", async (interaction) => {
             : "• **Telegram:** (none)",
           "Edit with **/setup api_key**, **/setup channels** (includes ping toggles), **/setup rules**, **/setup telegram**.",
         ];
-        await interaction.editReply({ content: lines.join("\n") });
+        await interaction.editReply({ content: clampDiscordContent(lines.join("\n")) });
         return;
       }
 
@@ -2592,7 +2604,7 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.editReply({ content: "Unknown **/setup** subcommand." });
     } catch (e) {
-      await interaction.editReply({ content: `Setup failed: ${e.message}` }).catch(() => {});
+      await interaction.editReply({ content: clampDiscordContent(`Setup failed: ${e.message}`, 1900) }).catch(() => {});
     }
     return;
   }
@@ -2660,12 +2672,14 @@ client.on("interactionCreate", async (interaction) => {
             })
           );
           await interaction.reply({
-            content: `**Your claim watchlist** (${list.length}):\n\n${withSymbol.join("\n")}\n\nUse **/claim-watch remove** with address or label.`,
+            content: clampDiscordContent(
+              `**Your claim watchlist** (${list.length}):\n\n${withSymbol.join("\n")}\n\nUse **/claim-watch remove** with address or label.`
+            ),
             flags: MessageFlags.Ephemeral,
           });
         }
       } catch (e) {
-        await interaction.reply({ content: `claim-watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.reply({ content: clampDiscordContent(`claim-watch failed: ${e.message}`, 1900), flags: MessageFlags.Ephemeral }).catch(() => {});
       }
       return;
     }
@@ -2688,7 +2702,9 @@ client.on("interactionCreate", async (interaction) => {
             const { count, latestTxHash } = await getClaimTxsFromBaseScan(out.feeWallet, undefined, { limit: 50 });
             if (count > 0 && latestTxHash) {
               await interaction.editReply({
-                content: `No claims via RPC for \`${addr}\`.\n**BaseScan:** Fee recipient has **${count}** claim tx(s). Latest: https://basescan.org/tx/${latestTxHash}`,
+                content: clampDiscordContent(
+                  `No claims via RPC for \`${addr}\`.\n**BaseScan:** Fee recipient has **${count}** claim tx(s). Latest: https://basescan.org/tx/${latestTxHash}`
+                ),
               });
               return;
             }
@@ -2698,10 +2714,12 @@ client.on("interactionCreate", async (interaction) => {
         }
         const lines = claims.map((c) => `• \`${c.beneficiary}\` · ${c.wethAmount} WETH · [TX](https://basescan.org/tx/${c.txHash})`);
         await interaction.editReply({
-          content: `**Claimed** \`${addr}\` (${claims.length}):\n\n${lines.join("\n")}\n\n[Bankr](https://bankr.bot/launches/${addr})`,
+          content: clampDiscordContent(
+            `**Claimed** \`${addr}\` (${claims.length}):\n\n${lines.join("\n")}\n\n[Bankr](https://bankr.bot/launches/${addr})`
+          ),
         });
       } catch (e) {
-        await interaction.editReply({ content: `Failed: ${e.message}` }).catch(() => {});
+        await interaction.editReply({ content: clampDiscordContent(`Failed: ${e.message}`, 1900) }).catch(() => {});
       }
       return;
     }
@@ -2727,10 +2745,10 @@ client.on("interactionCreate", async (interaction) => {
           return `${sym ? sym + " " : ""}\`${c.tokenAddress}\` · ${c.wethAmount} WETH · [Bankr](${bankr}) · [TX](${tx})`;
         });
         await interaction.editReply({
-          content: `**Bankr claims for** \`${addr}\` (${claims.length}):\n\n${lines.join("\n")}`,
+          content: clampDiscordContent(`**Bankr claims for** \`${addr}\` (${claims.length}):\n\n${lines.join("\n")}`),
         });
       } catch (e) {
-        await interaction.editReply({ content: `Failed: ${e.message}` }).catch(() => {});
+        await interaction.editReply({ content: clampDiscordContent(`Failed: ${e.message}`, 1900) }).catch(() => {});
       }
       return;
     }
@@ -2768,7 +2786,9 @@ client.on("interactionCreate", async (interaction) => {
             `• **${e.label || `${e.tokenAddress.slice(0, 10)}…`}** · \`${e.tokenAddress}\`\n  id: \`${e.id}\`\n  ${summarizeActivityWatchThresholds(e)} · cooldown ${Math.round(e.cooldownSec / 60)}m`
         );
         await interaction.reply({
-          content: `**Activity watch** (${list.length})\n\n${lines.join("\n\n")}\n\n_15m/1h use the last 1000 swaps in 24h (sample). Very active pools may undercount._`,
+          content: clampDiscordContent(
+            `**Activity watch** (${list.length})\n\n${lines.join("\n\n")}\n\n_15m/1h use the last 1000 swaps in 24h (sample). Very active pools may undercount._`
+          ),
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -2821,13 +2841,15 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         await interaction.reply({
-          content: `Added rule \`${entry.id}\`\nToken: \`${entry.tokenAddress}\`\n${summarizeActivityWatchThresholds(entry)}\nAlerts → <#${chId}> · cooldown **${Math.round(entry.cooldownSec / 60)}** min\n\n_15m/1h: swap sample. 24h: indexer bucket._`,
+          content: clampDiscordContent(
+            `Added rule \`${entry.id}\`\nToken: \`${entry.tokenAddress}\`\n${summarizeActivityWatchThresholds(entry)}\nAlerts → <#${chId}> · cooldown **${Math.round(entry.cooldownSec / 60)}** min\n\n_15m/1h: swap sample. 24h: indexer bucket._`
+          ),
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
     } catch (e) {
-      await interaction.reply({ content: `activity-watch failed: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.reply({ content: clampDiscordContent(`activity-watch failed: ${e.message}`, 1900), flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return;
   }
@@ -2986,14 +3008,19 @@ client.on("interactionCreate", async (interaction) => {
           "**Keywords:** " + fmtKw(wl.keywords),
           legacy,
         ];
-        await interaction.reply({ content: lines.filter(Boolean).join("\n"), flags: MessageFlags.Ephemeral });
+        await interaction.reply({
+          content: clampDiscordContent(lines.filter(Boolean).join("\n")),
+          flags: MessageFlags.Ephemeral,
+        });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/alert-watchlist list", "");
       } else {
         const { wallet, keywords } = await list();
         const walletBlock = wallet.length ? wallet.map((w) => `\`${w}\``).join("\n") : "_none_";
         const kwStr = keywords.length ? keywords.map((k) => `"${k}"`).join(", ") : "_none_";
         await interaction.reply({
-          content: `**Alert watchlist** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup full** for a per-server list.`,
+          content: clampDiscordContent(
+            `**Alert watchlist** (global)\n\n**Wallets:**\n${walletBlock}\n\n**Keywords:** ${kwStr}\n\nRun **/setup full** for a per-server list.`
+          ),
           flags: MessageFlags.Ephemeral,
         });
         debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/alert-watchlist list", "global");
@@ -3002,7 +3029,7 @@ client.on("interactionCreate", async (interaction) => {
   } catch (e) {
     console.error("alert-watchlist failed:", e.message);
     debugLogError(e, "alert-watchlist");
-    await interaction.reply({ content: `Error: ${e.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply({ content: clampDiscordContent(`Error: ${e.message}`, 1900), flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 });
 
