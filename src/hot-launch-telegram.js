@@ -3,7 +3,7 @@
  */
 
 import { getHotTokenStats, formatUsd } from "./token-stats.js";
-import { fetchLaunchByTokenAddress, enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
+import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 import { schedulePersonalHotTrendingDms } from "./telegram-personal-dm.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
@@ -154,6 +154,8 @@ export function scheduleHotLaunchTelegramCheck(
         (TRENDING_MIN_BUYS_1H > 0 && buys1h >= TRENDING_MIN_BUYS_1H) ||
         trendingByIndexerVol;
       if (!isHot && !isTrending) return;
+      // fetchLaunchByTokenAddress lives in notify.js; dynamic import avoids circular dep (notify → this module).
+      const { fetchLaunchByTokenAddress } = await import("./notify.js");
       const fetched = (await fetchLaunchByTokenAddress(launch.tokenAddress, apiKey)) || launch;
       let launchForEmbed = {
         ...fetched,
