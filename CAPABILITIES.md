@@ -1,4 +1,4 @@
-# BankrMonitor – Capabilities Overview
+# BankrMonitor Personal – Capabilities Overview
 
 ## 1. **Discord bot** (`npm start` / `npm run bot`)
 

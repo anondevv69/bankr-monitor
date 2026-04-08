@@ -1,7 +1,7 @@
 {
-  "name": "bankr-monitor",
+  "name": "bankr-monitor-personal",
   "version": "1.0.0",
-  "description": "Fetch and monitor tokens deployed via Bankr on Base (Doppler protocol)",
+  "description": "Personal / self-hosted fork: Discord + Telegram tooling for Bankr token launches on Base",
   "license": "MIT",
   "type": "module",
   "scripts": {

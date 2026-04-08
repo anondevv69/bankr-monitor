@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve BankrMonitor.
+Thanks for helping improve this Bankr tooling fork (see README / FORK.md).
 
 - **Bugs / features:** Open an issue with steps to reproduce or a clear use case.
 - **Pull requests:** Keep changes focused on one concern; match existing code style; run **`npm test`** before submitting.

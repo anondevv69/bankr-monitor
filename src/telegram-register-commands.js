@@ -18,7 +18,9 @@ export async function registerTelegramBotCommands(botToken) {
       });
       const data = await res.json().catch(() => ({}));
       if (!data.ok) {
-        console.warn("[Telegram setMyCommands]", scope?.type, data.description || res.status);
+        console.warn("[Telegram setMyCommands]", scope?.type, data.description || data.error_code || res.status);
+      } else {
+        console.log("[Telegram setMyCommands] ok", scope?.type, commands.length, "commands");
       }
     } catch (e) {
       console.warn("[Telegram setMyCommands] fetch failed:", e.message);
@@ -47,12 +49,18 @@ export async function registerTelegramBotCommands(botToken) {
     { command: "claims", description: "Fee claims for a wallet — /claims 0x…" },
     { command: "topicid", description: "Show this chat/topic IDs for env vars" },
     { command: "tg_help", description: "Group commands & paste CA lookup" },
+    { command: "add", description: "Add to this group's watch list (like DM /add)" },
+    { command: "remove", description: "Remove from this group's watch list" },
+    { command: "watchlist", description: "List this group's watch list" },
     { command: "walletlookup", description: "Resolve profile URL to wallet" },
     { command: "wallet", description: "Same as /walletlookup" },
     { command: "lookup", description: "Bankr tokens for wallet or profile" },
     { command: "token", description: "Fee summary for 0x…ba3" },
     { command: "tg_settings", description: "Paste lookup on/off status" },
     { command: "tg_tokenlookup", description: "Admins: on or off auto paste lookup" },
+    { command: "tg_watch", description: "Group watch list: /tg_watch list | add | remove" },
+    { command: "tg_watchlist", description: "Same as /tg_watch" },
+    { command: "tg_alerts", description: "Watch/hot/trending alerts for this group" },
   ];
 
   await setCommands(privateCommands, { type: "all_private_chats" });

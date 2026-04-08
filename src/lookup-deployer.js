@@ -15,6 +15,7 @@ import "dotenv/config";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
+import { bankrApiUserAgent } from "./brand.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // How many launches to scan from full list (with API key) to find all tokens for a wallet. Higher = more pages/faster for big deployers.
@@ -32,7 +33,7 @@ const bankrWalletRoleCountCache = new Map();
 
 const BANKR_FETCH_HEADERS = {
   Accept: "application/json",
-  "User-Agent": "BankrMonitor/1.0 (https://github.com/anondevv69/bankr-monitor)",
+  "User-Agent": bankrApiUserAgent("lookup"),
 };
 
 /** Optional handle -> wallet overrides (e.g. BANKR_HANDLE_WALLET_OVERRIDES='{"gork":"0x23..."}') when API doesn't return them. */

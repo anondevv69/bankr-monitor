@@ -10,7 +10,7 @@ This doc describes **what we use to fetch launch/lookup data** so you can verify
 
 - **Endpoint:** `GET https://api.bankr.bot/token-launches/search`
 - **Query params:** `q=<wallet|handle>`, `limit` (default 25), `offset`
-- **Headers:** `Accept: application/json`, `User-Agent: BankrMonitor/1.0 (...)`, and optionally `X-API-Key: <BANKR_API_KEY>` (from env or /setup).
+- **Headers:** `Accept: application/json`, `User-Agent: <from BRAND_DISPLAY_NAME + BRAND_REPO_URL via src/brand.js>`, and optionally `X-API-Key: <BANKR_API_KEY>` (from env or /setup).
 - **Response shape we handle:**
   - **`exactMatch`** – When the query matches a **single** launch (e.g. one token where this wallet is fee recipient), Bankr returns that launch in `exactMatch`, not in `groups`. We **must** read `exactMatch` and treat it as one result (see `getSearchResultArrays` in `src/lookup-deployer.js`). Example: `?q=0x…` (full wallet) → one launch in `exactMatch`.
   - **`groups.byDeployer.results`**, **`groups.byFeeRecipient.results`**, **`groups.byWallet.results`** – Paginated lists when there are multiple matches.

@@ -59,6 +59,8 @@ import {
   getFeeRecipientFeedCount,
   getDeployerFeedCount,
 } from "./notify.js";
+import { sendTelegramGroupWatchMatches, mergeTelegramGroupHotTrendingTargets } from "./telegram-group-notify.js";
+import { sendTelegramHotTrendingPings } from "./hot-launch-telegram.js";
 import {
   lookupByDeployerOrFee,
   resolveHandleToWallet,
@@ -87,8 +89,17 @@ import {
 import { isPersonalDmsEnabled } from "./telegram-personal-store.js";
 import { handlePersonalTelegramCommand } from "./telegram-personal-commands.js";
 import { handleTelegramGroupMessage } from "./telegram-group-handlers.js";
+import {
+  listTelegramGroupAlertConfigs,
+  telegramGroupWatchListHasEntries,
+  updateTelegramGroupWatchlist,
+  getTelegramGroupWatchListDisplay,
+  getTelegramGroupSettings,
+  updateTelegramGroupSettings,
+} from "./telegram-group-settings.js";
 import { registerTelegramBotCommands } from "./telegram-register-commands.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
+import { BRAND_DISPLAY_NAME } from "./brand.js";
 import {
   runActivityWatchPoll,
   summarizeActivityWatchThresholds,
@@ -766,7 +777,7 @@ async function registerCommands(appId) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName("help")
-      .setDescription("BankrMonitor: lookup, alert-watchlist, activity-watch, claim-watch, setup" + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
+      .setDescription(`${BRAND_DISPLAY_NAME}: lookup, alert-watchlist, activity-watch, claim-watch, setup` + (HIDE_DEPLOY_COMMAND ? "" : ", deploy"))
       .toJSON(),
   ];
 
@@ -1026,50 +1037,17 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         }
       }
       schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
-      const sendTgHotTopics = isHot && (telegramHotTargets?.length > 0);
-      const sendTgTrendingTopics = isTrending && (telegramTrendingTargets?.length > 0);
-      const needsTelegramHotTrend =
-        (isHot && ((telegramChatIds || []).length > 0 || sendTgHotTopics)) || sendTgTrendingTopics;
-      if (needsTelegramHotTrend) {
-        const runTelegramHotTrend = async () => {
-          try {
-            const seen = new Set();
-            if (isHot) {
-              for (const chatId of telegramChatIds || []) {
-                const key = `g:${chatId}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                await sendTelegramHotPing(launchForEmbed, hotStats, { chatId }).catch(() => {});
-              }
-              for (const t of telegramHotTargets || []) {
-                const key = `h:${t.chatId}:${t.messageThreadId ?? ""}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                await sendTelegramHotPing(launchForEmbed, hotStats, {
-                  chatId: t.chatId,
-                  messageThreadId: t.messageThreadId,
-                }).catch(() => {});
-              }
-            }
-            if (isTrending) {
-              for (const t of telegramTrendingTargets || []) {
-                const key = `tr:${t.chatId}:${t.messageThreadId ?? ""}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                await sendTelegramHotPing(launchForEmbed, hotStats, {
-                  chatId: t.chatId,
-                  messageThreadId: t.messageThreadId,
-                  trending: true,
-                }).catch(() => {});
-              }
-            }
-          } catch (e) {
-            console.error("Telegram hot/trending ping failed:", e.message);
-          }
-        };
-        if (telegramDelayMs > 0) setTimeout(runTelegramHotTrend, telegramDelayMs);
-        else void runTelegramHotTrend();
-      }
+      await sendTelegramHotTrendingPings({
+        sendTelegramHotPing,
+        launchForEmbed,
+        hotStats,
+        isHot,
+        isTrending,
+        telegramChatIds,
+        telegramHotTargets,
+        telegramTrendingTargets,
+        telegramDelayMs,
+      });
     } catch (e) {
       console.error("Hot launch check failed:", e.message);
       debugLogError(e, "scheduleHotLaunchCheck");
@@ -1081,6 +1059,7 @@ async function runNotify() {
   const hasEnvChannels = ALL_LAUNCHES_CHANNEL_ID || ALERT_CHANNEL_ID || WATCH_ALERT_CHANNEL_ID;
   if (hasEnvChannels) {
     try {
+      const telegramGroupConfigs = await listTelegramGroupAlertConfigs();
       const { newLaunches } = await runNotifyCycle();
       const allChannel = ALL_LAUNCHES_CHANNEL_ID ? await client.channels.fetch(ALL_LAUNCHES_CHANNEL_ID).catch(() => null) : null;
       const alertChannel = ALERT_CHANNEL_ID ? await client.channels.fetch(ALERT_CHANNEL_ID).catch(() => null) : null;
@@ -1121,6 +1100,10 @@ async function runNotify() {
           scheduleTelegramLaunchSend(launchForEmbeds, { messageThreadId: envCuratedTopic });
         }
         schedulePersonalLaunchDms(launchForEmbeds);
+        await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
+          sendTelegram,
+          outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
+        });
       }
       if (
         newLaunches.length > 0 &&
@@ -1141,6 +1124,7 @@ async function runNotify() {
         const telegramIds = envChat && envHot == null && envTrend == null ? [envChat] : [];
         const telegramHotTargets = envChat && envHot != null ? [{ chatId: envChat, messageThreadId: envHot }] : [];
         const telegramTrendingTargets = envChat && envTrend != null ? [{ chatId: envChat, messageThreadId: envTrend }] : [];
+        mergeTelegramGroupHotTrendingTargets(telegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
         for (const launch of newLaunches) {
           scheduleHotLaunchCheck(launch, {
             discordHotChannelIds: discordHotIds,
@@ -1164,6 +1148,7 @@ async function runNotify() {
     }
     if (tenantsWithChannels.length > 0) {
       try {
+        const telegramGroupConfigs = await listTelegramGroupAlertConfigs();
         const firstApiKey = defaultBankrApiKey(tenantsWithChannels[0]?.bankrApiKey);
         const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
         // Per-tenant curated list for "1 of N" footer
@@ -1225,6 +1210,10 @@ async function runNotify() {
             }
           }
           schedulePersonalLaunchDms(launchForEmbeds);
+          await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
+          sendTelegram,
+          outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
+        });
         }
         if (
           newLaunches.length > 0 &&
@@ -1250,6 +1239,7 @@ async function runNotify() {
             else if (envTrend == null) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
             if (envTrend != null) telegramTrendingTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envTrend });
           }
+          mergeTelegramGroupHotTrendingTargets(telegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
           for (const tenant of tenantsWithChannels) {
             if (tenant.hotLaunchEnabled !== false && tenant.hotAlertChannelId) {
               discordHotChannelIds.push(tenant.hotAlertChannelId);
@@ -1293,14 +1283,76 @@ async function runNotify() {
         debugLogError(e, "runNotify (tenant channels)");
       }
     } else {
-      const child = spawn(
-        process.execPath,
-        [join(__dirname, "notify.js")],
-        { stdio: "inherit", env: process.env }
+      const telegramGroupConfigs = await listTelegramGroupAlertConfigs();
+      const wantsTgAlerts = telegramGroupConfigs.some(
+        (c) =>
+          (c.alertWatchMatch !== false && telegramGroupWatchListHasEntries(c.watchListSets)) ||
+          c.alertHot === true ||
+          c.alertTrending === true
       );
-      await new Promise((resolve, reject) => {
-        child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
-      });
+      if (wantsTgAlerts && process.env.TELEGRAM_BOT_TOKEN) {
+        try {
+          const firstApiKey = defaultBankrApiKey();
+          const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
+          const roleCountApiKey = firstApiKey;
+          for (const launch of newLaunches) {
+            const launchForEmbeds = roleCountApiKey
+              ? await enrichLaunchWithBankrRoleCounts(launch, { bankrApiKey: roleCountApiKey })
+              : launch;
+            schedulePersonalLaunchDms(launchForEmbeds);
+            await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
+          sendTelegram,
+          outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
+        });
+          }
+          if (
+            newLaunches.length > 0 &&
+            (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
+              HOT_LAUNCH_MIN_HOLDERS > 0 ||
+              TRENDING_MIN_BUYS_30M > 0 ||
+              TRENDING_MIN_BUYS_5M > 0 ||
+              TRENDING_MIN_BUYS_1H > 0 ||
+              HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
+              TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
+          ) {
+            const telegramIds = new Set();
+            const telegramHotTargets = [];
+            const telegramTrendingTargets = [];
+            if (process.env.TELEGRAM_CHAT_ID) {
+              const envHot = process.env.TELEGRAM_TOPIC_HOT != null ? process.env.TELEGRAM_TOPIC_HOT : undefined;
+              const envTrend = process.env.TELEGRAM_TOPIC_TRENDING != null ? process.env.TELEGRAM_TOPIC_TRENDING : undefined;
+              if (envHot != null) telegramHotTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envHot });
+              else if (envTrend == null) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
+              if (envTrend != null) telegramTrendingTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envTrend });
+            }
+            mergeTelegramGroupHotTrendingTargets(telegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
+            for (const launch of newLaunches) {
+              scheduleHotLaunchCheck(launch, {
+                discordHotChannelIds: [],
+                discordTrendingChannelIds: [],
+                telegramChatIds: [...telegramIds],
+                telegramHotTargets,
+                telegramTrendingTargets,
+                bankrApiKey: firstApiKey,
+                hotPingConfigByGuildId: {},
+                telegramHotPingDelayMs: null,
+              });
+            }
+          }
+        } catch (e) {
+          console.error("Notify (Telegram groups only) failed:", e.message);
+          debugLogError(e, "runNotify tg-only");
+        }
+      } else {
+        const child = spawn(
+          process.execPath,
+          [join(__dirname, "notify.js")],
+          { stdio: "inherit", env: process.env }
+        );
+        await new Promise((resolve, reject) => {
+          child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+        });
+      }
     }
   }
   await runClaimWatchCycle().catch((e) => {
@@ -1559,7 +1611,7 @@ client.once("ready", async () => {
       const guildCount = client.guilds.cache.size;
       const stats = await getTenantStats();
       const body = JSON.stringify({
-        content: `**BankrMonitor** · In **${guildCount}** Discord server(s) · **${stats.configuredGuilds}** with /setup · **${stats.guildsWithTelegram}** with Telegram`,
+        content: `**${BRAND_DISPLAY_NAME}** · In **${guildCount}** Discord server(s) · **${stats.configuredGuilds}** with /setup · **${stats.guildsWithTelegram}** with Telegram`,
       });
       await fetch(DEBUG_WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body });
     } catch (e) {
@@ -2152,7 +2204,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "help") {
     const embed = {
       color: 0x0052_ff,
-      title: "BankrMonitor – How to use",
+      title: `${BRAND_DISPLAY_NAME} – How to use`,
       description:
         "**Alert watchlist** for launches, **activity-watch** for per-token mcap/activity thresholds, **claim-watch** for fee claims, **wallet lookup**, and **/lookup** for deployments." +
         (HIDE_DEPLOY_COMMAND ? "" : " You can also **deploy** Bankr tokens from Discord.") +

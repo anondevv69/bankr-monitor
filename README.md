@@ -1,6 +1,8 @@
-# BankrMonitor
+# BankrMonitor Personal
 
-Self-hostable **Discord** and **Telegram** tooling around **[Bankr](https://bankr.bot)** token launches on **Base** (Doppler / Uniswap V4 style pools). Run your own bot to follow new deployments, run lookups, and optionally get alerts in your channels or DMs.
+Self-hostable **Discord** and **Telegram** tooling around **[Bankr](https://bankr.bot)** token launches on **Base** (Doppler / Uniswap V4 style pools). This tree is intended for **personal / self-hosted** use — configure your own bot, channels, and keys.
+
+**Branding:** override **`BRAND_DISPLAY_NAME`** / **`BRAND_REPO_URL`** in `.env` (see `.env.example`). See **[FORK.md](FORK.md)** for publishing to your own GitHub remote.
 
 ---
 
@@ -92,12 +94,8 @@ Outbound posts and **interactive** Telegram commands (`/lookup`, `/token`, paste
 
 ---
 
-## License, thanks, donations
+## License
 
-Licensed under **[LICENSE](LICENSE)** (MIT).
+Licensed under **[LICENSE](LICENSE)** (MIT). Not affiliated with Bankr, Inc.
 
-Thank you to anyone who forks this project or contributes future updates. An **agent skill** will be published here as well.
-
-**See an example of how it works:** join the Telegram group **[Bankr monitor](https://t.me/bankrmonitor)**, or message the bot in Telegram: **[@Bankrmonitor_bot](https://t.me/Bankrmonitor_bot)**.
-
-Donations are welcome to **`rayblanco.eth`** (ENS). The project stays free to self-host.
+Upstream and community forks may reference their own donation links; this **personal** copy does not imply endorsement of any third-party bot or group — run your own stack and keys.

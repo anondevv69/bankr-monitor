@@ -6,6 +6,7 @@
  */
 
 import { readFile, writeFile, mkdir } from "fs/promises";
+import { bankrApiUserAgent } from "./brand.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -24,7 +25,7 @@ function getWatchedAgentSlugs() {
 
 const FETCH_HEADERS = {
   Accept: "application/json",
-  "User-Agent": "BankrMonitor/1.0 (Discord bot; https://github.com/anondevv69/bankr-monitor)",
+  "User-Agent": bankrApiUserAgent("agent-profiles"),
 };
 
 /**

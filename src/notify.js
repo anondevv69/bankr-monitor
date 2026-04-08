@@ -33,6 +33,10 @@ import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
 import { getAddress } from "viem";
+import { listTelegramGroupAlertConfigs, telegramGroupWatchListHasEntries } from "./telegram-group-settings.js";
+import { sendTelegramGroupWatchMatches, mergeTelegramGroupHotTrendingTargets } from "./telegram-group-notify.js";
+import { scheduleHotLaunchTelegramCheck, hasHotTrendingThresholdsConfigured } from "./hot-launch-telegram.js";
+import { BRAND_DISPLAY_NAME } from "./brand.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Cap pagination to avoid 429; only need recent launches for notify. Override with BANKR_LAUNCHES_LIMIT.
@@ -66,7 +70,7 @@ const TELEGRAM_ALLOWED_CHAT_IDS =
         .filter(Boolean)
     : null;
 
-function allowedTelegramChat(chatId) {
+export function allowedTelegramChat(chatId) {
   if (!chatId) return false;
   if (TELEGRAM_ALLOWED_CHAT_IDS === null) return true;
   const id = String(chatId).trim();
@@ -800,7 +804,7 @@ export function buildTokenDetailEmbed(out, tokenAddress, options = {}) {
     url: launchUrl,
     fields,
     timestamp: new Date().toISOString(),
-    footer: { text: "BankrMonitor • bankr.bot" },
+    footer: { text: `${BRAND_DISPLAY_NAME} • bankr.bot` },
   };
   if (img) embed.thumbnail = { url: img };
   return embed;
@@ -1729,9 +1733,16 @@ export async function runNotifyCycle(options = {}) {
 }
 
 async function main() {
-  if (!DISCORD_WEBHOOK && !(TELEGRAM_TOKEN && TELEGRAM_CHAT)) {
+  const telegramGroupConfigs = await listTelegramGroupAlertConfigs();
+  const wantsTgGroupAlerts = telegramGroupConfigs.some(
+    (c) =>
+      (c.alertWatchMatch !== false && telegramGroupWatchListHasEntries(c.watchListSets)) ||
+      c.alertHot === true ||
+      c.alertTrending === true
+  );
+  if (!DISCORD_WEBHOOK && !(TELEGRAM_TOKEN && TELEGRAM_CHAT) && !(TELEGRAM_TOKEN && wantsTgGroupAlerts)) {
     console.error(
-      "Set DISCORD_WEBHOOK_URL and/or TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID"
+      "Set DISCORD_WEBHOOK_URL and/or TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID, or TELEGRAM_BOT_TOKEN with group alerts (TELEGRAM_GROUP_SETTINGS_FILE)"
     );
     process.exit(1);
   }
@@ -1744,13 +1755,46 @@ async function main() {
   const { newLaunches } = await runNotifyCycle();
   for (const launch of newLaunches) {
     await sendDiscordWebhook(launch);
-    if (tgAfterDiscordMs <= 0) {
-      await sendTelegram(launch, { messageThreadId: firehoseThreadId });
-    } else {
-      setTimeout(
-        () => void sendTelegram(launch, { messageThreadId: firehoseThreadId }).catch(() => {}),
-        tgAfterDiscordMs
-      );
+    if (TELEGRAM_TOKEN && TELEGRAM_CHAT) {
+      if (tgAfterDiscordMs <= 0) {
+        await sendTelegram(launch, { messageThreadId: firehoseThreadId });
+      } else {
+        setTimeout(
+          () => void sendTelegram(launch, { messageThreadId: firehoseThreadId }).catch(() => {}),
+          tgAfterDiscordMs
+        );
+      }
+    }
+    if (TELEGRAM_TOKEN && telegramGroupConfigs.length > 0) {
+      await sendTelegramGroupWatchMatches(launch, telegramGroupConfigs, {
+        sendTelegram,
+        outboundDelayMs: tgAfterDiscordMs,
+      });
+    }
+  }
+
+  if (TELEGRAM_TOKEN && newLaunches.length > 0 && hasHotTrendingThresholdsConfigured()) {
+    const telegramIds = new Set();
+    const telegramHotTargets = [];
+    const telegramTrendingTargets = [];
+    if (process.env.TELEGRAM_CHAT_ID) {
+      const envHot = process.env.TELEGRAM_TOPIC_HOT != null ? process.env.TELEGRAM_TOPIC_HOT : undefined;
+      const envTrend = process.env.TELEGRAM_TOPIC_TRENDING != null ? process.env.TELEGRAM_TOPIC_TRENDING : undefined;
+      if (envHot != null) telegramHotTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envHot });
+      else if (envTrend == null) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
+      if (envTrend != null) telegramTrendingTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envTrend });
+    }
+    mergeTelegramGroupHotTrendingTargets(telegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
+    const apiKey = defaultBankrApiKey();
+    for (const launch of newLaunches) {
+      scheduleHotLaunchTelegramCheck(launch, {
+        sendTelegramHotPing,
+        telegramChatIds: [...telegramIds],
+        telegramHotTargets,
+        telegramTrendingTargets,
+        bankrApiKey: apiKey,
+        telegramHotPingDelayMs: null,
+      });
     }
   }
 }

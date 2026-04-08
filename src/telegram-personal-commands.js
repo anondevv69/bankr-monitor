@@ -33,6 +33,7 @@ import {
   TELEGRAM_PERSONAL_WATCHLIST_MAX,
 } from "./telegram-personal-store.js";
 import { summarizeActivityWatchThresholds } from "./activity-watch.js";
+import { BRAND_DISPLAY_NAME } from "./brand.js";
 import { hasTelegramBankrApiKeys, pickTelegramBankrApiKeyRoundRobin } from "./telegram-bankr-keys.js";
 import { resolveCashtagToBankrToken, formatCashtagResolvePreambleHtml } from "./cashtag-resolve.js";
 
@@ -207,7 +208,8 @@ export async function sendTelegramTokenLookupResult(send, out, filterMode = "bot
   await send(lines.join("\n"));
 }
 
-async function classifyWatchArg(raw, bankrApiKey) {
+/** Used by personal /add and group /add alias (same parsing rules). */
+export async function classifyWatchArg(raw, bankrApiKey) {
   const arg = String(raw || "").trim();
   if (!arg) return { error: "Provide a value after the command." };
   const { normalized, isWallet } = parseQuery(arg);
@@ -567,7 +569,7 @@ export async function handlePersonalTelegramCommand(ctx) {
     await registerPersonalUser(chatId);
     await send(
       [
-        "BankrMonitor — personal alerts",
+        `${BRAND_DISPLAY_NAME} — personal alerts`,
         "",
         "Commands:",
         "/add <wallet | 0x…ba3 token | @handle | keyword>",
