@@ -2163,22 +2163,31 @@ client.on("interactionCreate", async (interaction) => {
       const apiKey = defaultBankrApiKey(tenant?.bankrApiKey);
       const { matches, totalCount, normalized, possiblyCapped, resolvedWallet } = await lookupByDeployerOrFee(query, by, "newest", { bankrApiKey: apiKey });
       const searchQ = normalized || String(query).trim();
-      const searchUrl = resolvedWallet
-        ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet)}`
+      let resolvedForSearch = resolvedWallet;
+      if (!resolvedForSearch && normalized && apiKey && !/^0x[a-fA-F0-9]{40}$/i.test(String(normalized).trim())) {
+        try {
+          const again = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
+          if (again.wallet) resolvedForSearch = again.wallet;
+        } catch {
+          /* ignore */
+        }
+      }
+      const searchUrl = resolvedForSearch
+        ? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedForSearch)}`
         : `https://bankr.bot/launches/search?q=${encodeURIComponent(searchQ)}`;
       if (matches.length === 0) {
         const isWalletQuery = /^0x[a-fA-F0-9]{40}$/.test(String(searchQ).trim());
         let hint = "";
-        if (!isWalletQuery && !resolvedWallet) {
+        if (!isWalletQuery && !resolvedForSearch) {
           hint = !apiKey
             ? "\n\nCouldn't resolve this handle to a wallet. Ask your server admin to set an API key in **/setup** (from [bankr.bot/api](https://bankr.bot/api)) so the bot can resolve X/Farcaster handles and search by wallet."
             : "\n\nBankr didn't return a linked wallet for this handle from our last request. Use the search link or try a **0x…** address.";
-        } else if (resolvedWallet && !isWalletQuery) {
+        } else if (resolvedForSearch && !isWalletQuery) {
           hint =
-            "\n\nThe wallet was resolved from your handle, but no matching launches were merged from the API in this session. **Open the Bankr search link** to see tokens the site still lists for this wallet.";
+            "\n\nThe wallet was resolved from your handle, but no matching launches were merged from the API in this session (often rate limits). **Open the Bankr search link** to see tokens the site still lists for this wallet.";
         }
-        const emptyBody = resolvedWallet
-          ? `**Wallet for ${searchQ}:** \`${resolvedWallet}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
+        const emptyBody = resolvedForSearch
+          ? `**Wallet for ${searchQ}:** \`${resolvedForSearch}\`\n\nNo Bankr tokens returned for this wallet in the bot's lookup.\n**[Search on Bankr →](${searchUrl})**`
           : `No Bankr tokens found for **${searchQ}**.\n**[Full search on Bankr →](${searchUrl})**`;
         await interaction.editReply({
           content: clampDiscordContent(`${emptyBody}${hint}`),

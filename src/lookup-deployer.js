@@ -72,6 +72,13 @@ function isWallet(s) {
   return /^0x[a-fA-F0-9]{40}$/.test(String(s).trim());
 }
 
+/** Treat missing/empty status as deployed; exclude only explicit non-deployed (aligns with infer paths). */
+function isSearchRowDeployed(l) {
+  const s = l?.status;
+  if (s == null || s === "") return true;
+  return s === "deployed";
+}
+
 /** Parse search API response into arrays of launches + totalCount. Handles multiple response shapes.
  * Bankr search can return a single match in exactMatch when the query matches one launch (e.g. by wallet). */
 function getSearchResultArrays(json) {
@@ -79,7 +86,8 @@ function getSearchResultArrays(json) {
   const byFee = json.groups?.byFeeRecipient?.results ?? [];
   const byWallet = json.groups?.byWallet?.results ?? [];
   const byTokens = json.groups?.tokens?.results ?? [];
-  const exactMatch = json.exactMatch && json.exactMatch.status === "deployed" ? [json.exactMatch] : [];
+  const exactMatch =
+    json.exactMatch && isSearchRowDeployed(json.exactMatch) ? [json.exactMatch] : [];
   const flat =
     Array.isArray(json.results) ? json.results
       : Array.isArray(json.launches) ? json.launches
@@ -102,20 +110,23 @@ function getSearchResultArrays(json) {
 function mergeLaunchesWithoutDuplicates(launches, toAdd) {
   const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
   for (const l of toAdd) {
-    const key = l.tokenAddress?.toLowerCase();
-    if (key && !seen.has(key)) {
-      seen.add(key);
+    const addrKey = l.tokenAddress?.toLowerCase();
+    if (addrKey && !seen.has(addrKey)) {
+      seen.add(addrKey);
       launches.push(l);
     }
   }
 }
 
-/** Fetch from Bankr search API (same as bankr.bot/launches/search).
- * Returns { launches, totalCount } or null on failure.
- * apiKey: optional override (e.g. tenant's key); else round-robin env keys.
- * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
-export async function fetchSearch(query, apiKey) {
-  const key = defaultBankrApiKey(apiKey);
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Single search strategy: pass headerKey=null to omit X-API-Key (browser-like).
+ * Retries a few times on 429 so brief rate limits don't zero out /lookup merges.
+ */
+async function fetchSearchWithHeader(query, headerKey) {
   const q = encodeURIComponent(String(query).trim());
   if (!q) return null;
   const seen = new Set();
@@ -127,24 +138,29 @@ export async function fetchSearch(query, apiKey) {
   try {
     while (true) {
       const url = `${SEARCH_API}?q=${q}&limit=${pageSize}&offset=${offset}`;
-      const res = await fetch(url, {
-        headers: { ...BANKR_FETCH_HEADERS, ...(key && { "X-API-Key": key }) },
-      });
+      let res;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        res = await fetch(url, {
+          headers: { ...BANKR_FETCH_HEADERS, ...(headerKey && { "X-API-Key": headerKey }) },
+        });
+        if (res.status !== 429) break;
+        await sleep(400 * (attempt + 1) + Math.floor(Math.random() * 120));
+      }
       if (!res.ok) break;
       const json = await res.json();
       const { arrays, total } = getSearchResultArrays(json);
       if (arrays.length > 0 && offset === 0) {
-        const fromExact = json.exactMatch && json.exactMatch.status === "deployed" ? 1 : 0;
+        const fromExact = json.exactMatch && isSearchRowDeployed(json.exactMatch) ? 1 : 0;
         console.log(`[Lookup] Search API: ${arrays.length} item(s) (exactMatch: ${fromExact}, groups: ${arrays.length - fromExact})`);
       }
       if (total > totalCount) totalCount = total;
 
       let added = 0;
       for (const l of arrays) {
-        if (l.status !== "deployed") continue;
-        const key = l.tokenAddress?.toLowerCase();
-        if (key && !seen.has(key)) {
-          seen.add(key);
+        if (!isSearchRowDeployed(l)) continue;
+        const addrKey = l.tokenAddress?.toLowerCase();
+        if (addrKey && !seen.has(addrKey)) {
+          seen.add(addrKey);
           out.push(l);
           added++;
         }
@@ -157,6 +173,19 @@ export async function fetchSearch(query, apiKey) {
   } catch {
     return null;
   }
+}
+
+/** Fetch from Bankr search API (same as bankr.bot/launches/search).
+ * Returns { launches, totalCount } or null on failure.
+ * apiKey: optional override (e.g. tenant's key); else round-robin env keys.
+ * Note: API often returns at most 5 results per group and may ignore offset; totalCount can still be correct (e.g. 10). */
+export async function fetchSearch(query, apiKey) {
+  const authKey = defaultBankrApiKey(apiKey);
+  let r = await fetchSearchWithHeader(query, authKey || null);
+  if (!r && authKey) {
+    r = await fetchSearchWithHeader(query, null);
+  }
+  return r;
 }
 
 /** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. apiKey: optional override. */
@@ -657,7 +686,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
       if (walletSearch?.launches?.length) {
         // Search is already scoped to this wallet; do not re-filter with launchMatches() — API rows may omit
         // nested deployer/fee objects that launchWallet() needs, which caused 0 matches despite a resolved wallet.
-        const extra = walletSearch.launches.filter((l) => l.status === "deployed" && l.tokenAddress);
+        const extra = walletSearch.launches.filter((l) => isSearchRowDeployed(l) && l.tokenAddress);
         mergeLaunchesWithoutDuplicates(launches, extra);
         totalCount = Math.max(totalCount, walletSearch.totalCount ?? 0, launches.length);
       }
