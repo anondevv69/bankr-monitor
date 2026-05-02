@@ -10,6 +10,7 @@
  *
  * Env: BANKR_API_KEY (Telegram-only pool: TELEGRAM_BANKR_API_KEYS)
  *      DOPPLER_INDEXER_URL (optional; default https://bankr.indexer.doppler.lol for Base mainnet — set to your endpoint if different)
+ *      CUMULATED_FEES_CACHE_* (optional; TTL + size for GraphQL cumulatedFees in-process cache — see below)
  *      CHAIN_ID (default 8453)
  */
 
@@ -31,6 +32,50 @@ const BANKR_AGENT_PROFILES_URL = "https://api.bankr.bot/agent-profiles";
 /** Base RPC URL for on-chain reads (claimable fees, pool state). Only RPC_URL_BASE is used; RPC_URL is fallback. */
 const getBaseRpcUrl = () => process.env.RPC_URL_BASE || process.env.RPC_URL || "https://mainnet.base.org";
 const DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex";
+
+/** In-memory cache for indexer `cumulatedFees` lookups (reduces repeat GraphQL when many polls hit the same pools). */
+const CUMULATED_FEES_CACHE_NEGATIVE_MS = Math.max(
+  60_000,
+  parseInt(process.env.CUMULATED_FEES_CACHE_NEGATIVE_MS || String(3 * 60 * 1000), 10)
+);
+const CUMULATED_FEES_CACHE_POSITIVE_MS = Math.max(
+  60_000,
+  parseInt(process.env.CUMULATED_FEES_CACHE_POSITIVE_MS || String(10 * 60 * 1000), 10)
+);
+const CUMULATED_FEES_CACHE_MAX = Math.min(5000, Math.max(50, parseInt(process.env.CUMULATED_FEES_CACHE_MAX || "500", 10)));
+
+const cumulatedFeesGqlCache = new Map();
+
+function cumulatedFeesCacheKey(poolId, beneficiary) {
+  return `${String(poolId).toLowerCase()}:${String(beneficiary).trim().toLowerCase()}:${CHAIN_ID}`;
+}
+
+function cumulatedFeesCacheGet(key) {
+  const entry = cumulatedFeesGqlCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    cumulatedFeesGqlCache.delete(key);
+    return undefined;
+  }
+  return entry.result;
+}
+
+function cumulatedFeesCacheSet(key, result, positive) {
+  const ttl = positive ? CUMULATED_FEES_CACHE_POSITIVE_MS : CUMULATED_FEES_CACHE_NEGATIVE_MS;
+  while (cumulatedFeesGqlCache.size >= CUMULATED_FEES_CACHE_MAX) {
+    cumulatedFeesGqlCache.delete(cumulatedFeesGqlCache.keys().next().value);
+  }
+  cumulatedFeesGqlCache.set(key, { result, expiresAt: Date.now() + ttl });
+}
+
+function cacheCumulatedFeesResult(poolIdOrAddress, beneficiary, value) {
+  const positive = !!(
+    value &&
+    (value.token0Fees != null || value.token1Fees != null || value.totalFeesUsd != null)
+  );
+  cumulatedFeesCacheSet(cumulatedFeesCacheKey(poolIdOrAddress, beneficiary), value, positive);
+  return value;
+}
 
 /** Aggregate bucket `volumeUsd` on bankr.indexer (18-decimal fixed USD, same as pool mcap/liquidity). */
 const INDEXER_BUCKET_USD_SCALE = 1e18;
@@ -514,6 +559,17 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
   }
 
   for (const beneficiary of beneficiariesToTry) {
+    const ck = cumulatedFeesCacheKey(poolIdOrAddress, beneficiary);
+    const hit = cumulatedFeesCacheGet(ck);
+    if (hit !== undefined) {
+      if (process.env.DEBUG_FEES === "1") {
+        console.error("[DEBUG_FEES cumulatedFees]", { cacheHit: true, key: ck, data: hit });
+      }
+      return hit;
+    }
+  }
+
+  for (const beneficiary of beneficiariesToTry) {
     const vars = {
       poolId: poolIdOrAddress,
       chainId: CHAIN_ID,
@@ -553,7 +609,8 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       if (!res.ok) continue;
       if (json.errors?.length) continue;
       const out = json.data?.cumulatedFees ?? null;
-      if (out && (out.token0Fees != null || out.token1Fees != null || out.totalFeesUsd != null)) return out;
+      if (out && (out.token0Fees != null || out.token1Fees != null || out.totalFeesUsd != null))
+        return cacheCumulatedFeesResult(poolIdOrAddress, beneficiary, out);
     } catch (e) {
       if (process.env.DEBUG_FEES === "1" && beneficiary === beneficiariesToTry[0] && query === queryFloat) {
         console.error("[DEBUG_FEES cumulatedFees catch]", e.message);
@@ -591,7 +648,7 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       const json = await res.json();
       if (json.errors?.length) continue;
       const fromSingular = json.data?.cumulatedFee ?? null;
-      if (fromSingular != null) return fromSingular;
+      if (fromSingular != null) return cacheCumulatedFeesResult(poolIdOrAddress, beneficiary, fromSingular);
     } catch {
       /* try next */
     }
@@ -623,11 +680,14 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       if (json.errors?.length) continue;
       const items = json.data?.cumulatedFees?.items ?? [];
       const item = items[0] ?? null;
-      if (item != null) return item;
+      if (item != null) return cacheCumulatedFeesResult(poolIdOrAddress, beneficiary, item);
     } catch {
       /* try next beneficiary */
     }
   }
+  }
+  for (const beneficiary of beneficiariesToTry) {
+    cumulatedFeesCacheSet(cumulatedFeesCacheKey(poolIdOrAddress, beneficiary), null, false);
   }
   return null;
 }
@@ -985,6 +1045,8 @@ export async function getTokenFees(tokenAddress, options = {}) {
     CHAIN_ID === 8453 ? fetchPoolIdFromDopplerSdk(addr) : Promise.resolve(null),
   ]);
   const effectivePoolId = poolIdFromLaunch ?? poolFromIndexer?.id ?? poolFromIndexer?.address;
+  // poolFromIndexer may be null while launch still has poolId — do not skip cumulatedFees: the indexer
+  // often keys fees by launch poolId before v4pools lists the token; null fee rows are normal for new pools.
   if (effectivePoolId && feeWallet) {
     // Only query fees for the fee recipient (creator). We show what they could claim or have accrued.
     cumulatedFees = await fetchCumulatedFees(effectivePoolId, feeWallet);
