@@ -27,6 +27,8 @@ const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMI
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
 const DEPLOY_API = "https://api.bankr.bot/token-launches/deploy";
 const SEARCH_PAGE_SIZE = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_PAGE_SIZE || "25", 10), 5), 50);
+/** Max offset pages for token-launches/search when API sets hasMore (wallet lookups can have 20+ tokens). */
+const BANKR_SEARCH_MAX_PAGES = Math.min(Math.max(parseInt(process.env.BANKR_SEARCH_MAX_PAGES || "40", 10), 3), 80);
 /** Cache for getBankrWalletLaunchRoleCounts (ms). Default 5m. */
 const BANKR_WALLET_ROLE_COUNT_TTL_MS = parseInt(process.env.BANKR_WALLET_ROLE_COUNT_TTL_MS || "300000", 10);
 const bankrWalletRoleCountCache = new Map();
@@ -102,8 +104,18 @@ function getSearchResultArrays(json) {
     json.groups?.byWallet?.totalCount ??
     json.totalCount ??
     0;
+  const hasMore = !!(
+    json.groups?.byDeployer?.hasMore ||
+    json.groups?.byFeeRecipient?.hasMore ||
+    json.groups?.byWallet?.hasMore ||
+    json.groups?.tokens?.hasMore
+  );
   const arrays = [...exactMatch, ...byDeployer, ...byFee, ...byWallet, ...byTokens, ...flat];
-  return { arrays, total: total || (exactMatch.length > 0 ? 1 : 0) };
+  return {
+    arrays,
+    total: total || (exactMatch.length > 0 ? 1 : 0),
+    hasMore,
+  };
 }
 
 /** Merge toAdd into launches by tokenAddress (no duplicates). Mutates launches. */
@@ -134,9 +146,10 @@ async function fetchSearchWithHeader(query, headerKey) {
   let offset = 0;
   const pageSize = SEARCH_PAGE_SIZE;
   let totalCount = 0;
+  let searchIncomplete = false;
 
   try {
-    while (true) {
+    for (let pageNum = 0; pageNum < BANKR_SEARCH_MAX_PAGES; pageNum++) {
       const url = `${SEARCH_API}?q=${q}&limit=${pageSize}&offset=${offset}`;
       let res;
       for (let attempt = 0; attempt < 4; attempt++) {
@@ -148,7 +161,7 @@ async function fetchSearchWithHeader(query, headerKey) {
       }
       if (!res.ok) break;
       const json = await res.json();
-      const { arrays, total } = getSearchResultArrays(json);
+      const { arrays, total, hasMore } = getSearchResultArrays(json);
       if (arrays.length > 0 && offset === 0) {
         const fromExact = json.exactMatch && isSearchRowDeployed(json.exactMatch) ? 1 : 0;
         console.log(`[Lookup] Search API: ${arrays.length} item(s) (exactMatch: ${fromExact}, groups: ${arrays.length - fromExact})`);
@@ -165,11 +178,30 @@ async function fetchSearchWithHeader(query, headerKey) {
           added++;
         }
       }
-      if (added === 0 || (totalCount > 0 && out.length >= totalCount)) break;
+
+      if (!hasMore) {
+        break;
+      }
+
+      if (added === 0) {
+        searchIncomplete = true;
+        break;
+      }
+
+      if (pageNum === BANKR_SEARCH_MAX_PAGES - 1) {
+        searchIncomplete = true;
+        break;
+      }
+
       offset += pageSize;
-      if (arrays.length === 0) break;
+      if (arrays.length === 0) {
+        break;
+      }
     }
-    return out.length ? { launches: out, totalCount: totalCount || out.length } : null;
+
+    if (!out.length) return null;
+    totalCount = Math.max(totalCount || 0, out.length);
+    return { launches: out, totalCount: totalCount || out.length, searchIncomplete };
   } catch {
     return null;
   }
@@ -658,6 +690,7 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     totalCount = searchResult.totalCount;
   }
 
+  let searchMergedIncomplete = false;
   if (apiKey) {
     const isWalletOnly = isWalletQuery || !!resolvedWallet;
     const listLimit = isWalletOnly ? BANKR_WALLET_LOOKUP_LIMIT : BANKR_LAUNCHES_LIMIT;
@@ -683,18 +716,23 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
     // fee recipient / deployer (e.g. Recipient: 1 while search shows 3 results).
     if (useWalletOnlyPath && effectiveQuery) {
       const walletSearch = await fetchSearch(effectiveQuery, apiKey);
-      if (walletSearch?.launches?.length) {
-        // Search is already scoped to this wallet; do not re-filter with launchMatches() — API rows may omit
-        // nested deployer/fee objects that launchWallet() needs, which caused 0 matches despite a resolved wallet.
-        const extra = walletSearch.launches.filter((l) => isSearchRowDeployed(l) && l.tokenAddress);
-        mergeLaunchesWithoutDuplicates(launches, extra);
-        totalCount = Math.max(totalCount, walletSearch.totalCount ?? 0, launches.length);
+      if (walletSearch) {
+        searchMergedIncomplete = !!walletSearch.searchIncomplete;
+        if (walletSearch.launches?.length) {
+          // Search is already scoped to this wallet; do not re-filter with launchMatches() — API rows may omit
+          // nested deployer/fee objects that launchWallet() needs, which caused 0 matches despite a resolved wallet.
+          const extra = walletSearch.launches.filter((l) => isSearchRowDeployed(l) && l.tokenAddress);
+          mergeLaunchesWithoutDuplicates(launches, extra);
+          totalCount = Math.max(totalCount, walletSearch.totalCount ?? 0, launches.length);
+        }
       }
     }
   }
   if (totalCount === 0 && launches.length > 0) totalCount = launches.length;
 
-  const possiblyCapped = launches.length === SEARCH_PAGE_SIZE && totalCount === SEARCH_PAGE_SIZE;
+  let possiblyCapped =
+    searchMergedIncomplete ||
+    (launches.length === SEARCH_PAGE_SIZE && totalCount === SEARCH_PAGE_SIZE);
 
   const result = launches.map((l) => {
     const deployedAt =
@@ -721,6 +759,8 @@ export async function lookupByDeployerOrFee(query, filter = "both", sortOrder = 
   if (hasDates) {
     result.sort((a, b) => (sortOrder === "oldest" ? a.sortTime - b.sortTime : b.sortTime - a.sortTime));
   }
+
+  if (totalCount > result.length) possiblyCapped = true;
 
   let finalResolvedWallet = resolvedWallet;
   if (!finalResolvedWallet && !isWalletQuery && normalized && result.length > 0) {

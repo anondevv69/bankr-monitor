@@ -301,25 +301,30 @@ function buildLookupEmbed(data, page) {
     : "";
   let description;
   let footer;
-  if (total > matches.length) {
+  if (totalPages > 1) {
+    const capHint = possiblyCapped ? " Bankr may still list additional tokens beyond these." : "";
+    description =
+      walletLine +
+      `**${matches.length} token(s) associated** with this wallet · **${LOOKUP_PAGE_SIZE} per page.** Use **Previous** / **Next** below.${capHint}\n**[View on site →](${searchUrl})**`;
+    footer = {
+      text: `Page ${currentPage + 1}/${totalPages} · ${matches.length} shown${possiblyCapped ? " (≥ this many)" : ""}`,
+    };
+  } else if (total > matches.length) {
     description =
       walletLine +
       `**${total} token(s) associated** with this wallet · **Latest ${matches.length} we can show here.**\n` +
       `Click the link below to see all ${total} on Bankr.\n**[View all ${total} on site →](${searchUrl})**`;
     footer = { text: `Showing latest ${matches.length} of ${total} · Full list on Bankr` };
   } else if (possiblyCapped) {
-    description = walletLine + `**At least ${matches.length} token(s)** · Latest we can show here.\n**[View full list on site →](${searchUrl})**`;
-    footer = { text: "Full list on Bankr" };
+    description =
+      walletLine +
+      `**At least ${matches.length} token(s)** associated with this wallet — more may exist on Bankr.\n**[View full list on site →](${searchUrl})**`;
+    footer = { text: "Use site link for the complete list" };
   } else {
     description =
       walletLine +
-      (totalPages > 1
-        ? `**${total} token(s) associated** with this wallet · **5 per page.** Use Previous/Next below.\n**[View on site →](${searchUrl})**`
-        : `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`);
-    footer =
-      totalPages > 1
-        ? { text: `Page ${currentPage + 1}/${totalPages} of ${matches.length} tokens` }
-        : undefined;
+      `**${total} token(s) associated** with this wallet.\n**[View on site →](${searchUrl})**`;
+    footer = undefined;
   }
   return {
     color: 0x0052_ff,

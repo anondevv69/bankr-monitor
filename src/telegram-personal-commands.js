@@ -170,7 +170,7 @@ export function parseLookupCommandRest(rest) {
  * @param {"both"|"deployer"|"fee"} [filterMode]
  */
 export async function sendTelegramTokenLookupResult(send, out, filterMode = "both") {
-  const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery } = out;
+  const { matches, totalCount, searchUrl, normalized, resolvedWallet, isWalletQuery, possiblyCapped } = out;
   const filterNote = filterMode !== "both" ? ` · ${filterMode}` : "";
 
   if (!matches.length) {
@@ -203,6 +203,9 @@ export async function sendTelegramTokenLookupResult(send, out, filterMode = "bot
   }
   if (matches.length > shown.length) {
     lines.push("", `…+${matches.length - shown.length} more on Bankr`);
+  }
+  if (possiblyCapped && matches.length > 0) {
+    lines.push("", "_Bankr may list additional tokens — use Full search below._");
   }
   lines.push("", `Full search: ${searchUrl ?? `https://bankr.bot/launches/search?q=${encodeURIComponent(resolvedWallet ?? normalized ?? "")}`}`);
   await send(lines.join("\n"));
