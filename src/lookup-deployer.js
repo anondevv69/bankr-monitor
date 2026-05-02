@@ -409,6 +409,50 @@ function launchMatches(launch, queryNorm, isWalletQuery, filter = "both") {
   return matchDeployer() || matchFee();
 }
 
+/**
+ * From pasted chat text (often includes accidental `/lookup …` prefixes or multiple lines),
+ * pick wallet address, profile URL, or handle fragment for {@link parseQuery}.
+ */
+export function extractPrimaryLookupTarget(raw) {
+  const s0 = String(raw ?? "").trim();
+  if (!s0) return s0;
+
+  const compact = s0.replace(/\r\n/g, "\n");
+
+  const addr = compact.match(/0x[a-fA-F0-9]{40}/);
+  if (addr) return addr[0].toLowerCase();
+
+  const urlM = compact.match(/https?:\/\/[^\s]+/i);
+  if (urlM) {
+    let u = urlM[0];
+    u = u.replace(/[),.;'"\]}>]+$/, "");
+    return u;
+  }
+
+  const bareX = compact.match(
+    /(?:^|[\s/:])(?:www\.)?(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]{1,50})(?:\/|[\s?#]|$)/i
+  );
+  if (bareX) return `https://x.com/${bareX[1]}`;
+
+  const bareFc = compact.match(
+    /(?:^|[\s/:])(?:www\.)?(warpcast\.com\/(?:~\/)?|farcaster\.xyz\/)([a-zA-Z0-9_.-]{1,50})(?:\/|[\s?#]|$)/i
+  );
+  if (bareFc) {
+    const kind = bareFc[1].toLowerCase();
+    const h = bareFc[2];
+    if (kind.startsWith("farcaster")) return `https://farcaster.xyz/${h}`;
+    return kind.includes("~/") ? `https://warpcast.com/~/${h}` : `https://warpcast.com/${h}`;
+  }
+
+  let t = compact.replace(/\r?\n/g, " ").trim();
+  for (let i = 0; i < 8; i++) {
+    const next = t.replace(/^\/?(?:lookup|walletlookup|wallet)(?:@[a-zA-Z0-9_]+)?\s+/i, "").trim();
+    if (next === t) break;
+    t = next;
+  }
+  return t.replace(/\s+/g, " ").trim();
+}
+
 /** Extract username from X/Twitter or Farcaster URL; otherwise return null. */
 function extractFromUrl(raw) {
   const s = String(raw).trim();
@@ -423,7 +467,7 @@ function extractFromUrl(raw) {
 
 /** Resolve query to normalized form and whether it's a wallet. Accepts wallet, @username, x(username), F(username), or X/Farcaster profile URL. */
 export function parseQuery(query) {
-  const raw = String(query).trim();
+  const raw = String(extractPrimaryLookupTarget(query)).trim();
   if (!raw) return { normalized: null, isWallet: false };
   const fromUrl = extractFromUrl(raw);
   if (fromUrl) return fromUrl;
