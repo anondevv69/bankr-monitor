@@ -519,7 +519,8 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       chainId: CHAIN_ID,
       beneficiary,
     };
-  // Try Int first, then Float (indexer-prod.doppler.lol uses Float! for chainId)
+  // Float first: bankr.indexer.doppler.lol (and some Ponder builds) use Float! for chainId;
+  // Int-first caused validation errors and noisy DEBUG_FEES logs on every request.
   const queryInt = `
     query GetFees($poolId: String!, $chainId: Int!, $beneficiary: String!) {
       cumulatedFees(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
@@ -538,7 +539,7 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       }
     }
   `;
-  for (const query of [queryInt, queryFloat]) {
+  for (const query of [queryFloat, queryInt]) {
     try {
       const res = await fetch(`${base}/graphql`, {
         method: "POST",
@@ -546,7 +547,7 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
         body: JSON.stringify({ query, variables: vars }),
       });
       const json = await res.json().catch(() => ({}));
-      if (process.env.DEBUG_FEES === "1" && (beneficiary === beneficiariesToTry[0] && query === queryInt)) {
+      if (process.env.DEBUG_FEES === "1" && beneficiary === beneficiariesToTry[0] && query === queryFloat) {
         console.error("[DEBUG_FEES cumulatedFees]", { status: res.status, ok: res.ok, errors: json.errors, data: json.data });
       }
       if (!res.ok) continue;
@@ -554,13 +555,22 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       const out = json.data?.cumulatedFees ?? null;
       if (out && (out.token0Fees != null || out.token1Fees != null || out.totalFeesUsd != null)) return out;
     } catch (e) {
-      if (process.env.DEBUG_FEES === "1" && beneficiary === beneficiariesToTry[0] && query === queryInt) {
+      if (process.env.DEBUG_FEES === "1" && beneficiary === beneficiariesToTry[0] && query === queryFloat) {
         console.error("[DEBUG_FEES cumulatedFees catch]", e.message);
       }
       /* try next */
     }
   }
   // Ponder singular find-by-primary-key: cumulatedFee(poolId, chainId, beneficiary)
+  const querySingularFloat = `
+    query GetFee($poolId: String!, $chainId: Float!, $beneficiary: String!) {
+      cumulatedFee(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
+        token0Fees
+        token1Fees
+        totalFeesUsd
+      }
+    }
+  `;
   const querySingular = `
     query GetFee($poolId: String!, $chainId: Int!, $beneficiary: String!) {
       cumulatedFee(poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary) {
@@ -570,21 +580,30 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       }
     }
   `;
-  try {
-    const res = await fetch(`${base}/graphql`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: querySingular, variables: vars }),
-    });
-    if (!res.ok) continue;
-    const json = await res.json();
-    if (json.errors?.length) continue;
-    const fromSingular = json.data?.cumulatedFee ?? null;
-    if (fromSingular != null) return fromSingular;
-  } catch {
-    /* try next beneficiary */
+  for (const query of [querySingularFloat, querySingular]) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables: vars }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const fromSingular = json.data?.cumulatedFee ?? null;
+      if (fromSingular != null) return fromSingular;
+    } catch {
+      /* try next */
+    }
   }
   // Ponder plural with where: cumulatedFees(where: { poolId, chainId, beneficiary }, limit: 1) { items { ... } }
+  const queryWhereFloat = `
+    query GetFeesWhere($poolId: String!, $chainId: Float!, $beneficiary: String!) {
+      cumulatedFees(where: { poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary }, limit: 1) {
+        items { token0Fees token1Fees totalFeesUsd }
+      }
+    }
+  `;
   const queryWhere = `
     query GetFeesWhere($poolId: String!, $chainId: Int!, $beneficiary: String!) {
       cumulatedFees(where: { poolId: $poolId, chainId: $chainId, beneficiary: $beneficiary }, limit: 1) {
@@ -592,20 +611,22 @@ async function fetchCumulatedFees(poolIdOrAddress, beneficiaryAddress) {
       }
     }
   `;
-  try {
-    const res = await fetch(`${base}/graphql`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: queryWhere, variables: vars }),
-    });
-    if (!res.ok) continue;
-    const json = await res.json();
-    if (json.errors?.length) continue;
-    const items = json.data?.cumulatedFees?.items ?? [];
-    const item = items[0] ?? null;
-    if (item != null) return item;
-  } catch {
-    /* try next beneficiary */
+  for (const query of [queryWhereFloat, queryWhere]) {
+    try {
+      const res = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables: vars }),
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json.errors?.length) continue;
+      const items = json.data?.cumulatedFees?.items ?? [];
+      const item = items[0] ?? null;
+      if (item != null) return item;
+    } catch {
+      /* try next beneficiary */
+    }
   }
   }
   return null;
