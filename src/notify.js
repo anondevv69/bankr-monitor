@@ -17,6 +17,7 @@
  *   TELEGRAM_HOT_PING_DELAY_MS / TELEGRAM_OUTBOUND_DELAY_MS - Delay (ms) Telegram after Discord (default 30000; bot + notify CLI)
  *   TELEGRAM_ALLOWED_CHAT_IDS   - Comma-separated chat IDs; only these receive **outbound** notify posts from this process. Does not affect Discord bot group commands. Unset = allow all.
  *   CHAIN_ID             - 8453 (Base) or 84532 (Base Sepolia)
+ *   BANKR_429_LOG_INTERVAL_MS - Throttle launch-poll 429 warnings (default 300000). 0 = log every 429.
  *   DOPPLER_INDEXER_URL  - Indexer URL (default: https://bankr.indexer.doppler.lol; set to your endpoint if different)
  *   BANKR_INTEGRATION_ADDRESS - Filter tokens by this fee beneficiary (default: Bankr integration 0xF60633D02690e2A15A54AB919925F3d038Df163e)
  *   BANKR_TOKEN_SUFFIX       - Only treat 0x…40 addresses ending with this as Bankr (default ba3). Applies to indexer + chain fallback + hot pings.
@@ -44,6 +45,9 @@ const BANKR_LAUNCHES_LIMIT = Math.min(
   parseInt(process.env.BANKR_LAUNCHES_LIMIT || "500", 10),
   2000
 );
+/** Min ms between "[Bankr API] Rate limited (429)" lines during launch polling (notify loop). 0 = log every 429. */
+const BANKR_429_LOG_INTERVAL_MS = Math.max(0, parseInt(process.env.BANKR_429_LOG_INTERVAL_MS || "300000", 10));
+let lastBankr429LaunchPollLog = 0;
 const FILTER_X_MATCH = process.env.FILTER_X_MATCH === "1" || process.env.FILTER_X_MATCH === "true";
 const FILTER_FEE_RECIPIENT_HAS_X = process.env.FILTER_FEE_RECIPIENT_HAS_X === "1" || process.env.FILTER_FEE_RECIPIENT_HAS_X === "true";
 const FILTER_MAX_DEPLOYS = process.env.FILTER_MAX_DEPLOYS ? parseInt(process.env.FILTER_MAX_DEPLOYS, 10) : null;
@@ -210,7 +214,16 @@ async function fetchFromBankrApi(apiKey) {
       });
       if (!res.ok) {
         if (res.status === 429) {
-          console.warn("[Bankr API] Rate limited (429). Using results so far; next poll after interval.");
+          const now = Date.now();
+          if (
+            BANKR_429_LOG_INTERVAL_MS === 0 ||
+            now - lastBankr429LaunchPollLog >= BANKR_429_LOG_INTERVAL_MS
+          ) {
+            lastBankr429LaunchPollLog = now;
+            console.warn(
+              "[Bankr API] 429 on launch list poll — using partial page; will retry next interval. (Unset DEBUG_FEES to quiet indexer logs.)"
+            );
+          }
         } else {
           console.error(`[Bankr API] ${res.status} ${res.statusText}: ${url}`);
         }

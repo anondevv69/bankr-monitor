@@ -15,6 +15,60 @@ import { isBankrTokenAddress } from "../bankr-token.js";
 
 const CHAIN_ID = parseInt(process.env.CHAIN_ID || "8453", 10);
 
+/**
+ * Real-time claim firehose is opt-in (Alchemy WebSocket only — not used for wallet lookup).
+ * Set DOPPLER_CLAIM_WS=1 (or ENABLE_DOPPLER_CLAIM_WS=true) when ALCHEMY_KEY + firehose channel are configured.
+ * Historical /claims lookups use HTTP RPC (RPC_URL / mainnet.base.org), not Alchemy WS.
+ */
+function isClaimWsEnabled() {
+  const raw = process.env.DOPPLER_CLAIM_WS ?? process.env.ENABLE_DOPPLER_CLAIM_WS;
+  if (raw == null || String(raw).trim() === "") return false;
+  const s = String(raw).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+/**
+ * viem's socket reconnect uses setup().catch(console.error), which logs the entire ErrorEvent on upgrade failures (e.g. Alchemy 429).
+ * Only collapse that narrow case so other errors stay verbose.
+ */
+let viemWsConsoleFilterInstalled = false;
+function installViemWsUpgradeErrorFilter() {
+  if (viemWsConsoleFilterInstalled) return;
+  viemWsConsoleFilterInstalled = true;
+  const orig = console.error.bind(console);
+  console.error = (...args) => {
+    const e = args[0];
+    const msg =
+      args.length === 1 && e && typeof e === "object" && typeof e.message === "string" ? e.message : "";
+    // Node `ws` / upgrade failures often log a huge ErrorEvent; do not require constructor.name (VM/realm quirks).
+    if (msg.includes("Unexpected server response")) {
+      const hint = /\b429\b/.test(msg)
+        ? " (Alchemy 429 — omit DOPPLER_CLAIM_WS / ALCHEMY_KEY for claim WS, or upgrade plan)"
+        : "";
+      orig(`[dopplerClaimWatcher] WS upgrade failed: ${msg}${hint}`);
+      return;
+    }
+    orig(...args);
+  };
+}
+
+// Install before start() so viem's reconnect path `.catch(console.error)` cannot fire unpatched first.
+installViemWsUpgradeErrorFilter();
+
+let last429SubscriptionLog = 0;
+const SUB_429_LOG_INTERVAL_MS = 60_000;
+
+function formatSubscriptionError(err) {
+  const raw =
+    err && typeof err === "object" && "message" in err && err.message != null
+      ? String(err.message)
+      : String(err);
+  if (/\b429\b|Too Many Requests|rate limit/i.test(raw)) {
+    return `${raw} — drop claim WS (unset DOPPLER_CLAIM_WS / ALCHEMY_KEY) or upgrade Alchemy`;
+  }
+  return raw;
+}
+
 /** WETH on Base. Only transfers of this token from the fee locker are real fee claims (collectFees); others are pool init. */
 const WETH_BASE = "0x4200000000000000000000000000000000000006";
 /** Minimum WETH to emit a claim alert (default 0.01). Claims below this are ignored. Override: CLAIM_MIN_WETH=0.01 */
@@ -218,6 +272,12 @@ const RECENT_TX_MAX = 5000;
  */
 async function start() {
   const wsUrl = getWsUrl();
+  if (!isClaimWsEnabled()) {
+    console.log(
+      "[dopplerClaimWatcher] Skipped: WebSocket firehose is off by default. Set DOPPLER_CLAIM_WS=1 (+ ALCHEMY_KEY) to enable."
+    );
+    return;
+  }
   if (!wsUrl || FEE_LOCKERS.length === 0) {
     console.log("[dopplerClaimWatcher] Skipped: set ALCHEMY_KEY or ALCHEMY_WS_URL for Base to enable.");
     return;
@@ -226,7 +286,12 @@ async function start() {
   try {
     publicClient = createPublicClient({
       chain: base,
-      transport: webSocket(wsUrl, { reconnect: true }),
+      transport: webSocket(wsUrl, {
+        reconnect: {
+          attempts: 48,
+          delay: 10_000,
+        },
+      }),
     });
     for (const locker of FEE_LOCKERS) {
       const unwatch = publicClient.watchEvent({
@@ -273,7 +338,13 @@ async function start() {
           }
         },
         onError: (err) => {
-          console.error("[dopplerClaimWatcher] subscription error:", err?.message ?? err);
+          const msg = formatSubscriptionError(err);
+          if (/\b429\b|Too Many Requests/i.test(msg)) {
+            const now = Date.now();
+            if (now - last429SubscriptionLog < SUB_429_LOG_INTERVAL_MS) return;
+            last429SubscriptionLog = now;
+          }
+          console.error("[dopplerClaimWatcher] subscription error:", msg);
         },
       });
       unwatchers.push(unwatch);

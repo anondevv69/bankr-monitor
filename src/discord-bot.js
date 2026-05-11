@@ -9,6 +9,7 @@ import "dotenv/config";
  *   DISCORD_ALERT_CHANNEL_ID    - channel for all launch alerts (fallback)
  *   DISCORD_WATCH_ALERT_CHANNEL_ID - channel for watch-list matches (wallet/X/FC/keyword)
  * Channel IDs are usually set per server via /setup; env vars are optional fallbacks.
+ *   NOTIFY_FIRST_RUN_DELAY_MS — ms before first Bankr launch poll after ready (default 2500); avoids slash timeouts at boot.
  */
 
 import {
@@ -17,6 +18,7 @@ import {
   ButtonStyle,
   Client,
   ComponentType,
+  Events,
   GatewayIntentBits,
   MessageFlags,
   PermissionFlagsBits,
@@ -1583,7 +1585,7 @@ function startTelegramClaimsPolling(token) {
   );
 }
 
-client.once("ready", async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   const rpc = process.env.RPC_URL_BASE || process.env.RPC_URL;
   console.log(`RPC (Base): ${rpc ? rpc.replace(/\/\/[^/:]+@/, "//***@").slice(0, 50) + (rpc.length > 50 ? "…" : "") : "not set (using mainnet.base.org)"}`);
@@ -1642,14 +1644,25 @@ client.once("ready", async () => {
       debugLogError(e, "runNotify");
     });
   }, INTERVAL);
-  runNotify().catch((e) => {
-    console.error("Notify failed:", e.message);
-    debugLogError(e, "runNotify");
-  });
+  /** Delay first Bankr poll so slash commands can `deferReply` without competing with a huge fetch burst right after boot (set 0 for old behavior). */
+  const NOTIFY_FIRST_RUN_DELAY_MS = Math.max(0, parseInt(process.env.NOTIFY_FIRST_RUN_DELAY_MS || "2500", 10));
+  if (NOTIFY_FIRST_RUN_DELAY_MS > 0) {
+    console.log(`[notify] First launch poll in ${NOTIFY_FIRST_RUN_DELAY_MS}ms (avoids "application did not respond" on /lookup right after restart).`);
+    setTimeout(() => {
+      runNotify().catch((e) => {
+        console.error("Notify failed:", e.message);
+        debugLogError(e, "runNotify");
+      });
+    }, NOTIFY_FIRST_RUN_DELAY_MS);
+  } else {
+    runNotify().catch((e) => {
+      console.error("Notify failed:", e.message);
+      debugLogError(e, "runNotify");
+    });
+  }
 
   // Real-time Doppler fee-claim firehose (Alchemy WebSocket). Every claim carries the token address;
   // claim-watch is just "when this token gets claimed" — same event, filtered by server watch lists.
-  await startDopplerClaimWatcher();
   onFeeClaim(async (claim) => {
     if (isInClaimQuietWindow()) return; // skip all pings during quiet window (e.g. 8–9pm EST)
 
@@ -1725,6 +1738,9 @@ client.once("ready", async () => {
     }
     schedulePersonalClaimDms(claim);
   });
+  void startDopplerClaimWatcher().catch((e) =>
+    console.error("[dopplerClaimWatcher] start failed:", e?.message ?? e)
+  );
   if (CLAIM_FIREHOSE_CHANNEL_ID) console.log(`Claim firehose → channel ${CLAIM_FIREHOSE_CHANNEL_ID}`);
   if (Object.keys(CLAIM_TOKEN_CHANNELS).length > 0) console.log(`Claim token channels: ${Object.keys(CLAIM_TOKEN_CHANNELS).length} token(s)`);
   const tgClaimChatId = process.env.TELEGRAM_CLAIM_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
@@ -1736,10 +1752,12 @@ client.once("ready", async () => {
       console.log(`Telegram claim alerts → chat ${String(tgClaimChatId).slice(0, 12)}… topic: (not set — posts to General; set TELEGRAM_CLAIM_TOPIC_ID or send /topicid in the topic)`);
     }
   }
-  // Telegram: "/" menu (setMyCommands) + long-poll for DMs & groups
+  // Telegram: "/" menu (setMyCommands) + long-poll for DMs & groups (do not block ready on Bot API)
   const tgToken = process.env.TELEGRAM_BOT_TOKEN;
   if (tgToken) {
-    await registerTelegramBotCommands(tgToken);
+    void registerTelegramBotCommands(tgToken).catch((e) =>
+      console.warn("[Telegram setMyCommands] background registration failed:", e?.message ?? e)
+    );
     startTelegramClaimsPolling(tgToken);
   }
   if (tgToken && isPersonalDmsEnabled()) {
@@ -2129,23 +2147,42 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "wallet-lookup") {
-    const query = interaction.options.getString("query");
-    await interaction.deferReply();
+    const query = (interaction.options.getString("query") ?? "").trim();
+    await interaction.deferReply().catch((e) => console.error("[wallet-lookup] deferReply:", e?.code ?? e?.message ?? e));
+    if (!interaction.deferred && !interaction.replied) return;
     try {
+      if (!query) {
+        await interaction.editReply({
+          content:
+            "Please enter an **X handle**, **Farcaster handle**, or **profile URL** in the **query** field (e.g. `@bankr` or `https://x.com/…`).",
+        });
+        return;
+      }
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const apiKey = defaultBankrApiKey(tenant?.bankrApiKey);
-      const { wallet, normalized, isWallet, simulateClubRequired } = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
+      const { wallet, normalized, isWallet, simulateClubRequired, deploySimulate403Hint } = await resolveHandleToWallet(query, {
+        bankrApiKey: apiKey,
+      });
       if (wallet) {
         await interaction.editReply({
           content:
             (isWallet ? `**Wallet:** \`${wallet}\`\n\n` : `**Wallet for ${normalized}:** \`${wallet}\`\n\n`) +
             "Use **/lookup** with the same handle or wallet to see token deployments.",
         });
+      } else if (deploySimulate403Hint) {
+        await interaction.editReply({
+          content: clampDiscordContent(
+            `Could not resolve **${normalized || query}** via deploy simulate.\n\n${deploySimulate403Hint}\n\n` +
+              "If this account has Bankr launches, try **/lookup** with the same handle or paste a **0x…** wallet.",
+            1900
+          ),
+        });
       } else if (simulateClubRequired) {
         await interaction.editReply({
           content:
             `Could not resolve a wallet for **${normalized || query}**.\n\n` +
-            "Direct X→wallet resolution requires a **Bankr Club** API key (set in **/setup api_key** or `BANKR_API_KEY`). " +
+            "Direct X→wallet resolution often needs **Bankr Club** or the right key flags (set in **/setup api_key** or `BANKR_API_KEY`). " +
+            "See [Bankr Access Control](https://docs.bankr.bot/agent-api/access-control/). " +
             "If this account has launched tokens on Bankr, try **/lookup** with the same handle. " +
             "Otherwise paste the wallet address (**0x…**) directly.",
         });
@@ -2169,7 +2206,8 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "lookup") {
     const query = interaction.options.getString("query");
     const by = interaction.options.getString("by") || "both";
-    await interaction.deferReply();
+    await interaction.deferReply().catch((e) => console.error("[lookup] deferReply:", e?.code ?? e?.message ?? e));
+    if (!interaction.deferred && !interaction.replied) return;
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const apiKey = defaultBankrApiKey(tenant?.bankrApiKey);

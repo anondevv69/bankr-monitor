@@ -118,6 +118,17 @@ function getSearchResultArrays(json) {
   };
 }
 
+/** True when the search JSON includes a `hasMore` field on any group (API signals paginated search). */
+function searchApiExposesHasMore(json) {
+  const g = json?.groups;
+  if (!g || typeof g !== "object") return false;
+  for (const k of ["byDeployer", "byFeeRecipient", "byWallet", "tokens"]) {
+    const row = g[k];
+    if (row && Object.prototype.hasOwnProperty.call(row, "hasMore") && typeof row.hasMore === "boolean") return true;
+  }
+  return false;
+}
+
 /** Merge toAdd into launches by tokenAddress (no duplicates). Mutates launches. */
 function mergeLaunchesWithoutDuplicates(launches, toAdd) {
   const seen = new Set(launches.map((l) => l.tokenAddress?.toLowerCase()).filter(Boolean));
@@ -147,6 +158,8 @@ async function fetchSearchWithHeader(query, headerKey) {
   const pageSize = SEARCH_PAGE_SIZE;
   let totalCount = 0;
   let searchIncomplete = false;
+  /** null until first successful JSON; then whether Bankr sent `hasMore` on groups (vs legacy offset+totalCount). */
+  let searchUsesHasMoreField = null;
 
   try {
     for (let pageNum = 0; pageNum < BANKR_SEARCH_MAX_PAGES; pageNum++) {
@@ -162,6 +175,7 @@ async function fetchSearchWithHeader(query, headerKey) {
       if (!res.ok) break;
       const json = await res.json();
       const { arrays, total, hasMore } = getSearchResultArrays(json);
+      if (searchUsesHasMoreField === null) searchUsesHasMoreField = searchApiExposesHasMore(json);
       if (arrays.length > 0 && offset === 0) {
         const fromExact = json.exactMatch && isSearchRowDeployed(json.exactMatch) ? 1 : 0;
         console.log(`[Lookup] Search API: ${arrays.length} item(s) (exactMatch: ${fromExact}, groups: ${arrays.length - fromExact})`);
@@ -179,14 +193,19 @@ async function fetchSearchWithHeader(query, headerKey) {
         }
       }
 
-      if (!hasMore) {
-        break;
+      let stopPaging = false;
+      if (searchUsesHasMoreField) {
+        if (!hasMore) stopPaging = true;
+        else if (added === 0) {
+          searchIncomplete = true;
+          stopPaging = true;
+        }
+      } else {
+        // Pre-3224551 behavior: many responses omit `hasMore`; `!!undefined` was false and wrongly ended after one page.
+        if (added === 0 || (totalCount > 0 && out.length >= totalCount)) stopPaging = true;
       }
 
-      if (added === 0) {
-        searchIncomplete = true;
-        break;
-      }
+      if (stopPaging) break;
 
       if (pageNum === BANKR_SEARCH_MAX_PAGES - 1) {
         searchIncomplete = true;
@@ -339,8 +358,8 @@ function buildHandleToWalletMap(launches) {
   return map;
 }
 
-/** Search query variants for handle resolution (Bankr sometimes matches profile URLs better than bare handles). */
-function searchQueriesForHandle(normalizedHandle) {
+/** Search query variants for handle resolution (Bankr sometimes matches full tweet/status URLs better than bare handles). */
+function searchQueriesForHandle(normalizedHandle, pastedXOrTwitterUrl) {
   const n = norm(normalizedHandle);
   if (!n) return [];
   const out = [];
@@ -348,11 +367,22 @@ function searchQueriesForHandle(normalizedHandle) {
     const t = String(s).trim();
     if (t && !out.includes(t)) out.push(t);
   };
+  const paste = pastedXOrTwitterUrl && String(pastedXOrTwitterUrl).trim();
+  if (paste && /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(paste)) add(paste);
   add(n);
   add(`@${n}`);
   add(`https://x.com/${n}`);
   add(`https://twitter.com/${n}`);
   return out;
+}
+
+/** Normalize an X display field to a bare handle for comparison (handles @user, user, or profile/tweet URLs). */
+function normXHandleFromField(xu) {
+  if (xu == null || xu === "") return null;
+  const s = String(xu).trim();
+  const m = s.match(/(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]{1,50})(?:\/|$|\?|#)/i);
+  if (m) return norm(m[1]);
+  return norm(s.replace(/^@/, ""));
 }
 
 /**
@@ -370,7 +400,10 @@ function inferWalletFromRawLaunches(launches, normalizedHandle) {
   const xFrom = (obj) => obj?.xUsername ?? obj?.twitter ?? obj?.x ?? obj?.socials?.twitter ?? obj?.socials?.x;
   const fcFrom = (obj) => obj?.farcasterUsername ?? obj?.farcaster ?? obj?.fcUsername ?? obj?.fc;
   const wallets = new Set();
-  const matchX = (xu) => xu && norm(String(xu).replace(/^@/, "")) === q;
+  const matchX = (xu) => {
+    const h = normXHandleFromField(xu);
+    return h && h === q;
+  };
   const matchFc = (fc) => fc && norm(String(fc)) === q;
 
   for (const l of launches) {
@@ -555,10 +588,11 @@ export function parseQuery(query) {
  * Uses options.bankrApiKey when provided; otherwise BANKR_API_KEY from env.
  * @param {string} query
  * @param {{ bankrApiKey?: string }} [options]
- * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean }> }
+ * @returns { Promise<{ wallet: string | null, normalized: string | null, isWallet: boolean, simulateClubRequired?: boolean, deploySimulate403Hint?: string | null }> }
  */
 export async function resolveHandleToWallet(query, options = {}) {
   const apiKey = defaultBankrApiKey(options.bankrApiKey);
+  const rawExtracted = String(extractPrimaryLookupTarget(query) ?? "").trim();
   const { normalized, isWallet } = parseQuery(query);
   if (!normalized) return { wallet: null, normalized: null, isWallet: false };
   if (isWallet) return { wallet: normalized, normalized, isWallet: true };
@@ -566,30 +600,43 @@ export async function resolveHandleToWallet(query, options = {}) {
   const overrideWallet = overrides.get(normalized);
   if (overrideWallet) return { wallet: overrideWallet, normalized, isWallet: false };
   if (!apiKey) return { wallet: null, normalized, isWallet: false };
+  /** Full pasted x.com/twitter.com URL (e.g. …/status/…) — Bankr search/simulate often need this, not only bare handle. */
+  const xUrlHints =
+    /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(rawExtracted) ? [rawExtracted.replace(/#.*$/, "").replace(/\?$/, "")] : [];
   // Try deploy-simulate first: one POST, no list fetches. Works even when list API is 429'd.
   // resolves ANY X handle → wallet, even if the account has never launched on Bankr.
   // Requires a Bankr Club key; returns clubRequired:true when the key lacks that permission.
-  const simResult = await resolveHandleViaDeploySimulate(normalized, apiKey);
+  const simResult = await resolveHandleViaDeploySimulate(normalized, apiKey, { xUrlHints });
   let wallet = simResult.wallet;
   const simulateClubRequired = simResult.clubRequired;
+  const deploySimulate403Hint = simResult.deploy403Hint ?? null;
 
   if (!wallet) {
-    // Prefer the in-memory cache so we don't issue a fresh paginated fetch when lookupByDeployerOrFee
-    // already populated it seconds ago (avoids doubling API calls during rate-limited periods).
-    const all = await getCachedLaunches(BANKR_LAUNCHES_LIMIT, undefined, apiKey);
+    // Use wallet lookup list window (same scale as /lookup for wallets), not BANKR_LAUNCHES_LIMIT (often 50k),
+    // which hammers Bankr with hundreds of parallel requests and causes 429s — then resolution appears "broken".
+    let all = [];
+    try {
+      all = await getCachedLaunches(BANKR_WALLET_LOOKUP_LIMIT, undefined, apiKey);
+    } catch (e) {
+      console.warn("[resolveHandleToWallet] newest list failed:", e?.message ?? e);
+    }
     let handleToWallet = buildHandleToWalletMap(all);
     wallet = handleToWallet.get(normalized) ?? null;
     if (!wallet && OLDEST_FETCH_LIMIT > 0) {
-      const oldest = await getCachedLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
-      const mapOld = buildHandleToWalletMap(oldest);
-      for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
-      wallet = handleToWallet.get(normalized) ?? null;
+      try {
+        const oldest = await getCachedLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
+        const mapOld = buildHandleToWalletMap(oldest);
+        for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
+        wallet = handleToWallet.get(normalized) ?? null;
+      } catch (e) {
+        console.warn("[resolveHandleToWallet] oldest list failed:", e?.message ?? e);
+      }
     }
   }
   // Same discovery path as /lookup when list+simulate miss: search API often still returns the handle on launches.
   if (!wallet) {
     const tried = new Set();
-    for (const sq of searchQueriesForHandle(normalized)) {
+    for (const sq of searchQueriesForHandle(normalized, rawExtracted)) {
       const k = sq.toLowerCase();
       if (tried.has(k)) continue;
       tried.add(k);
@@ -603,7 +650,58 @@ export async function resolveHandleToWallet(query, options = {}) {
       }
     }
   }
-  return { wallet, normalized, isWallet: false, simulateClubRequired };
+  if (wallet) {
+    return { wallet, normalized, isWallet: false, simulateClubRequired: false, deploySimulate403Hint: null };
+  }
+  return { wallet: null, normalized, isWallet: false, simulateClubRequired, deploySimulate403Hint };
+}
+
+/**
+ * Map Bankr `POST /token-launches/deploy` (simulate) 403 body to user-facing text.
+ * @see https://docs.bankr.bot/agent-api/access-control/ — read-only, IP allowlist, token launch flags, Club, etc.
+ * @param {unknown} body
+ * @returns {{ clubRequired: boolean, hint: string }}
+ */
+function deploySimulate403UserHint(body) {
+  const msg = String(body?.message ?? body?.error ?? "").trim();
+  const lower = msg.toLowerCase();
+  if (/read-only|read only/.test(lower)) {
+    return {
+      clubRequired: false,
+      hint:
+        "**Read-only API key:** deploy simulate is blocked. Turn off **read-only** on this key (or create a key that allows **token launch / deploy**) at [bankr.bot/api](https://bankr.bot/api) — see [Access Control](https://docs.bankr.bot/agent-api/access-control/).",
+    };
+  }
+  if (/ip address not allowed|not allowed for this api key/.test(lower)) {
+    return {
+      clubRequired: false,
+      hint:
+        "**IP allowlist:** Bankr rejected this host’s IP for your key. Add your server’s outbound IP (e.g. Railway egress) on the key at [bankr.bot/api](https://bankr.bot/api) — [Access Control → IP Allowlist](https://docs.bankr.bot/agent-api/access-control/).",
+    };
+  }
+  if (/token.?launch|deploy.*not|not.*enabled|forbidden|permission/.test(lower) && !/club/.test(lower)) {
+    return {
+      clubRequired: false,
+      hint:
+        `Bankr: ${msg || "Deploy / token-launch permission issue."} Enable **token launch** (and needed scopes) on the key at [bankr.bot/api](https://bankr.bot/api) — [Access Control](https://docs.bankr.bot/agent-api/access-control/).`,
+    };
+  }
+  if (/club|member|subscribe|upgrade/.test(lower) || (msg.length > 0 && /bankr club/i.test(msg))) {
+    return {
+      clubRequired: true,
+      hint: msg ? `Bankr: ${msg}` : "",
+    };
+  }
+  if (msg.length > 0) {
+    return {
+      clubRequired: false,
+      hint: `Bankr (403): ${msg} — check key flags at [bankr.bot/api](https://bankr.bot/api) and [Access Control](https://docs.bankr.bot/agent-api/access-control/).`,
+    };
+  }
+  return {
+    clubRequired: true,
+    hint: "",
+  };
 }
 
 /**
@@ -612,47 +710,57 @@ export async function resolveHandleToWallet(query, options = {}) {
  * apiKey: required for the request (env or passed from caller).
  * @param {string} handle - Normalized handle (no @).
  * @param {string} [apiKey] - Bankr API key (uses env if not provided).
- * @returns {Promise<{ wallet: string|null, clubRequired: boolean }>}
+ * @param {{ xUrlHints?: string[] }} [opts] - Full x.com/twitter.com URLs to try as type `x` value (tweet/profile links).
+ * @returns {Promise<{ wallet: string|null, clubRequired: boolean, deploy403Hint: string|null }>}
  */
-async function resolveHandleViaDeploySimulate(handle, apiKey) {
+async function resolveHandleViaDeploySimulate(handle, apiKey, opts = {}) {
   const key = defaultBankrApiKey(apiKey);
-  if (!key || !handle) return { wallet: null, clubRequired: false };
+  if (!key || !handle) return { wallet: null, clubRequired: false, deploy403Hint: null };
+  const hints = (opts.xUrlHints ?? []).filter((u) => /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(String(u)));
   const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
-  let seenClubRequired = false;
   for (const type of typesToTry) {
-    try {
-      let res;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        res = await fetch(DEPLOY_API, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-API-Key": key.trim() },
-          body: JSON.stringify({ tokenName: "ResolveCheck", simulateOnly: true, feeRecipient: { type, value: handle } }),
-        });
-        if (res.status !== 429) break;
-        await sleep(600 * (attempt + 1) + Math.floor(Math.random() * 200));
+    const valueCandidates =
+      type === "x" ? [...new Set([...hints.map((h) => String(h).trim()), handle])] : [handle];
+    for (const value of valueCandidates) {
+      try {
+        let res;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          res = await fetch(DEPLOY_API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-API-Key": key.trim() },
+            body: JSON.stringify({ tokenName: "ResolveCheck", simulateOnly: true, feeRecipient: { type, value } }),
+          });
+          if (res.status !== 429) break;
+          await sleep(600 * (attempt + 1) + Math.floor(Math.random() * 200));
+        }
+        if (res.status === 401) return { wallet: null, clubRequired: false, deploy403Hint: null };
+        if (res.status === 403) {
+          const body = await res.json().catch(() => ({}));
+          const parsed = deploySimulate403UserHint(body);
+          return {
+            wallet: null,
+            clubRequired: parsed.clubRequired,
+            deploy403Hint: parsed.hint || null,
+          };
+        }
+        if (!res.ok) continue;
+        const data = await res.json().catch(() => ({}));
+        const creator = data?.feeDistribution?.creator;
+        const addr =
+          creator?.address ??
+          creator?.wallet ??
+          creator?.walletAddress ??
+          (typeof creator === "string" ? creator : null);
+        if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim()))
+          return { wallet: String(addr).trim().toLowerCase(), clubRequired: false, deploy403Hint: null };
+        if (res.ok && data?.success)
+          console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
+      } catch {
+        /* next value / type */
       }
-      if (res.status === 401) return { wallet: null, clubRequired: false };
-      if (res.status === 403) {
-        // Bankr Club membership required for deploy simulate. All types will fail the same way.
-        return { wallet: null, clubRequired: true };
-      }
-      if (!res.ok) continue;
-      const data = await res.json().catch(() => ({}));
-      const creator = data?.feeDistribution?.creator;
-      const addr =
-        creator?.address ??
-        creator?.wallet ??
-        creator?.walletAddress ??
-        (typeof creator === "string" ? creator : null);
-      if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim()))
-        return { wallet: String(addr).trim().toLowerCase(), clubRequired: false };
-      if (res.ok && data?.success)
-        console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
-    } catch {
-      // ignore and try next type
     }
   }
-  return { wallet: null, clubRequired: seenClubRequired };
+  return { wallet: null, clubRequired: false, deploy403Hint: null };
 }
 
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either

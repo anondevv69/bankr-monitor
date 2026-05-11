@@ -341,7 +341,7 @@ export async function runTelegramWalletLookupCommand(send, rest) {
   }
   await send("Resolving…");
   try {
-    const { wallet, normalized, isWallet, simulateClubRequired } = await resolveHandleToWallet(rest, {
+    const { wallet, normalized, isWallet, simulateClubRequired, deploySimulate403Hint } = await resolveHandleToWallet(rest, {
       bankrApiKey: pickTelegramBankrApiKeyRoundRobin(),
     });
     if (wallet) {
@@ -349,10 +349,15 @@ export async function runTelegramWalletLookupCommand(send, rest) {
         (isWallet ? `Wallet: \`${wallet}\`\n\n` : `Wallet for ${normalized}: \`${wallet}\`\n\n`) +
           "Use **/lookup** with the same handle or wallet to see Bankr tokens (deployer / fee recipient)."
       );
+    } else if (deploySimulate403Hint) {
+      await send(
+        `Could not resolve **${normalized || rest}** via deploy simulate.\n\n${deploySimulate403Hint}\n\n` +
+          "If they have Bankr launches, try **/lookup** or paste **0x…**."
+      );
     } else if (simulateClubRequired) {
       await send(
         `Could not resolve a wallet for **${normalized || rest}**.\n\n` +
-          "Direct X→wallet resolution requires a **Bankr Club** API key. " +
+          "Direct X→wallet resolution often needs **Bankr Club** or correct key flags. See https://docs.bankr.bot/agent-api/access-control/ " +
           "If this account has launched tokens on Bankr, try **/lookup** with the same handle. " +
           "Otherwise, use the wallet address (**0x…**) directly."
       );
