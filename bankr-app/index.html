@@ -227,7 +227,6 @@
             <label class="toggle"><input id="launchAlerts" type="checkbox" /> Watchlist launch matches</label>
             <label class="toggle"><input id="trending" type="checkbox" /> Trending tokens</label>
             <label class="toggle"><input id="hot" type="checkbox" /> Hot tokens</label>
-            <label class="toggle"><input id="claimAlerts" type="checkbox" /> Claim alerts (coming next)</label>
           </div>
         </div>
 
@@ -259,7 +258,6 @@
         launchAlerts: $("launchAlerts"),
         trending: $("trending"),
         hot: $("hot"),
-        claimAlerts: $("claimAlerts"),
         lookupQuery: $("lookupQuery"),
       };
 
@@ -295,7 +293,6 @@
             launchAlerts: fields.launchAlerts.checked,
             trending: fields.trending.checked,
             hot: fields.hot.checked,
-            claimAlerts: fields.claimAlerts.checked,
           },
         };
       }
@@ -313,7 +310,6 @@
         fields.launchAlerts.checked = s.launchAlerts !== false;
         fields.trending.checked = s.trending !== false;
         fields.hot.checked = s.hot === true;
-        fields.claimAlerts.checked = s.claimAlerts === true;
       }
 
       async function runScript(name, args = {}) {

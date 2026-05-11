@@ -74,6 +74,9 @@ bankr-app/scripts/walletLookup.ts
 - Run wallet lookup from the app.
 - Send a test ping to the Discord webhook.
 
+Claim alerts are intentionally hidden in the web panel until the app-user
+claim-routing flow is wired.
+
 ## Telegram status
 
 The UI stores `telegramChatId`, but Telegram delivery from the app is not wired
