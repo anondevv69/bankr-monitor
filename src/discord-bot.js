@@ -1543,9 +1543,13 @@ function startTelegramClaimsPolling(token) {
               firstName: from.first_name,
             });
             if (linked.ok) {
+              const linkedWallet = linked.user?.walletAddress || linked.user?.userId || "";
+              const walletPart = linkedWallet
+                ? `\nLinked wallet: ${String(linkedWallet).slice(0, 6)}...${String(linkedWallet).slice(-4)}`
+                : "";
               await sendTg(
                 chatId,
-                "✅ Telegram connected to your BankrMonitor web app. You can now manage Telegram DMs from the Bankr App.",
+                `✅ Telegram connected to your BankrMonitor web app.${walletPart}\n\nGo back to the app and click Refresh status.`,
                 { disable_web_page_preview: true }
               );
             } else {

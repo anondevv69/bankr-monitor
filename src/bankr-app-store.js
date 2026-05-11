@@ -261,6 +261,9 @@ export async function consumeTelegramConnectCode(codeRaw, telegramChatId, telegr
     });
     users[entry.userId] = user;
     await saveAll(users);
+    console.log(
+      `[bankr-app] Telegram linked wallet=${entry.userId.slice(0, 6)}...${entry.userId.slice(-4)} chat=${chatId} username=${telegramMeta.username ? `@${telegramMeta.username}` : "none"}`
+    );
     return { ok: true, user };
   });
 }
