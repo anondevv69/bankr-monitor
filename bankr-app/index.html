@@ -344,7 +344,7 @@
           showResultHtml(
             [
               "Lookup is taking longer than the app runtime allows.",
-              "Try again in a moment, or paste a 0x wallet directly.",
+              "Try again in a moment, or paste a 0x wallet directly if you have it.",
               "",
               `Query: ${escapeHtml(fields.lookupQuery.value.trim())}`,
             ].join("\n")
@@ -352,7 +352,17 @@
           return;
         }
         if (!wallet) {
-          showResultHtml("No wallet found for this query.");
+          const retryable = data?.resolved?.retryable !== false;
+          showResultHtml(
+            retryable
+              ? [
+                  "The quick web lookup could not resolve this handle yet.",
+                  "Some handles take longer because Bankr list/search has to merge older launches.",
+                  "",
+                  "Try again in a moment, or paste the 0x wallet directly if Discord already resolved it.",
+                ].join("\n")
+              : "No wallet found for this query."
+          );
           return;
         }
         const lookup = data.lookup || {};

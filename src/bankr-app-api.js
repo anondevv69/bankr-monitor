@@ -150,11 +150,13 @@ async function handleWalletLookup(req, res, url) {
     { wallet: null, normalized: query, isWallet: false, timedOut: true }
   );
   const resolveTimedOut = resolved?.timedOut === true;
+  const queryIsWallet = /^0x[a-fA-F0-9]{40}$/.test(query);
   const publicResolved = {
     wallet: resolved.wallet,
     normalized: resolved.normalized,
     isWallet: resolved.isWallet,
     timedOut: resolveTimedOut,
+    retryable: !resolved.wallet && !queryIsWallet,
   };
   let lookup = null;
   if (resolved.wallet) {
