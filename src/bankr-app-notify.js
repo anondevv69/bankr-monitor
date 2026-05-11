@@ -6,6 +6,7 @@ import { buildLaunchEmbed, sendTelegram, sendTelegramHotPing } from "./notify.js
 import { isWatchMatchForTenant, getWatchMatchReasons } from "./watch-match.js";
 import {
   bankrAppAlertsEnabled,
+  bankrAppWalletLabelMap,
   bankrAppUserToWatchListSets,
   listActiveBankrAppUsers,
 } from "./bankr-app-store.js";
@@ -33,6 +34,34 @@ async function postDiscordWebhook(webhookUrl, payload) {
 function escapeTgMarkdown(s) {
   if (!s || typeof s !== "string") return "";
   return s.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
+}
+
+function normAddr(addr) {
+  const s = String(addr ?? "").trim().toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(s) ? s : null;
+}
+
+function launchWallets(launch) {
+  const launcher = normAddr(launch?.launcher);
+  const feeAddrs = (launch?.beneficiaries || [])
+    .map((b) => (typeof b === "object" ? (b.beneficiary ?? b.address ?? b.wallet) : b))
+    .map(normAddr)
+    .filter(Boolean);
+  return [launcher, ...feeAddrs].filter(Boolean);
+}
+
+function appendAppWalletLabels(launch, reasons, user) {
+  const labels = bankrAppWalletLabelMap(user);
+  if (labels.size === 0) return reasons;
+  const extra = [];
+  const seen = new Set();
+  for (const wallet of launchWallets(launch)) {
+    const label = labels.get(wallet);
+    if (!label || seen.has(wallet)) continue;
+    seen.add(wallet);
+    extra.push(`Watch label: ${label} (${wallet.slice(0, 6)}...${wallet.slice(-4)})`);
+  }
+  return [...reasons, ...extra];
 }
 
 export async function sendBankrAppTestDiscordWebhook(webhookUrl, walletAddress) {
@@ -68,7 +97,7 @@ async function fanOutBankrAppLaunchWebhooks(launch) {
     const webhookUrl = user.destinations?.discordWebhookUrl;
     const watchList = bankrAppUserToWatchListSets(user);
     if (!isWatchMatchForTenant(launch, watchList)) continue;
-    const reasons = getWatchMatchReasons(launch, watchList);
+    const reasons = appendAppWalletLabels(launch, getWatchMatchReasons(launch, watchList), user);
     const embed = buildLaunchEmbed({
       ...launch,
       watchMatchReasons: reasons,

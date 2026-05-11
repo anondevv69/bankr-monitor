@@ -140,7 +140,8 @@
         opacity: 0.5;
         cursor: not-allowed;
       }
-      pre {
+      pre,
+      #result {
         white-space: pre-wrap;
         word-break: break-word;
         background: #07120d;
@@ -249,7 +250,7 @@
 
         <div class="card wide" id="resultCard" style="display: none;">
           <h2>Result</h2>
-          <pre id="result"></pre>
+          <div id="result"></div>
         </div>
       </section>
     </main>
@@ -268,12 +269,35 @@
         telegramDms: $("telegramDms"),
         lookupQuery: $("lookupQuery"),
       };
+      let lastLookup = null;
 
       function lines(value) {
         return String(value || "")
           .split(/\n|,/)
           .map((s) => s.trim())
           .filter(Boolean);
+      }
+
+      function walletLines(value) {
+        return String(value || "")
+          .split(/\n|,/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const match = line.match(/^(0x[a-fA-F0-9]{40})(?:\s*(?:#|-|,)\s*(.+))?$/);
+            if (!match) return null;
+            const entry = { value: match[1].toLowerCase() };
+            if (match[2] && match[2].trim()) entry.name = match[2].trim();
+            return entry;
+          })
+          .filter(Boolean);
+      }
+
+      function walletEntryLine(entry) {
+        if (!entry) return "";
+        if (typeof entry === "string") return entry;
+        const value = entry.value || "";
+        return entry.name ? `${value} # ${entry.name}` : value;
       }
 
       function setStatus(message, isError = false) {
@@ -321,7 +345,8 @@
           return;
         }
         const lookup = data.lookup || {};
-        const total = Number(lookup.totalCount || 0);
+        lastLookup = data;
+        const total = lookup.totalCount == null ? null : Number(lookup.totalCount || 0);
         const launchesUrl = lookup.searchUrl || `https://bankr.bot/launches/search?q=${encodeURIComponent(wallet)}`;
         const matches = Array.isArray(lookup.matches) ? lookup.matches : [];
         const rows = matches
@@ -336,14 +361,18 @@
           [
             `Wallet: ${escapeHtml(wallet)}`,
             `Matched handle: ${escapeHtml(data.resolved.normalized || fields.lookupQuery.value.trim())}`,
-            `Bankr launches found: ${total}`,
+            lookup.timedOut ? "Launch merge is still warming up. Use the Bankr link below for full results." : `Bankr launches found: ${total}`,
             "",
             launchesUrl ? `Open launches: <a href="${escapeHtml(launchesUrl)}" target="_blank" rel="noreferrer">Bankr launch search</a>` : "",
             rows ? `\nRecent launches:\n${rows}` : "",
+            "",
+            `<button id="addLookupWalletBtn" type="button">Add wallet to watchlist</button>`,
           ]
             .filter((line) => line !== "")
             .join("\n")
         );
+        const addBtn = $("addLookupWalletBtn");
+        if (addBtn) addBtn.addEventListener("click", addLookupWalletToWatchlist);
       }
 
       function formConfig() {
@@ -353,7 +382,7 @@
           },
           watchlist: {
             x: lines(fields.xHandles.value),
-            wallet: lines(fields.wallets.value),
+            wallet: walletLines(fields.wallets.value),
             keywords: lines(fields.keywords.value),
             tokenAddresses: lines(fields.tokenAddresses.value),
           },
@@ -372,7 +401,7 @@
         const s = user?.settings || {};
         fields.discordWebhookUrl.value = d.discordWebhookUrl || "";
         fields.xHandles.value = (w.x || []).join("\n");
-        fields.wallets.value = (w.wallet || []).join("\n");
+        fields.wallets.value = (w.wallet || []).map(walletEntryLine).filter(Boolean).join("\n");
         fields.keywords.value = (w.keywords || []).join("\n");
         fields.tokenAddresses.value = (w.tokenAddresses || []).join("\n");
         fields.launchAlerts.checked = s.launchAlerts !== false;
@@ -414,6 +443,30 @@
           $("saveBtn").disabled = false;
         }
       });
+
+      async function saveCurrentSettings(message = "Saved.") {
+        const data = await runScript("saveConfig", formConfig());
+        fill(data.user);
+        setStatus(message);
+        return data;
+      }
+
+      async function addLookupWalletToWatchlist() {
+        const wallet = lastLookup?.resolved?.wallet;
+        if (!wallet) return;
+        const label = lastLookup?.resolved?.normalized || fields.lookupQuery.value.trim() || "lookup";
+        const existing = walletLines(fields.wallets.value);
+        if (!existing.some((entry) => entry.value === wallet.toLowerCase())) {
+          existing.push({ value: wallet.toLowerCase(), name: label });
+          fields.wallets.value = existing.map(walletEntryLine).join("\n");
+        }
+        try {
+          setStatus("Adding wallet to watchlist...");
+          await saveCurrentSettings(`Added ${shortAddr(wallet)} to watchlist.`);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
 
       $("testBtn").addEventListener("click", async () => {
         try {

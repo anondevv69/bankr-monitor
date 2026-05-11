@@ -14,6 +14,16 @@ import { defaultBankrApiKey } from "./bankr-env-key.js";
 
 let serverStarted = false;
 
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+    }),
+  ]);
+}
+
 function json(res, statusCode, body) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
@@ -140,20 +150,34 @@ async function handleWalletLookup(req, res, url) {
   };
   let lookup = null;
   if (resolved.wallet) {
-    const result = await lookupByDeployerOrFee(resolved.wallet, "both", "newest", { bankrApiKey: apiKey });
-    lookup = {
-      totalCount: result.totalCount,
-      shown: result.matches?.length ?? 0,
-      searchUrl: result.searchUrl,
-      matches: (result.matches || []).slice(0, 10).map((m) => ({
-        name: m.name,
-        symbol: m.symbol,
-        tokenAddress: m.tokenAddress,
-        launcher: m.launcher,
-        launcherX: m.launcherX,
-        deployedAtMsFromBankr: m.deployedAtMsFromBankr ?? null,
-      })),
-    };
+    const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(resolved.wallet)}`;
+    const result = await withTimeout(
+      lookupByDeployerOrFee(resolved.wallet, "both", "newest", { bankrApiKey: apiKey }),
+      Math.max(2000, parseInt(process.env.BANKR_APP_LOOKUP_TIMEOUT_MS || "8000", 10)),
+      null
+    );
+    lookup = result
+      ? {
+          totalCount: result.totalCount,
+          shown: result.matches?.length ?? 0,
+          searchUrl: result.searchUrl || searchUrl,
+          timedOut: false,
+          matches: (result.matches || []).slice(0, 10).map((m) => ({
+            name: m.name,
+            symbol: m.symbol,
+            tokenAddress: m.tokenAddress,
+            launcher: m.launcher,
+            launcherX: m.launcherX,
+            deployedAtMsFromBankr: m.deployedAtMsFromBankr ?? null,
+          })),
+        }
+      : {
+          totalCount: null,
+          shown: 0,
+          searchUrl,
+          timedOut: true,
+          matches: [],
+        };
   }
   json(res, 200, { ok: true, resolved: publicResolved, lookup });
 }

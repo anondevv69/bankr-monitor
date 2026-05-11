@@ -67,12 +67,29 @@ function normalizeStringList(value, { lower = true, max = 100 } = {}) {
   return out;
 }
 
+function normalizeWalletEntries(value, { max = 100 } = {}) {
+  const arr = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of arr) {
+    const rawValue = typeof item === "object" && item !== null ? item.value : item;
+    const wallet = String(rawValue ?? "").trim().toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(wallet) || seen.has(wallet)) continue;
+    seen.add(wallet);
+    const rawName = typeof item === "object" && item !== null ? item.name : null;
+    const name = rawName != null && String(rawName).trim() ? String(rawName).trim().slice(0, 80) : null;
+    out.push(name ? { value: wallet, name } : { value: wallet });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 function normalizeWatchlist(watchlist) {
   const w = { ...DEFAULT_WATCHLIST, ...(watchlist || {}) };
   return {
     x: normalizeStringList(w.x).map((v) => v.replace(/^@/, "")),
     fc: normalizeStringList(w.fc),
-    wallet: normalizeStringList(w.wallet).filter((v) => /^0x[a-f0-9]{40}$/.test(v)),
+    wallet: normalizeWalletEntries(w.wallet),
     keywords: normalizeStringList(w.keywords, { lower: true, max: 200 }),
     tokenAddresses: normalizeStringList(w.tokenAddresses).filter((v) => /^0x[a-f0-9]{40}$/.test(v)),
   };
@@ -285,13 +302,19 @@ export async function hasActiveBankrAppUsers() {
 
 export function bankrAppUserToWatchListSets(user) {
   const w = user?.watchlist || DEFAULT_WATCHLIST;
+  const normalized = normalizeWatchlist(w);
   return {
-    x: new Set(normalizeWatchlist(w).x),
-    fc: new Set(normalizeWatchlist(w).fc),
-    wallet: new Set(normalizeWatchlist(w).wallet),
-    keywords: new Set(normalizeWatchlist(w).keywords),
-    tokenAddresses: new Set(normalizeWatchlist(w).tokenAddresses),
+    x: new Set(normalized.x),
+    fc: new Set(normalized.fc),
+    wallet: new Set(normalized.wallet.map((entry) => entry.value)),
+    keywords: new Set(normalized.keywords),
+    tokenAddresses: new Set(normalized.tokenAddresses),
   };
+}
+
+export function bankrAppWalletLabelMap(user) {
+  const normalized = normalizeWatchlist(user?.watchlist || DEFAULT_WATCHLIST);
+  return new Map(normalized.wallet.filter((entry) => entry.name).map((entry) => [entry.value, entry.name]));
 }
 
 export function bankrAppAlertsEnabled() {
