@@ -745,6 +745,9 @@ async function resolveHandleViaDeploySimulate(handle, apiKey, opts = {}) {
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}));
           const parsed = deploySimulate403UserHint(body);
+          console.warn(
+            `[resolve] deploy simulate 403 for handle="${handle}" type="${type}" clubRequired=${parsed.clubRequired} body=${JSON.stringify(body)} keyTail=...${String(key).slice(-4)}`
+          );
           return {
             wallet: null,
             clubRequired: parsed.clubRequired,
@@ -759,8 +762,10 @@ async function resolveHandleViaDeploySimulate(handle, apiKey, opts = {}) {
           creator?.wallet ??
           creator?.walletAddress ??
           (typeof creator === "string" ? creator : null);
-        if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim()))
+        if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim())) {
+          console.log(`[resolve] deploy simulate resolved handle="${handle}" type="${type}" → ${String(addr).trim().toLowerCase()}`);
           return { wallet: String(addr).trim().toLowerCase(), clubRequired: false, deploy403Hint: null };
+        }
         if (res.ok && data?.success)
           console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
       } catch {
