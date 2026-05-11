@@ -2170,28 +2170,21 @@ client.on("interactionCreate", async (interaction) => {
             "Use **/lookup** with the same handle or wallet to see token deployments.",
         });
       } else if (deploySimulate403Hint) {
+        // Actionable API-key issue (read-only, IP allowlist, missing permission flag) — show the specific fix.
         await interaction.editReply({
           content: clampDiscordContent(
-            `Could not resolve **${normalized || query}** via deploy simulate.\n\n${deploySimulate403Hint}\n\n` +
+            `Could not resolve **${normalized || query}**.\n\n${deploySimulate403Hint}\n\n` +
               "If this account has Bankr launches, try **/lookup** with the same handle or paste a **0x…** wallet.",
             1900
           ),
         });
-      } else if (simulateClubRequired) {
+      } else {
+        // Could not find via list, search, or simulate (Club gate or handle simply not on Bankr).
         await interaction.editReply({
           content:
-            `Could not resolve a wallet for **${normalized || query}**.\n\n` +
-            "Direct X→wallet resolution often needs **Bankr Club** or the right key flags (set in **/setup api_key** or `BANKR_API_KEY`). " +
-            "See [Bankr Access Control](https://docs.bankr.bot/agent-api/access-control/). " +
+            `Could not find a wallet for **${normalized || query}**. ` +
             "If this account has launched tokens on Bankr, try **/lookup** with the same handle. " +
             "Otherwise paste the wallet address (**0x…**) directly.",
-        });
-      } else {
-        await interaction.editReply({
-          content:
-            `Could not resolve a wallet for **${normalized || query}**. ` +
-            "If this account has tokens on Bankr, try **/lookup** with the same handle or profile URL. " +
-            "Otherwise use the wallet address (**0x…**) directly.",
         });
       }
       debugLogActivity(interaction.guild?.name ?? interaction.guildId, interaction.user?.tag ?? "?", "/wallet-lookup", query);

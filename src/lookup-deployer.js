@@ -22,6 +22,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BANKR_LAUNCHES_LIMIT = parseInt(process.env.BANKR_LAUNCHES_LIMIT || "50000", 10);
 // Wallet-only lookups: fetch this many newest launches so /lookup by wallet is fast. Increase if tokens are missed.
 const BANKR_WALLET_LOOKUP_LIMIT = Math.min(parseInt(process.env.BANKR_WALLET_LOOKUP_LIMIT || "10000", 10), 50000);
+/** Newest launches scanned for X/FC → wallet after deploy-simulate misses. Default matches old pre-wallet-limit behavior (50k). */
+const BANKR_RESOLVE_HANDLE_LIST_LIMIT = Math.min(
+  Math.max(parseInt(process.env.BANKR_RESOLVE_HANDLE_LIST_LIMIT || "50000", 10), 1),
+  50000
+);
 // When handle not found in newest launches, fetch this many oldest (order=asc) to resolve X/FC -> wallet
 const OLDEST_FETCH_LIMIT = Math.min(parseInt(process.env.BANKR_OLDEST_FETCH_LIMIT || "10000", 10), 50000);
 const SEARCH_API = "https://api.bankr.bot/token-launches/search";
@@ -609,14 +614,17 @@ export async function resolveHandleToWallet(query, options = {}) {
   const simResult = await resolveHandleViaDeploySimulate(normalized, apiKey, { xUrlHints });
   let wallet = simResult.wallet;
   const simulateClubRequired = simResult.clubRequired;
-  const deploySimulate403Hint = simResult.deploy403Hint ?? null;
+  // Only surface a 403 hint to the user for actionable issues (read-only key, IP allowlist, wrong permission flag).
+  // Club-gate (clubRequired) is expected when the key doesn't have Club — don't show it as an error until all
+  // other paths (list, search) have also failed, and even then use the softer simulateClubRequired message.
+  const deploySimulate403Hint = simResult.clubRequired ? null : (simResult.deploy403Hint ?? null);
 
   if (!wallet) {
-    // Use wallet lookup list window (same scale as /lookup for wallets), not BANKR_LAUNCHES_LIMIT (often 50k),
-    // which hammers Bankr with hundreds of parallel requests and causes 429s — then resolution appears "broken".
+    // Wider than BANKR_WALLET_LOOKUP_LIMIT (wallet /lookup) so handles on older launches still resolve;
+    // still capped (default 25k, max 50k) to avoid the worst 50k+pagination 429 storms from the old code path.
     let all = [];
     try {
-      all = await getCachedLaunches(BANKR_WALLET_LOOKUP_LIMIT, undefined, apiKey);
+      all = await getCachedLaunches(BANKR_RESOLVE_HANDLE_LIST_LIMIT, undefined, apiKey);
     } catch (e) {
       console.warn("[resolveHandleToWallet] newest list failed:", e?.message ?? e);
     }
