@@ -159,7 +159,7 @@ function routeNotFound(res) {
 export function startBankrAppApiServer() {
   if (serverStarted) return null;
   serverStarted = true;
-  const port = parseInt(process.env.PORT || process.env.BANKR_APP_API_PORT || "3899", 10);
+  const port = parseInt(process.env.PORT || process.env.BANKR_APP_API_PORT || "8000", 10);
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);

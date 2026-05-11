@@ -10,6 +10,7 @@ alerts. The Bankr App backend scripts call Railway over HTTP.
 Set these variables:
 
 ```bash
+PORT=8000
 BANKR_APP_API_TOKEN=replace_with_a_long_random_secret
 BANKR_APP_USERS_FILE=/data/.bankr-app-users.json
 BANKR_APP_ALERTS_ENABLED=true
@@ -23,7 +24,8 @@ DISCORD_BOT_TOKEN=your_discord_bot_token
 ```
 
 The Procfile runs the bot as a `web` process so Railway exposes the same Node
-process publicly. After deploy, test:
+process publicly. If Railway public networking is set to port `8000`, keep
+`PORT=8000` in the service variables. After deploy, test:
 
 ```bash
 curl https://YOUR-RAILWAY-DOMAIN/health
