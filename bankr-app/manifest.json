@@ -4,7 +4,7 @@
   "description": "Manage BankrMonitor watchlists, Discord webhook destinations, and wallet lookups.",
   "tags": ["bankr", "alerts", "discord", "telegram", "watchlist"],
   "permissions": ["read:wallet", "fetch:http", "read:secrets"],
-  "scripts": ["loadConfig", "saveConfig", "testDestination", "walletLookup"],
+  "scripts": ["loadConfig", "saveConfig", "testDestination", "walletLookup", "createTelegramConnectCode"],
   "secrets": [
     {
       "key": "BANKR_MONITOR_API_URL",

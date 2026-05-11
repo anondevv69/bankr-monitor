@@ -67,6 +67,7 @@ bankr-app/scripts/loadConfig.ts
 bankr-app/scripts/saveConfig.ts
 bankr-app/scripts/testDestination.ts
 bankr-app/scripts/walletLookup.ts
+bankr-app/scripts/createTelegramConnectCode.ts
 ```
 
 ## What works in this first pass
@@ -75,6 +76,7 @@ bankr-app/scripts/walletLookup.ts
 - Paste a Discord webhook URL instead of inviting the Discord bot to a server.
 - Manage watched X handles, wallets, token addresses, and keywords.
 - Enable watchlist match alerts, trending alerts, and hot alerts per webhook.
+- Pair Telegram by generating a one-time `/connect CODE` command and sending it to the Telegram bot.
 - Run wallet lookup from the app.
 - Send a test ping to the Discord webhook.
 
@@ -83,13 +85,10 @@ claim-routing flow is wired.
 
 ## Telegram status
 
-Telegram delivery from the app is not wired yet. Telegram needs a pairing flow
-through the Telegram bot because Telegram does not work like Discord incoming
-webhooks.
+Telegram delivery uses bot pairing, not incoming webhooks:
 
-The next pass should add:
-
-- `/connect_bankr_app <code>` in Telegram.
-- A Railway endpoint to create/confirm pairing codes.
-- Telegram destination fanout for app users.
+- The app calls `POST /api/app/telegram/connect-code`.
+- The user sends the returned `/connect CODE` command to the Telegram bot.
+- Railway links that Telegram `chatId` to the app user's Bankr wallet.
+- Watchlist, hot, and trending alerts can then DM the user when Telegram DMs are enabled.
 

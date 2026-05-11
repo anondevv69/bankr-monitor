@@ -110,6 +110,7 @@ import {
 import { startBankrAppApiServer } from "./bankr-app-api.js";
 import {
   bankrAppAlertsEnabled,
+  consumeTelegramConnectCode,
   hasActiveBankrAppUsers,
 } from "./bankr-app-store.js";
 import {
@@ -1067,7 +1068,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         }
       }
       schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
-      scheduleBankrAppHotTrendingWebhooks(launchForEmbed, { isHot, isTrending });
+      scheduleBankrAppHotTrendingWebhooks(launchForEmbed, hotStats, { isHot, isTrending });
       await sendTelegramHotTrendingPings({
         sendTelegramHotPing,
         launchForEmbed,
@@ -1532,6 +1533,30 @@ function startTelegramClaimsPolling(token) {
         if (chatId == null) continue;
         if (!text) continue;
         if (chatType === "private") {
+          const connectMatch = text.match(/^\/connect(?:@\w+)?\s+([a-zA-Z0-9]{4,12})$/i);
+          if (connectMatch) {
+            const from = msg?.from || {};
+            const linked = await consumeTelegramConnectCode(connectMatch[1], chatId, {
+              username: from.username,
+              firstName: from.first_name,
+            });
+            if (linked.ok) {
+              await sendTg(
+                chatId,
+                "✅ Telegram connected to your BankrMonitor web app. You can now manage Telegram DMs from the Bankr App.",
+                { disable_web_page_preview: true }
+              );
+            } else {
+              const reason =
+                linked.error === "EXPIRED"
+                  ? "That code expired. Generate a new one in the BankrMonitor app."
+                  : linked.error === "NOT_FOUND"
+                    ? "That code was not found. Generate a fresh code in the BankrMonitor app."
+                    : "Invalid connect code. Generate a fresh code in the BankrMonitor app.";
+              await sendTg(chatId, `❌ ${reason}`);
+            }
+            continue;
+          }
           if (isPersonalDmsEnabled()) {
             await handlePersonalTelegramCommand({
               chatId,

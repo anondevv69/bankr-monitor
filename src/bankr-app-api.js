@@ -7,7 +7,7 @@
  */
 
 import { createServer } from "http";
-import { getBankrAppUser, setBankrAppUserConfig } from "./bankr-app-store.js";
+import { createTelegramConnectCode, getBankrAppUser, setBankrAppUserConfig } from "./bankr-app-store.js";
 import { sendBankrAppTestDiscordWebhook } from "./bankr-app-notify.js";
 import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
@@ -25,9 +25,11 @@ function json(res, statusCode, body) {
 }
 
 function parseAuthToken(req) {
+  const xToken = String(req.headers["x-bankr-app-token"] || "").trim();
+  if (xToken) return xToken;
   const bearer = req.headers.authorization || "";
   if (bearer.toLowerCase().startsWith("bearer ")) return bearer.slice(7).trim();
-  return String(req.headers["x-bankr-app-token"] || "").trim();
+  return "";
 }
 
 function requireAuth(req, res) {
@@ -151,11 +153,27 @@ async function handleWalletLookup(req, res, url) {
   json(res, 200, { ok: true, resolved, lookup });
 }
 
+async function handleTelegramConnectCode(req, res, url) {
+  if (!requireAuth(req, res)) return;
+  const body = await readJson(req);
+  const walletAddress = walletFromUrlOrBody(url, body);
+  if (!isValidWalletLike(walletAddress)) {
+    json(res, 400, { ok: false, error: "walletAddress is required" });
+    return;
+  }
+  const connect = await createTelegramConnectCode(walletAddress);
+  if (!connect) {
+    json(res, 400, { ok: false, error: "Could not create Telegram connect code" });
+    return;
+  }
+  json(res, 200, { ok: true, connect });
+}
+
 function routeNotFound(res) {
   json(res, 404, {
     ok: false,
     error: "Not found",
-    routes: ["/health", "/api/app/config", "/api/app/test-destination", "/api/app/wallet-lookup"],
+    routes: ["/health", "/api/app/config", "/api/app/test-destination", "/api/app/wallet-lookup", "/api/app/telegram/connect-code"],
   });
 }
 
@@ -189,6 +207,10 @@ export function startBankrAppApiServer() {
       }
       if (req.method === "POST" && path === "/api/app/wallet-lookup") {
         await handleWalletLookup(req, res, url);
+        return;
+      }
+      if (req.method === "POST" && path === "/api/app/telegram/connect-code") {
+        await handleTelegramConnectCode(req, res, url);
         return;
       }
       routeNotFound(res);

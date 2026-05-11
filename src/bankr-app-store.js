@@ -7,8 +7,14 @@
 
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { dirname, join } from "path";
+import { randomBytes } from "crypto";
 
 const FILE = process.env.BANKR_APP_USERS_FILE || join(process.cwd(), ".bankr-app-users.json");
+const CONNECT_CODES_FILE = process.env.BANKR_APP_CONNECT_CODES_FILE || join(dirname(FILE), ".bankr-app-connect-codes.json");
+const TELEGRAM_CONNECT_CODE_TTL_MS = Math.max(
+  60_000,
+  parseInt(process.env.BANKR_APP_TELEGRAM_CONNECT_CODE_TTL_MS || "900000", 10)
+);
 
 const DEFAULT_WATCHLIST = {
   x: [],
@@ -28,6 +34,7 @@ const DEFAULT_SETTINGS = {
   hot: false,
   trending: true,
   claimAlerts: false,
+  telegramDms: true,
 };
 
 let _chain = Promise.resolve();
@@ -83,6 +90,8 @@ function normalizeDestinations(destinations) {
   return {
     discordWebhookUrl: normalizeDiscordWebhookUrl(d.discordWebhookUrl),
     telegramChatId: d.telegramChatId != null && String(d.telegramChatId).trim() ? String(d.telegramChatId).trim() : null,
+    telegramUsername: d.telegramUsername != null && String(d.telegramUsername).trim() ? String(d.telegramUsername).replace(/^@/, "").trim() : null,
+    telegramFirstName: d.telegramFirstName != null && String(d.telegramFirstName).trim() ? String(d.telegramFirstName).trim() : null,
   };
 }
 
@@ -93,6 +102,7 @@ function normalizeSettings(settings) {
     hot: s.hot === true,
     trending: s.trending !== false,
     claimAlerts: s.claimAlerts === true,
+    telegramDms: s.telegramDms !== false,
   };
 }
 
@@ -132,6 +142,26 @@ async function saveAll(users) {
   await writeFile(FILE, JSON.stringify({ users }, null, 2), "utf-8");
 }
 
+async function loadConnectCodes() {
+  try {
+    const raw = await readFile(CONNECT_CODES_FILE, "utf-8");
+    const j = JSON.parse(raw);
+    return j && typeof j === "object" && typeof j.codes === "object" && j.codes !== null ? j.codes : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveConnectCodes(codes) {
+  await mkdir(dirname(CONNECT_CODES_FILE), { recursive: true }).catch(() => {});
+  await writeFile(CONNECT_CODES_FILE, JSON.stringify({ codes }, null, 2), "utf-8");
+}
+
+function makeConnectCode() {
+  // Uppercase, no ambiguous punctuation. 6 chars gives enough entropy for short-lived one-time pairing.
+  return randomBytes(5).toString("base64url").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase();
+}
+
 export async function getBankrAppUser(walletAddress) {
   const userId = normalizeUserId(walletAddress);
   if (!userId) return null;
@@ -165,6 +195,66 @@ export async function setBankrAppUserConfig(walletAddress, updates = {}) {
     users[userId] = next;
     await saveAll(users);
     return next;
+  });
+}
+
+export async function createTelegramConnectCode(walletAddress) {
+  const userId = normalizeUserId(walletAddress);
+  if (!userId) return null;
+  return queue(async () => {
+    const codes = await loadConnectCodes();
+    const now = Date.now();
+    for (const [code, entry] of Object.entries(codes)) {
+      if (!entry || entry.expiresAtMs <= now || entry.userId === userId) delete codes[code];
+    }
+    let code = makeConnectCode();
+    while (codes[code]) code = makeConnectCode();
+    const expiresAtMs = now + TELEGRAM_CONNECT_CODE_TTL_MS;
+    codes[code] = {
+      code,
+      userId,
+      walletAddress: userId,
+      createdAt: new Date(now).toISOString(),
+      expiresAtMs,
+    };
+    await saveConnectCodes(codes);
+    return {
+      code,
+      command: `/connect ${code}`,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      ttlSeconds: Math.floor(TELEGRAM_CONNECT_CODE_TTL_MS / 1000),
+    };
+  });
+}
+
+export async function consumeTelegramConnectCode(codeRaw, telegramChatId, telegramMeta = {}) {
+  const code = String(codeRaw ?? "").trim().toUpperCase();
+  const chatId = String(telegramChatId ?? "").trim();
+  if (!/^[A-Z0-9]{4,12}$/.test(code) || !chatId) return { ok: false, error: "INVALID" };
+  return queue(async () => {
+    const codes = await loadConnectCodes();
+    const entry = codes[code];
+    const now = Date.now();
+    if (!entry) return { ok: false, error: "NOT_FOUND" };
+    delete codes[code];
+    await saveConnectCodes(codes);
+    if (entry.expiresAtMs <= now) return { ok: false, error: "EXPIRED" };
+    const users = await loadAll();
+    const existing = users[entry.userId] ?? sanitizeUser(entry.userId, { walletAddress: entry.walletAddress });
+    const user = sanitizeUser(entry.userId, {
+      ...existing,
+      destinations: {
+        ...existing.destinations,
+        telegramChatId: chatId,
+        telegramUsername: telegramMeta.username ? String(telegramMeta.username).replace(/^@/, "") : null,
+        telegramFirstName: telegramMeta.firstName ? String(telegramMeta.firstName) : null,
+      },
+      settings: { ...existing.settings, telegramDms: true },
+      updatedAt: new Date().toISOString(),
+    });
+    users[entry.userId] = user;
+    await saveAll(users);
+    return { ok: true, user };
   });
 }
 

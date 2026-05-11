@@ -184,8 +184,7 @@
         <div>
           <h1>BankrMonitor</h1>
           <div class="sub">
-            Manage launch watchlists and route pings to your own Discord webhook. Telegram pairing will be added
-            after the Discord webhook flow is stable.
+            Manage launch watchlists and route pings to your own Discord webhook or Telegram DM.
           </div>
         </div>
         <div class="wallet" id="wallet">loading...</div>
@@ -225,7 +224,18 @@
             <label class="toggle"><input id="launchAlerts" type="checkbox" /> Watchlist launch matches</label>
             <label class="toggle"><input id="trending" type="checkbox" /> Trending tokens</label>
             <label class="toggle"><input id="hot" type="checkbox" /> Hot tokens</label>
+            <label class="toggle"><input id="telegramDms" type="checkbox" /> Telegram DMs when connected</label>
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Telegram</h2>
+          <div class="sub" id="telegramStatus">Checking Telegram status...</div>
+          <div class="actions">
+            <button class="secondary" id="connectTelegramBtn">Connect Telegram</button>
+            <button class="secondary" id="refreshBtn">Refresh status</button>
+          </div>
+          <pre id="telegramConnect" style="display: none;"></pre>
         </div>
 
         <div class="card">
@@ -255,6 +265,7 @@
         launchAlerts: $("launchAlerts"),
         trending: $("trending"),
         hot: $("hot"),
+        telegramDms: $("telegramDms"),
         lookupQuery: $("lookupQuery"),
       };
 
@@ -289,6 +300,7 @@
             launchAlerts: fields.launchAlerts.checked,
             trending: fields.trending.checked,
             hot: fields.hot.checked,
+            telegramDms: fields.telegramDms.checked,
           },
         };
       }
@@ -305,6 +317,10 @@
         fields.launchAlerts.checked = s.launchAlerts !== false;
         fields.trending.checked = s.trending !== false;
         fields.hot.checked = s.hot === true;
+        fields.telegramDms.checked = s.telegramDms !== false;
+        $("telegramStatus").textContent = d.telegramChatId
+          ? `Connected${d.telegramUsername ? ` to @${d.telegramUsername}` : ""}. Telegram DMs are ${s.telegramDms === false ? "off" : "on"}.`
+          : "Not connected. Click Connect Telegram, then send the generated /connect command to the Telegram bot.";
       }
 
       async function runScript(name, args = {}) {
@@ -350,6 +366,31 @@
         } finally {
           $("testBtn").disabled = false;
         }
+      });
+
+      $("connectTelegramBtn").addEventListener("click", async () => {
+        try {
+          $("connectTelegramBtn").disabled = true;
+          setStatus("Creating Telegram connect code...");
+          const data = await runScript("createTelegramConnectCode");
+          const command = data.connect?.command || "";
+          $("telegramConnect").style.display = "block";
+          $("telegramConnect").textContent =
+            `Open the BankrMonitor Telegram bot and send:\n\n${command}\n\nThis code expires at ${data.connect?.expiresAt || "soon"}.`;
+          show(data);
+          setStatus("Telegram connect code created.");
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          $("connectTelegramBtn").disabled = false;
+        }
+      });
+
+      $("refreshBtn").addEventListener("click", () => {
+        load().catch((err) => {
+          show(err.message);
+          setStatus(err.message, true);
+        });
       });
 
       $("lookupBtn").addEventListener("click", async () => {
