@@ -142,18 +142,26 @@ async function handleWalletLookup(req, res, url) {
     return;
   }
   const apiKey = defaultBankrApiKey(body.bankrApiKey);
-  const resolved = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
+  const resolveTimeoutMs = Math.max(1500, parseInt(process.env.BANKR_APP_RESOLVE_TIMEOUT_MS || "6500", 10));
+  const lookupTimeoutMs = Math.max(1000, parseInt(process.env.BANKR_APP_LOOKUP_TIMEOUT_MS || "3500", 10));
+  const resolved = await withTimeout(
+    resolveHandleToWallet(query, { bankrApiKey: apiKey }),
+    resolveTimeoutMs,
+    { wallet: null, normalized: query, isWallet: false, timedOut: true }
+  );
+  const resolveTimedOut = resolved?.timedOut === true;
   const publicResolved = {
     wallet: resolved.wallet,
     normalized: resolved.normalized,
     isWallet: resolved.isWallet,
+    timedOut: resolveTimedOut,
   };
   let lookup = null;
   if (resolved.wallet) {
     const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(resolved.wallet)}`;
     const result = await withTimeout(
       lookupByDeployerOrFee(resolved.wallet, "both", "newest", { bankrApiKey: apiKey }),
-      Math.max(2000, parseInt(process.env.BANKR_APP_LOOKUP_TIMEOUT_MS || "8000", 10)),
+      lookupTimeoutMs,
       null
     );
     lookup = result
@@ -179,7 +187,7 @@ async function handleWalletLookup(req, res, url) {
           matches: [],
         };
   }
-  json(res, 200, { ok: true, resolved: publicResolved, lookup });
+  json(res, 200, { ok: true, resolved: publicResolved, lookup, resolveTimedOut });
 }
 
 async function handleTelegramConnectCode(req, res, url) {

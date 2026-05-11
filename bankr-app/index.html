@@ -340,6 +340,17 @@
 
       function showLookupResult(data) {
         const wallet = data?.resolved?.wallet;
+        if (data?.resolved?.timedOut || data?.resolveTimedOut) {
+          showResultHtml(
+            [
+              "Lookup is taking longer than the app runtime allows.",
+              "Try again in a moment, or paste a 0x wallet directly.",
+              "",
+              `Query: ${escapeHtml(fields.lookupQuery.value.trim())}`,
+            ].join("\n")
+          );
+          return;
+        }
         if (!wallet) {
           showResultHtml("No wallet found for this query.");
           return;
