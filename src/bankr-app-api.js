@@ -38,6 +38,9 @@ function requireAuth(req, res) {
   }
   const got = parseAuthToken(req);
   if (!got || got !== expected) {
+    console.warn(
+      `[bankr-app-api] unauthorized: gotLen=${got?.length ?? 0} gotTail=${got ? String(got).slice(-4) : "none"} expectedLen=${expected.length} expectedTail=${expected.slice(-4)} hasAuth=${!!req.headers.authorization} hasXToken=${!!req.headers["x-bankr-app-token"]}`
+    );
     json(res, 401, { ok: false, error: "Unauthorized" });
     return false;
   }

@@ -11,6 +11,7 @@ return await http.fetch(`${base}/api/app/config`, {
   method: "POST",
   headers: {
     authorization: `Bearer ${apiToken}`,
+    "x-bankr-app-token": String(apiToken),
     "content-type": "application/json",
   },
   body: JSON.stringify({

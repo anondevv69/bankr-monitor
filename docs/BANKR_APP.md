@@ -46,6 +46,10 @@ BANKR_MONITOR_API_URL=https://YOUR-RAILWAY-DOMAIN
 BANKR_MONITOR_API_TOKEN=the_same_value_as_BANKR_APP_API_TOKEN
 ```
 
+The scripts send this token as both `Authorization: Bearer ...` and
+`x-bankr-app-token` so hosted app runtimes that treat `Authorization`
+specially can still authenticate.
+
 The app manifest needs:
 
 ```json

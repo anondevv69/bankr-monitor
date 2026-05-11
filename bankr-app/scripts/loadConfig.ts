@@ -11,5 +11,6 @@ return await http.fetch(`${base}/api/app/config?walletAddress=${encodeURICompone
   method: "GET",
   headers: {
     authorization: `Bearer ${apiToken}`,
+    "x-bankr-app-token": String(apiToken),
   },
 });
