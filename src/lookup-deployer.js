@@ -567,7 +567,12 @@ export async function resolveHandleToWallet(query, options = {}) {
   if (overrideWallet) return { wallet: overrideWallet, normalized, isWallet: false };
   if (!apiKey) return { wallet: null, normalized, isWallet: false };
   // Try deploy-simulate first: one POST, no list fetches. Works even when list API is 429'd.
-  let wallet = await resolveHandleViaDeploySimulate(normalized, apiKey) ?? null;
+  // resolves ANY X handle → wallet, even if the account has never launched on Bankr.
+  // Requires a Bankr Club key; returns clubRequired:true when the key lacks that permission.
+  const simResult = await resolveHandleViaDeploySimulate(normalized, apiKey);
+  let wallet = simResult.wallet;
+  const simulateClubRequired = simResult.clubRequired;
+
   if (!wallet) {
     // Prefer the in-memory cache so we don't issue a fresh paginated fetch when lookupByDeployerOrFee
     // already populated it seconds ago (avoids doubling API calls during rate-limited periods).
@@ -598,7 +603,7 @@ export async function resolveHandleToWallet(query, options = {}) {
       }
     }
   }
-  return { wallet, normalized, isWallet: false };
+  return { wallet, normalized, isWallet: false, simulateClubRequired };
 }
 
 /**
@@ -607,12 +612,13 @@ export async function resolveHandleToWallet(query, options = {}) {
  * apiKey: required for the request (env or passed from caller).
  * @param {string} handle - Normalized handle (no @).
  * @param {string} [apiKey] - Bankr API key (uses env if not provided).
- * @returns {Promise<string | null>} Resolved wallet (lowercase) or null.
+ * @returns {Promise<{ wallet: string|null, clubRequired: boolean }>}
  */
 async function resolveHandleViaDeploySimulate(handle, apiKey) {
   const key = defaultBankrApiKey(apiKey);
-  if (!key || !handle) return null;
+  if (!key || !handle) return { wallet: null, clubRequired: false };
   const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
+  let seenClubRequired = false;
   for (const type of typesToTry) {
     try {
       let res;
@@ -625,7 +631,11 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
         if (res.status !== 429) break;
         await sleep(600 * (attempt + 1) + Math.floor(Math.random() * 200));
       }
-      if (res.status === 401 || res.status === 403) return null;
+      if (res.status === 401) return { wallet: null, clubRequired: false };
+      if (res.status === 403) {
+        // Bankr Club membership required for deploy simulate. All types will fail the same way.
+        return { wallet: null, clubRequired: true };
+      }
       if (!res.ok) continue;
       const data = await res.json().catch(() => ({}));
       const creator = data?.feeDistribution?.creator;
@@ -634,13 +644,15 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
         creator?.wallet ??
         creator?.walletAddress ??
         (typeof creator === "string" ? creator : null);
-      if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim())) return String(addr).trim().toLowerCase();
-      if (res.ok && data?.success) console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
+      if (addr && /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim()))
+        return { wallet: String(addr).trim().toLowerCase(), clubRequired: false };
+      if (res.ok && data?.success)
+        console.warn("[resolve] Deploy simulate ok but no creator address; keys:", Object.keys(data?.feeDistribution ?? {}));
     } catch {
       // ignore and try next type
     }
   }
-  return null;
+  return { wallet: null, clubRequired: seenClubRequired };
 }
 
 /** @param filter "deployer" | "fee" | "both" - limit to tokens where query matches deployer, fee recipient, or either

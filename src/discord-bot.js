@@ -2134,18 +2134,25 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const tenant = interaction.guildId ? await getTenant(interaction.guildId) : null;
       const apiKey = defaultBankrApiKey(tenant?.bankrApiKey);
-      const { wallet, normalized, isWallet } = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
+      const { wallet, normalized, isWallet, simulateClubRequired } = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
       if (wallet) {
         await interaction.editReply({
           content:
             (isWallet ? `**Wallet:** \`${wallet}\`\n\n` : `**Wallet for ${normalized}:** \`${wallet}\`\n\n`) +
             "Use **/lookup** with the same handle or wallet to see token deployments.",
         });
+      } else if (simulateClubRequired) {
+        await interaction.editReply({
+          content:
+            `Could not resolve a wallet for **${normalized || query}**.\n\n` +
+            "Direct X→wallet resolution requires a **Bankr Club** API key (set in **/setup api_key** or `BANKR_API_KEY`). " +
+            "If this account has launched tokens on Bankr, try **/lookup** with the same handle. " +
+            "Otherwise paste the wallet address (**0x…**) directly.",
+        });
       } else {
         await interaction.editReply({
           content:
             `Could not resolve a wallet for **${normalized || query}**. ` +
-            "We try Bankr deploy simulate, launch scans, and search-by-handle (API key required). " +
             "If this account has tokens on Bankr, try **/lookup** with the same handle or profile URL. " +
             "Otherwise use the wallet address (**0x…**) directly.",
         });
