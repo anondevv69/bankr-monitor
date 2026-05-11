@@ -220,18 +220,25 @@ export async function fetchSearch(query, apiKey) {
   return r;
 }
 
-/** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. apiKey: optional override. */
+/** Fetch one page of launches from Bankr API. order: undefined (default/newest) or "asc" for oldest first. apiKey: optional override.
+ *  Returns { launches, rateLimited } — so callers can distinguish 429 (stop, but keep what we have) from truly empty. */
 async function fetchLaunchesPage(offset, pageSize = 50, order, apiKey) {
   const key = defaultBankrApiKey(apiKey);
-  if (!key) return [];
+  if (!key) return { launches: [], rateLimited: false };
   let url = `https://api.bankr.bot/token-launches?limit=${pageSize}&offset=${offset}`;
   if (order === "asc") url += "&order=asc";
-  const res = await fetch(url, {
-    headers: { ...BANKR_FETCH_HEADERS, "X-API-Key": key, Accept: "application/json" },
-  });
-  if (!res.ok) return [];
+  let res;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch(url, {
+      headers: { ...BANKR_FETCH_HEADERS, "X-API-Key": key, Accept: "application/json" },
+    });
+    if (res.status !== 429) break;
+    await sleep(600 * (attempt + 1) + Math.floor(Math.random() * 200));
+  }
+  if (res.status === 429) return { launches: [], rateLimited: true };
+  if (!res.ok) return { launches: [], rateLimited: false };
   const json = await res.json();
-  return json.launches?.filter((l) => l.status === "deployed") ?? [];
+  return { launches: json.launches?.filter((l) => isSearchRowDeployed(l)) ?? [], rateLimited: false };
 }
 
 const FULL_LIST_CONCURRENCY = Math.min(parseInt(process.env.BANKR_FULL_LIST_CONCURRENCY || "10", 10), 20);
@@ -282,19 +289,22 @@ async function fetchAllLaunches(limit = BANKR_LAUNCHES_LIMIT, order, apiKey) {
       batchOffsets.push(o);
     }
     if (batchOffsets.length === 0) break;
-    const batches = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize, order, key)));
+    const batchResults = await Promise.all(batchOffsets.map((o) => fetchLaunchesPage(o, pageSize, order, key)));
     let hasLessThanFull = false;
-    for (const batch of batches) {
+    let hitRateLimit = false;
+    for (const { launches: batch, rateLimited } of batchResults) {
+      if (rateLimited) { hitRateLimit = true; break; }
       if (batch.length < pageSize) hasLessThanFull = true;
       for (const l of batch) {
-        const key = l.tokenAddress?.toLowerCase();
-        if (key && !seen.has(key)) {
-          seen.add(key);
+        const addrKey = l.tokenAddress?.toLowerCase();
+        if (addrKey && !seen.has(addrKey)) {
+          seen.add(addrKey);
           out.push(l);
         }
       }
     }
-    if (hasLessThanFull || batches.some((b) => b.length === 0)) break;
+    if (hitRateLimit) break;
+    if (hasLessThanFull || batchResults.some(({ launches }) => launches.length === 0)) break;
     offset += batchOffsets.length * pageSize;
   }
   return out;
@@ -559,11 +569,13 @@ export async function resolveHandleToWallet(query, options = {}) {
   // Try deploy-simulate first: one POST, no list fetches. Works even when list API is 429'd.
   let wallet = await resolveHandleViaDeploySimulate(normalized, apiKey) ?? null;
   if (!wallet) {
-    const all = await fetchAllLaunches(undefined, undefined, apiKey);
+    // Prefer the in-memory cache so we don't issue a fresh paginated fetch when lookupByDeployerOrFee
+    // already populated it seconds ago (avoids doubling API calls during rate-limited periods).
+    const all = await getCachedLaunches(BANKR_LAUNCHES_LIMIT, undefined, apiKey);
     let handleToWallet = buildHandleToWalletMap(all);
     wallet = handleToWallet.get(normalized) ?? null;
     if (!wallet && OLDEST_FETCH_LIMIT > 0) {
-      const oldest = await fetchAllLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
+      const oldest = await getCachedLaunches(OLDEST_FETCH_LIMIT, "asc", apiKey);
       const mapOld = buildHandleToWalletMap(oldest);
       for (const [h, w] of mapOld) if (!handleToWallet.has(h)) handleToWallet.set(h, w);
       wallet = handleToWallet.get(normalized) ?? null;
@@ -603,15 +615,16 @@ async function resolveHandleViaDeploySimulate(handle, apiKey) {
   const typesToTry = /\.(eth|lens)$/.test(handle) ? ["ens", "farcaster", "x"] : ["x", "farcaster", "ens"];
   for (const type of typesToTry) {
     try {
-      const res = await fetch(DEPLOY_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": key.trim() },
-        body: JSON.stringify({
-          tokenName: "ResolveCheck",
-          simulateOnly: true,
-          feeRecipient: { type, value: handle },
-        }),
-      });
+      let res;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        res = await fetch(DEPLOY_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": key.trim() },
+          body: JSON.stringify({ tokenName: "ResolveCheck", simulateOnly: true, feeRecipient: { type, value: handle } }),
+        });
+        if (res.status !== 429) break;
+        await sleep(600 * (attempt + 1) + Math.floor(Math.random() * 200));
+      }
       if (res.status === 401 || res.status === 403) return null;
       if (!res.ok) continue;
       const data = await res.json().catch(() => ({}));
