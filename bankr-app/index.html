@@ -184,8 +184,8 @@
         <div>
           <h1>BankrMonitor</h1>
           <div class="sub">
-            Manage launch watchlists and route pings to your own Discord webhook. Telegram pairing is reserved for
-            the next pass; this panel already stores the chat field for it.
+            Manage launch watchlists and route pings to your own Discord webhook. Telegram pairing will be added
+            after the Discord webhook flow is stable.
           </div>
         </div>
         <div class="wallet" id="wallet">loading...</div>
@@ -196,8 +196,6 @@
           <h2>Destination</h2>
           <label for="discordWebhookUrl">Discord webhook URL</label>
           <input id="discordWebhookUrl" placeholder="https://discord.com/api/webhooks/..." />
-          <label for="telegramChatId">Telegram chat ID (coming next)</label>
-          <input id="telegramChatId" placeholder="optional, saved for Telegram pairing later" />
           <div class="actions">
             <button id="saveBtn">Save settings</button>
             <button class="secondary" id="testBtn">Send test ping</button>
@@ -250,7 +248,6 @@
       const $ = (id) => document.getElementById(id);
       const fields = {
         discordWebhookUrl: $("discordWebhookUrl"),
-        telegramChatId: $("telegramChatId"),
         xHandles: $("xHandles"),
         wallets: $("wallets"),
         keywords: $("keywords"),
@@ -281,7 +278,6 @@
         return {
           destinations: {
             discordWebhookUrl: fields.discordWebhookUrl.value.trim(),
-            telegramChatId: fields.telegramChatId.value.trim(),
           },
           watchlist: {
             x: lines(fields.xHandles.value),
@@ -302,7 +298,6 @@
         const w = user?.watchlist || {};
         const s = user?.settings || {};
         fields.discordWebhookUrl.value = d.discordWebhookUrl || "";
-        fields.telegramChatId.value = d.telegramChatId || "";
         fields.xHandles.value = (w.x || []).join("\n");
         fields.wallets.value = (w.wallet || []).join("\n");
         fields.keywords.value = (w.keywords || []).join("\n");

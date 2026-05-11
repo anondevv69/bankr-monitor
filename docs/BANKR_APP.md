@@ -79,9 +79,9 @@ claim-routing flow is wired.
 
 ## Telegram status
 
-The UI stores `telegramChatId`, but Telegram delivery from the app is not wired
-yet. Telegram needs a pairing flow through the Telegram bot because Telegram
-does not work like Discord incoming webhooks.
+Telegram delivery from the app is not wired yet. Telegram needs a pairing flow
+through the Telegram bot because Telegram does not work like Discord incoming
+webhooks.
 
 The next pass should add:
 
