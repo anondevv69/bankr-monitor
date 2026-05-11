@@ -166,7 +166,14 @@ async function handleTelegramConnectCode(req, res, url) {
     json(res, 400, { ok: false, error: "Could not create Telegram connect code" });
     return;
   }
-  json(res, 200, { ok: true, connect });
+  json(res, 200, {
+    ok: true,
+    connect,
+    code: connect.code,
+    command: connect.command,
+    expiresAt: connect.expiresAt,
+    ttlSeconds: connect.ttlSeconds,
+  });
 }
 
 function routeNotFound(res) {
