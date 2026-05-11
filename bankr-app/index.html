@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BankrMonitor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07130d;
+        --panel: #0d2016;
+        --panel2: #10291d;
+        --text: #edf8ef;
+        --muted: #9fb6a6;
+        --line: #234532;
+        --accent: #47ff88;
+        --danger: #ff6f61;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        background: radial-gradient(circle at 20% 0%, #173b27, transparent 35%), var(--bg);
+        color: var(--text);
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        margin-bottom: 22px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: clamp(28px, 5vw, 56px);
+        letter-spacing: -0.06em;
+      }
+      .sub {
+        color: var(--muted);
+        max-width: 720px;
+        line-height: 1.5;
+      }
+      .wallet {
+        border: 1px solid var(--line);
+        background: rgba(13, 32, 22, 0.8);
+        border-radius: 14px;
+        padding: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        background: rgba(13, 32, 22, 0.86);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+      }
+      .wide {
+        grid-column: 1 / -1;
+      }
+      h2 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+      label {
+        display: block;
+        margin: 12px 0 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--panel2);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 11px 12px;
+        outline: none;
+      }
+      textarea {
+        min-height: 92px;
+        resize: vertical;
+      }
+      input:focus,
+      textarea:focus {
+        border-color: var(--accent);
+      }
+      .toggles {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        background: var(--panel2);
+        border-radius: 12px;
+        padding: 10px;
+        color: var(--text);
+      }
+      .toggle input {
+        width: auto;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      button {
+        border: 0;
+        background: var(--accent);
+        color: #061109;
+        border-radius: 999px;
+        padding: 11px 16px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #07120d;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        max-height: 360px;
+        overflow: auto;
+      }
+      .status {
+        color: var(--muted);
+        min-height: 22px;
+        margin-top: 12px;
+      }
+      .error {
+        color: var(--danger);
+      }
+      @media (max-width: 760px) {
+        main {
+          padding: 18px;
+        }
+        header,
+        .grid,
+        .toggles {
+          grid-template-columns: 1fr;
+          display: block;
+        }
+        .card {
+          margin-bottom: 14px;
+        }
+        .wallet {
+          white-space: normal;
+          margin-top: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>BankrMonitor</h1>
+          <div class="sub">
+            Manage launch watchlists and route pings to your own Discord webhook. Telegram pairing is reserved for
+            the next pass; this panel already stores the chat field for it.
+          </div>
+        </div>
+        <div class="wallet" id="wallet">loading...</div>
+      </header>
+
+      <section class="grid">
+        <div class="card wide">
+          <h2>Destination</h2>
+          <label for="discordWebhookUrl">Discord webhook URL</label>
+          <input id="discordWebhookUrl" placeholder="https://discord.com/api/webhooks/..." />
+          <label for="telegramChatId">Telegram chat ID (coming next)</label>
+          <input id="telegramChatId" placeholder="optional, saved for Telegram pairing later" />
+          <div class="actions">
+            <button id="saveBtn">Save settings</button>
+            <button class="secondary" id="testBtn">Send test ping</button>
+          </div>
+          <div class="status" id="status"></div>
+        </div>
+
+        <div class="card">
+          <h2>Watchlist</h2>
+          <label for="xHandles">X handles, one per line</label>
+          <textarea id="xHandles" placeholder="whalewatchalert&#10;bankr"></textarea>
+          <label for="wallets">Wallets, one per line</label>
+          <textarea id="wallets" placeholder="0x..."></textarea>
+        </div>
+
+        <div class="card">
+          <h2>Keywords</h2>
+          <label for="keywords">Token name/symbol keywords, one per line</label>
+          <textarea id="keywords" placeholder="ai&#10;agent&#10;terminal"></textarea>
+          <label for="tokenAddresses">Token addresses, one per line</label>
+          <textarea id="tokenAddresses" placeholder="0x..."></textarea>
+        </div>
+
+        <div class="card">
+          <h2>Alert Types</h2>
+          <div class="toggles">
+            <label class="toggle"><input id="launchAlerts" type="checkbox" /> Watchlist launch matches</label>
+            <label class="toggle"><input id="trending" type="checkbox" /> Trending tokens</label>
+            <label class="toggle"><input id="hot" type="checkbox" /> Hot tokens</label>
+            <label class="toggle"><input id="claimAlerts" type="checkbox" /> Claim alerts (coming next)</label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Wallet Lookup</h2>
+          <label for="lookupQuery">X handle, profile URL, Farcaster, or wallet</label>
+          <input id="lookupQuery" placeholder="@whalewatchalert" />
+          <div class="actions">
+            <button class="secondary" id="lookupBtn">Run lookup</button>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <h2>Result</h2>
+          <pre id="result">Ready.</pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const fields = {
+        discordWebhookUrl: $("discordWebhookUrl"),
+        telegramChatId: $("telegramChatId"),
+        xHandles: $("xHandles"),
+        wallets: $("wallets"),
+        keywords: $("keywords"),
+        tokenAddresses: $("tokenAddresses"),
+        launchAlerts: $("launchAlerts"),
+        trending: $("trending"),
+        hot: $("hot"),
+        claimAlerts: $("claimAlerts"),
+        lookupQuery: $("lookupQuery"),
+      };
+
+      function lines(value) {
+        return String(value || "")
+          .split(/\n|,/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+
+      function setStatus(message, isError = false) {
+        $("status").textContent = message || "";
+        $("status").className = isError ? "status error" : "status";
+      }
+
+      function show(value) {
+        $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      }
+
+      function formConfig() {
+        return {
+          destinations: {
+            discordWebhookUrl: fields.discordWebhookUrl.value.trim(),
+            telegramChatId: fields.telegramChatId.value.trim(),
+          },
+          watchlist: {
+            x: lines(fields.xHandles.value),
+            wallet: lines(fields.wallets.value),
+            keywords: lines(fields.keywords.value),
+            tokenAddresses: lines(fields.tokenAddresses.value),
+          },
+          settings: {
+            launchAlerts: fields.launchAlerts.checked,
+            trending: fields.trending.checked,
+            hot: fields.hot.checked,
+            claimAlerts: fields.claimAlerts.checked,
+          },
+        };
+      }
+
+      function fill(user) {
+        const d = user?.destinations || {};
+        const w = user?.watchlist || {};
+        const s = user?.settings || {};
+        fields.discordWebhookUrl.value = d.discordWebhookUrl || "";
+        fields.telegramChatId.value = d.telegramChatId || "";
+        fields.xHandles.value = (w.x || []).join("\n");
+        fields.wallets.value = (w.wallet || []).join("\n");
+        fields.keywords.value = (w.keywords || []).join("\n");
+        fields.tokenAddresses.value = (w.tokenAddresses || []).join("\n");
+        fields.launchAlerts.checked = s.launchAlerts !== false;
+        fields.trending.checked = s.trending !== false;
+        fields.hot.checked = s.hot === true;
+        fields.claimAlerts.checked = s.claimAlerts === true;
+      }
+
+      async function runScript(name, args = {}) {
+        const result = await bankr.scripts.run(name, args);
+        if (!result?.ok) throw new Error(result?.error || `${name} failed`);
+        return result;
+      }
+
+      async function load() {
+        setStatus("Loading settings...");
+        const wallet = bankr.ctx.walletAddress || bankr.wallet?.address || "";
+        $("wallet").textContent = wallet ? `Wallet: ${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "Sign in required";
+        const data = await runScript("loadConfig");
+        fill(data.user);
+        show(data);
+        setStatus("Settings loaded.");
+      }
+
+      $("saveBtn").addEventListener("click", async () => {
+        try {
+          $("saveBtn").disabled = true;
+          setStatus("Saving...");
+          const data = await runScript("saveConfig", formConfig());
+          fill(data.user);
+          show(data);
+          setStatus("Saved.");
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          $("saveBtn").disabled = false;
+        }
+      });
+
+      $("testBtn").addEventListener("click", async () => {
+        try {
+          $("testBtn").disabled = true;
+          setStatus("Sending test ping...");
+          const data = await runScript("testDestination", { destinations: formConfig().destinations });
+          show(data);
+          setStatus("Test ping sent.");
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          $("testBtn").disabled = false;
+        }
+      });
+
+      $("lookupBtn").addEventListener("click", async () => {
+        try {
+          $("lookupBtn").disabled = true;
+          setStatus("Looking up wallet...");
+          const data = await runScript("walletLookup", { query: fields.lookupQuery.value.trim() });
+          show(data);
+          setStatus("Lookup complete.");
+        } catch (err) {
+          setStatus(err.message, true);
+        } finally {
+          $("lookupBtn").disabled = false;
+        }
+      });
+
+      bankr.on("ready", () => {
+        load().catch((err) => {
+          show(err.message);
+          setStatus(err.message, true);
+        });
+      });
+    </script>
+  </body>
+</html>

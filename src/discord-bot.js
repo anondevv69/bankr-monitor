@@ -107,10 +107,20 @@ import {
   summarizeActivityWatchThresholds,
   resolveActivityWatchChannelId,
 } from "./activity-watch.js";
+import { startBankrAppApiServer } from "./bankr-app-api.js";
+import {
+  bankrAppAlertsEnabled,
+  hasActiveBankrAppUsers,
+} from "./bankr-app-store.js";
+import {
+  scheduleBankrAppHotTrendingWebhooks,
+  scheduleBankrAppLaunchWebhooks,
+} from "./bankr-app-notify.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
+startBankrAppApiServer();
 /** Optional: post every Bankr launch here (unfiltered firehose). */
 const ALL_LAUNCHES_CHANNEL_ID = process.env.DISCORD_ALL_LAUNCHES_CHANNEL_ID;
 /** Optional: post only launches that pass global filters (same as notify.js). If unset, only watch/all channels used. */
@@ -907,6 +917,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
   const hasHotDest = discordHotChannelIds.length > 0 || (telegramHotTargets?.length > 0);
   const hasTrendingDest = discordTrendingChannelIds.length > 0 || (telegramTrendingTargets?.length > 0);
   const hasTelegram = (telegramChatIds?.length > 0) || hasHotDest || hasTrendingDest;
+  const hasBankrAppHotTrendingDest = bankrAppAlertsEnabled();
   const telegramDelayMs = overrideDelayMs != null ? Math.max(0, Number(overrideDelayMs)) : TELEGRAM_HOT_PING_DELAY_MS;
   if (
     (HOT_LAUNCH_MIN_BUYS_FIRST_MIN <= 0 &&
@@ -916,7 +927,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
       TRENDING_MIN_BUYS_1H <= 0 &&
       HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD <= 0 &&
       TRENDING_MIN_INDEXER_VOL_24H_USD <= 0) ||
-    (!hasHotDest && !hasTrendingDest && !hasTelegram)
+    (!hasHotDest && !hasTrendingDest && !hasTelegram && !hasBankrAppHotTrendingDest)
   ) {
     return;
   }
@@ -1056,6 +1067,7 @@ function scheduleHotLaunchCheck(launch, { discordHotChannelIds = [], discordTren
         }
       }
       schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
+      scheduleBankrAppHotTrendingWebhooks(launchForEmbed, { isHot, isTrending });
       await sendTelegramHotTrendingPings({
         sendTelegramHotPing,
         launchForEmbed,
@@ -1119,6 +1131,7 @@ async function runNotify() {
           scheduleTelegramLaunchSend(launchForEmbeds, { messageThreadId: envCuratedTopic });
         }
         schedulePersonalLaunchDms(launchForEmbeds);
+        scheduleBankrAppLaunchWebhooks(launchForEmbeds);
         await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
           sendTelegram,
           outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
@@ -1229,20 +1242,21 @@ async function runNotify() {
             }
           }
           schedulePersonalLaunchDms(launchForEmbeds);
+          scheduleBankrAppLaunchWebhooks(launchForEmbeds);
           await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
-          sendTelegram,
-          outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
-        });
+            sendTelegram,
+            outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
+          });
         }
         if (
           newLaunches.length > 0 &&
           (HOT_LAUNCH_MIN_BUYS_FIRST_MIN > 0 ||
-          HOT_LAUNCH_MIN_HOLDERS > 0 ||
-          TRENDING_MIN_BUYS_30M > 0 ||
-          TRENDING_MIN_BUYS_5M > 0 ||
-          TRENDING_MIN_BUYS_1H > 0 ||
-          HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
-          TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
+            HOT_LAUNCH_MIN_HOLDERS > 0 ||
+            TRENDING_MIN_BUYS_30M > 0 ||
+            TRENDING_MIN_BUYS_5M > 0 ||
+            TRENDING_MIN_BUYS_1H > 0 ||
+            HOT_LAUNCH_MIN_INDEXER_VOL_1H_USD > 0 ||
+            TRENDING_MIN_INDEXER_VOL_24H_USD > 0)
         ) {
           const discordHotChannelIds = [];
           const discordTrendingChannelIds = [];
@@ -1309,8 +1323,10 @@ async function runNotify() {
           c.alertHot === true ||
           c.alertTrending === true
       );
-      if (wantsTgAlerts && process.env.TELEGRAM_BOT_TOKEN) {
+      const wantsBankrAppAlerts = await hasActiveBankrAppUsers();
+      if ((wantsTgAlerts && process.env.TELEGRAM_BOT_TOKEN) || wantsBankrAppAlerts) {
         try {
+          const activeTelegramGroupConfigs = process.env.TELEGRAM_BOT_TOKEN ? telegramGroupConfigs : [];
           const firstApiKey = defaultBankrApiKey();
           const { newLaunches } = await runNotifyCycle({ bankrApiKey: firstApiKey });
           const roleCountApiKey = firstApiKey;
@@ -1319,10 +1335,11 @@ async function runNotify() {
               ? await enrichLaunchWithBankrRoleCounts(launch, { bankrApiKey: roleCountApiKey })
               : launch;
             schedulePersonalLaunchDms(launchForEmbeds);
-            await sendTelegramGroupWatchMatches(launchForEmbeds, telegramGroupConfigs, {
-          sendTelegram,
-          outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
-        });
+            scheduleBankrAppLaunchWebhooks(launchForEmbeds);
+            await sendTelegramGroupWatchMatches(launchForEmbeds, activeTelegramGroupConfigs, {
+              sendTelegram,
+              outboundDelayMs: TELEGRAM_OUTBOUND_DELAY_MS,
+            });
           }
           if (
             newLaunches.length > 0 &&
@@ -1344,7 +1361,7 @@ async function runNotify() {
               else if (envTrend == null) telegramIds.add(process.env.TELEGRAM_CHAT_ID);
               if (envTrend != null) telegramTrendingTargets.push({ chatId: process.env.TELEGRAM_CHAT_ID, messageThreadId: envTrend });
             }
-            mergeTelegramGroupHotTrendingTargets(telegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
+            mergeTelegramGroupHotTrendingTargets(activeTelegramGroupConfigs, telegramHotTargets, telegramTrendingTargets, telegramIds);
             for (const launch of newLaunches) {
               scheduleHotLaunchCheck(launch, {
                 discordHotChannelIds: [],

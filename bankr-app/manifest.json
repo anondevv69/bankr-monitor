@@ -1,0 +1,20 @@
+{
+  "slug": "bankr-monitor-app-v1",
+  "title": "BankrMonitor",
+  "description": "Manage BankrMonitor watchlists, Discord webhook destinations, and wallet lookups.",
+  "tags": ["bankr", "alerts", "discord", "telegram", "watchlist"],
+  "permissions": ["read:wallet", "fetch:http", "read:secrets"],
+  "scripts": ["loadConfig", "saveConfig", "testDestination", "walletLookup"],
+  "secrets": [
+    {
+      "key": "BANKR_MONITOR_API_URL",
+      "required": true
+    },
+    {
+      "key": "BANKR_MONITOR_API_TOKEN",
+      "required": true
+    }
+  ],
+  "publicDataKeys": [],
+  "frontendIdentity": "viewer"
+}

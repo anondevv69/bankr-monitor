@@ -79,6 +79,8 @@ Outbound posts and **interactive** Telegram commands (`/lookup`, `/token`, paste
 
 ## Configuration & documentation map
 
+- **Bankr Apps control panel:** see **[docs/BANKR_APP.md](docs/BANKR_APP.md)** for the Railway API and the `bankr-app/` frontend template.
+
 | Need | Where to look |
 |------|----------------|
 | All env variable names | **`.env.example`** |
