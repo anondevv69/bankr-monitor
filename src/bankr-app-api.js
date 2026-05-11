@@ -133,6 +133,11 @@ async function handleWalletLookup(req, res, url) {
   }
   const apiKey = defaultBankrApiKey(body.bankrApiKey);
   const resolved = await resolveHandleToWallet(query, { bankrApiKey: apiKey });
+  const publicResolved = {
+    wallet: resolved.wallet,
+    normalized: resolved.normalized,
+    isWallet: resolved.isWallet,
+  };
   let lookup = null;
   if (resolved.wallet) {
     const result = await lookupByDeployerOrFee(resolved.wallet, "both", "newest", { bankrApiKey: apiKey });
@@ -150,7 +155,7 @@ async function handleWalletLookup(req, res, url) {
       })),
     };
   }
-  json(res, 200, { ok: true, resolved, lookup });
+  json(res, 200, { ok: true, resolved: publicResolved, lookup });
 }
 
 async function handleTelegramConnectCode(req, res, url) {

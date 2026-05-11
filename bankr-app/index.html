@@ -286,9 +286,64 @@
         $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
       }
 
+      function showResultHtml(html) {
+        $("resultCard").style.display = "block";
+        $("result").innerHTML = html;
+      }
+
       function hideResult() {
         $("resultCard").style.display = "none";
         $("result").textContent = "";
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      function shortAddr(value) {
+        const s = String(value || "");
+        return s.length > 14 ? `${s.slice(0, 6)}...${s.slice(-4)}` : s;
+      }
+
+      function showLoading(message) {
+        showResultHtml(`<span>${escapeHtml(message)}</span>`);
+      }
+
+      function showLookupResult(data) {
+        const wallet = data?.resolved?.wallet;
+        if (!wallet) {
+          showResultHtml("No wallet found for this query.");
+          return;
+        }
+        const lookup = data.lookup || {};
+        const total = Number(lookup.totalCount || 0);
+        const launchesUrl = lookup.searchUrl || `https://bankr.bot/launches/search?q=${encodeURIComponent(wallet)}`;
+        const matches = Array.isArray(lookup.matches) ? lookup.matches : [];
+        const rows = matches
+          .slice(0, 5)
+          .map((m) => {
+            const token = m.tokenAddress ? ` - ${shortAddr(m.tokenAddress)}` : "";
+            const name = [m.name, m.symbol ? `($${m.symbol})` : ""].filter(Boolean).join(" ");
+            return `• ${escapeHtml(name || "Bankr launch")}${escapeHtml(token)}`;
+          })
+          .join("\n");
+        showResultHtml(
+          [
+            `Wallet: ${escapeHtml(wallet)}`,
+            `Matched handle: ${escapeHtml(data.resolved.normalized || fields.lookupQuery.value.trim())}`,
+            `Bankr launches found: ${total}`,
+            "",
+            launchesUrl ? `Open launches: <a href="${escapeHtml(launchesUrl)}" target="_blank" rel="noreferrer">Bankr launch search</a>` : "",
+            rows ? `\nRecent launches:\n${rows}` : "",
+          ]
+            .filter((line) => line !== "")
+            .join("\n")
+        );
       }
 
       function formConfig() {
@@ -405,8 +460,9 @@
         try {
           $("lookupBtn").disabled = true;
           setStatus("Looking up wallet...");
+          showLoading("Looking up wallet and Bankr launches...");
           const data = await runScript("walletLookup", { query: fields.lookupQuery.value.trim() });
-          show(data);
+          showLookupResult(data);
           setStatus("Lookup complete.");
         } catch (err) {
           setStatus(err.message, true);
