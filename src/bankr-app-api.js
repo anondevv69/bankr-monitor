@@ -9,7 +9,7 @@
 import { createServer } from "http";
 import { createTelegramConnectCode, getBankrAppUser, setBankrAppUserConfig } from "./bankr-app-store.js";
 import { sendBankrAppTestDiscordWebhook } from "./bankr-app-notify.js";
-import { lookupByDeployerOrFee, resolveHandleToWallet } from "./lookup-deployer.js";
+import { fetchSearch, resolveHandleToWallet } from "./lookup-deployer.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
 
 let serverStarted = false;
@@ -73,6 +73,17 @@ function walletFromUrlOrBody(url, body) {
 function isValidWalletLike(value) {
   const s = String(value ?? "").trim();
   return /^0x[a-fA-F0-9]{40}$/.test(s);
+}
+
+function appLookupLaunchRow(row) {
+  return {
+    name: row?.name ?? row?.tokenName ?? row?.title ?? null,
+    symbol: row?.symbol ?? row?.tokenSymbol ?? row?.ticker ?? null,
+    tokenAddress: row?.tokenAddress ?? row?.address ?? null,
+    launcher: row?.launcher ?? row?.creatorAddress ?? row?.deployer?.walletAddress ?? row?.deployer?.address ?? null,
+    launcherX: row?.launcherX ?? row?.deployer?.xUsername ?? row?.xUsername ?? null,
+    deployedAtMsFromBankr: row?.deployedAtMsFromBankr ?? null,
+  };
 }
 
 async function readJson(req) {
@@ -161,25 +172,18 @@ async function handleWalletLookup(req, res, url) {
   let lookup = null;
   if (resolved.wallet) {
     const searchUrl = `https://bankr.bot/launches/search?q=${encodeURIComponent(resolved.wallet)}`;
-    const result = await withTimeout(
-      lookupByDeployerOrFee(resolved.wallet, "both", "newest", { bankrApiKey: apiKey }),
+    const searchResult = await withTimeout(
+      fetchSearch(resolved.wallet, apiKey),
       lookupTimeoutMs,
       null
     );
-    lookup = result
+    lookup = searchResult
       ? {
-          totalCount: result.totalCount,
-          shown: result.matches?.length ?? 0,
-          searchUrl: result.searchUrl || searchUrl,
+          totalCount: searchResult.totalCount ?? searchResult.launches?.length ?? 0,
+          shown: searchResult.launches?.length ?? 0,
+          searchUrl,
           timedOut: false,
-          matches: (result.matches || []).slice(0, 10).map((m) => ({
-            name: m.name,
-            symbol: m.symbol,
-            tokenAddress: m.tokenAddress,
-            launcher: m.launcher,
-            launcherX: m.launcherX,
-            deployedAtMsFromBankr: m.deployedAtMsFromBankr ?? null,
-          })),
+          matches: (searchResult.launches || []).slice(0, 10).map(appLookupLaunchRow),
         }
       : {
           totalCount: null,
