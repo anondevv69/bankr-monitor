@@ -437,9 +437,12 @@
           const connect = data.connect || data;
           const command = connect.command || (connect.code ? `/connect ${connect.code}` : "");
           if (!command) throw new Error("Railway did not return a Telegram connect code. Redeploy Railway and update the app script.");
+          const openLink = connect.botUrl
+            ? `\n\nOpen Telegram bot:\n${connect.botUrl}`
+            : "\n\nOpen your BankrMonitor Telegram bot and send the command above.";
           $("telegramConnect").style.display = "block";
           $("telegramConnect").textContent =
-            `Open the BankrMonitor Telegram bot and send:\n\n${command}\n\nThis code expires at ${connect.expiresAt || "soon"}.`;
+            `Send this command to the Telegram bot:\n\n${command}${openLink}\n\nAfter Telegram confirms, click Refresh status.\n\nThis code expires at ${connect.expiresAt || "soon"}.`;
           hideResult();
           setStatus("Telegram connect code created.");
         } catch (err) {

@@ -1533,7 +1533,9 @@ function startTelegramClaimsPolling(token) {
         if (chatId == null) continue;
         if (!text) continue;
         if (chatType === "private") {
-          const connectMatch = text.match(/^\/connect(?:@\w+)?\s+([a-zA-Z0-9]{4,12})$/i);
+          const connectMatch =
+            text.match(/^\/connect(?:@\w+)?\s+([a-zA-Z0-9]{4,12})$/i) ||
+            text.match(/^\/start(?:@\w+)?\s+connect_([a-zA-Z0-9]{4,12})$/i);
           if (connectMatch) {
             const from = msg?.from || {};
             const linked = await consumeTelegramConnectCode(connectMatch[1], chatId, {

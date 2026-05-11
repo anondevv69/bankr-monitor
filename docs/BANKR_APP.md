@@ -21,6 +21,8 @@ Keep your existing variables too, especially:
 ```bash
 BANKR_API_KEY=your_bankr_club_key
 DISCORD_BOT_TOKEN=your_discord_bot_token
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_BOT_USERNAME=YourBankrMonitorBot
 ```
 
 The Procfile runs the bot as a `web` process so Railway exposes the same Node
@@ -89,6 +91,7 @@ Telegram delivery uses bot pairing, not incoming webhooks:
 
 - The app calls `POST /api/app/telegram/connect-code`.
 - The user sends the returned `/connect CODE` command to the Telegram bot.
+- If `TELEGRAM_BOT_USERNAME` is set, the app also shows a `https://t.me/...` link that opens the correct bot with the connect code.
 - Railway links that Telegram `chatId` to the app user's Bankr wallet.
 - Watchlist, hot, and trending alerts can then DM the user when Telegram DMs are enabled.
 

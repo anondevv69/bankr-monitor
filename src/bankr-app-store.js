@@ -162,6 +162,12 @@ function makeConnectCode() {
   return randomBytes(5).toString("base64url").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase();
 }
 
+function telegramBotUrlForCode(code) {
+  const username = String(process.env.TELEGRAM_BOT_USERNAME || "").trim().replace(/^@/, "");
+  if (!username) return null;
+  return `https://t.me/${encodeURIComponent(username)}?start=connect_${encodeURIComponent(code)}`;
+}
+
 export async function getBankrAppUser(walletAddress) {
   const userId = normalizeUserId(walletAddress);
   if (!userId) return null;
@@ -221,6 +227,7 @@ export async function createTelegramConnectCode(walletAddress) {
     return {
       code,
       command: `/connect ${code}`,
+      botUrl: telegramBotUrlForCode(code),
       expiresAt: new Date(expiresAtMs).toISOString(),
       ttlSeconds: Math.floor(TELEGRAM_CONNECT_CODE_TTL_MS / 1000),
     };

@@ -176,6 +176,7 @@ async function handleTelegramConnectCode(req, res, url) {
     connect,
     code: connect.code,
     command: connect.command,
+    botUrl: connect.botUrl,
     expiresAt: connect.expiresAt,
     ttlSeconds: connect.ttlSeconds,
   });
