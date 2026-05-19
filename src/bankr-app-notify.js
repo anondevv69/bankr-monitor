@@ -10,6 +10,8 @@ import {
   bankrAppUserToWatchListSets,
   listActiveBankrAppUsers,
 } from "./bankr-app-store.js";
+import { recordTrendingFeedEntry } from "./bankr-app-trending-feed.js";
+import { queuePendingTradeForUser } from "./bankr-app-pending-trade.js";
 
 const STAGGER_MS = 75;
 
@@ -129,10 +131,24 @@ async function fanOutBankrAppLaunchWebhooks(launch) {
 /**
  * Hot/trending alerts are broadcast-style per user setting, not watchlist-bound.
  */
+async function fanOutBankrAppAutoTrade(launchForEmbed, hotStats) {
+  const users = await getActiveUsersSafe();
+  for (const user of users) {
+    if (!user.autoTrade?.enabled) continue;
+    void queuePendingTradeForUser(user, launchForEmbed, hotStats).catch((e) =>
+      console.error("[bankr-app] pending trade:", e?.message ?? e)
+    );
+  }
+}
+
 export function scheduleBankrAppHotTrendingWebhooks(launchForEmbed, hotStats, { isHot, isTrending } = {}) {
-  if (!bankrAppAlertsEnabled() || (!isHot && !isTrending)) return;
+  if (!isHot && !isTrending) return;
+  recordTrendingFeedEntry(launchForEmbed, hotStats, { isHot, isTrending });
   setTimeout(() => {
-    void fanOutBankrAppHotTrendingWebhooks(launchForEmbed, hotStats, { isHot, isTrending });
+    if (isTrending) void fanOutBankrAppAutoTrade(launchForEmbed, hotStats);
+    if (bankrAppAlertsEnabled()) {
+      void fanOutBankrAppHotTrendingWebhooks(launchForEmbed, hotStats, { isHot, isTrending });
+    }
   }, 0);
 }
 

@@ -7,7 +7,14 @@
  */
 
 import { createServer } from "http";
-import { createTelegramConnectCode, getBankrAppUser, setBankrAppUserConfig } from "./bankr-app-store.js";
+import {
+  bankrAppUserForClient,
+  createTelegramConnectCode,
+  getBankrAppUser,
+  setBankrAppUserConfig,
+} from "./bankr-app-store.js";
+import { listTrendingFeed } from "./bankr-app-trending-feed.js";
+import { ackPendingTradeForWallet, getPendingTradeForWallet } from "./bankr-app-pending-trade.js";
 import { sendBankrAppTestDiscordWebhook } from "./bankr-app-notify.js";
 import { fetchSearch, resolveHandleToWallet } from "./lookup-deployer.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
@@ -107,7 +114,7 @@ async function handleConfigGet(req, res, url) {
     return;
   }
   const user = await getBankrAppUser(walletAddress);
-  json(res, 200, { ok: true, user });
+  json(res, 200, { ok: true, user: bankrAppUserForClient(user) });
 }
 
 async function handleConfigPost(req, res, url) {
@@ -122,8 +129,17 @@ async function handleConfigPost(req, res, url) {
     destinations: body.destinations,
     watchlist: body.watchlist,
     settings: body.settings,
+    autoTrade: body.autoTrade,
   });
-  json(res, 200, { ok: true, user });
+  json(res, 200, { ok: true, user: bankrAppUserForClient(user) });
+}
+
+async function handleTrendingFeed(req, res, url) {
+  if (!requireAuth(req, res)) return;
+  const limit = url.searchParams.get("limit") || "40";
+  const type = url.searchParams.get("type") || "trending";
+  const feed = await listTrendingFeed({ limit, type });
+  json(res, 200, { ok: true, ...feed });
 }
 
 async function handleTestDestination(req, res, url) {
@@ -196,6 +212,32 @@ async function handleWalletLookup(req, res, url) {
   json(res, 200, { ok: true, resolved: publicResolved, lookup, resolveTimedOut });
 }
 
+async function handlePendingTradeGet(req, res, url) {
+  if (!requireAuth(req, res)) return;
+  const walletAddress = walletFromUrlOrBody(url, null);
+  if (!isValidWalletLike(walletAddress)) {
+    json(res, 400, { ok: false, error: "walletAddress is required" });
+    return;
+  }
+  const pendingTrade = await getPendingTradeForWallet(walletAddress);
+  json(res, 200, { ok: true, pendingTrade });
+}
+
+async function handlePendingTradeAck(req, res, url) {
+  if (!requireAuth(req, res)) return;
+  const body = await readJson(req);
+  const walletAddress = walletFromUrlOrBody(url, body);
+  if (!isValidWalletLike(walletAddress)) {
+    json(res, 400, { ok: false, error: "walletAddress is required" });
+    return;
+  }
+  const result = await ackPendingTradeForWallet(walletAddress, {
+    tradeId: body.tradeId,
+    status: body.status,
+  });
+  json(res, 200, result);
+}
+
 async function handleTelegramConnectCode(req, res, url) {
   if (!requireAuth(req, res)) return;
   const body = await readJson(req);
@@ -224,7 +266,16 @@ function routeNotFound(res) {
   json(res, 404, {
     ok: false,
     error: "Not found",
-    routes: ["/health", "/api/app/config", "/api/app/test-destination", "/api/app/wallet-lookup", "/api/app/telegram/connect-code"],
+    routes: [
+      "/health",
+      "/api/app/config",
+      "/api/app/trending-feed",
+      "/api/app/test-destination",
+      "/api/app/wallet-lookup",
+      "/api/app/telegram/connect-code",
+      "/api/app/pending-trade",
+      "/api/app/pending-trade/ack",
+    ],
   });
 }
 
@@ -248,6 +299,10 @@ export function startBankrAppApiServer() {
         await handleConfigGet(req, res, url);
         return;
       }
+      if (req.method === "GET" && path === "/api/app/trending-feed") {
+        await handleTrendingFeed(req, res, url);
+        return;
+      }
       if (req.method === "POST" && path === "/api/app/config") {
         await handleConfigPost(req, res, url);
         return;
@@ -262,6 +317,14 @@ export function startBankrAppApiServer() {
       }
       if (req.method === "POST" && path === "/api/app/telegram/connect-code") {
         await handleTelegramConnectCode(req, res, url);
+        return;
+      }
+      if (req.method === "GET" && path === "/api/app/pending-trade") {
+        await handlePendingTradeGet(req, res, url);
+        return;
+      }
+      if (req.method === "POST" && path === "/api/app/pending-trade/ack") {
+        await handlePendingTradeAck(req, res, url);
         return;
       }
       routeNotFound(res);

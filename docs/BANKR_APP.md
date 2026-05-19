@@ -55,7 +55,15 @@ specially can still authenticate.
 The app manifest needs:
 
 ```json
-["read:wallet", "fetch:http", "read:secrets"]
+[
+  "read:wallet",
+  "read:appdata",
+  "write:appdata",
+  "read:secrets",
+  "fetch:http",
+  "prepare:transaction",
+  "execute:swap"
+]
 ```
 
 ## Files to copy into Bankr Apps
@@ -70,7 +78,25 @@ bankr-app/scripts/saveConfig.ts
 bankr-app/scripts/testDestination.ts
 bankr-app/scripts/walletLookup.ts
 bankr-app/scripts/createTelegramConnectCode.ts
+bankr-app/scripts/loadTrendingFeed.ts
+bankr-app/scripts/checkPendingTrade.ts
+bankr-app/scripts/executeAutoTrade.ts
+bankr-app/scripts/ackPendingTrade.ts
 ```
+
+Manifest should use `frontendIdentity: "viewer"` and permissions:
+
+`read:wallet`, `read:appdata`, `write:appdata`, `read:secrets`, `fetch:http`, `prepare:transaction`, `execute:swap`
+
+See [Bankr Apps permissions](https://docs.bankr.bot/apps/permissions).
+
+## Native auto-buy (no user API keys)
+
+1. Railway detects trending and stores `pendingTrade` on the user's config (`GET/POST /api/app/pending-trade`).
+2. While the Bankr App is open, the iframe polls `checkPendingTrade` → `executeAutoTrade` → `bankr.confirmTransaction(txBlob)`.
+3. User must confirm each buy in Bankr chat. `ackPendingTrade` clears the queue.
+
+Railway does **not** execute swaps or store Agent API keys.
 
 ## What works in this first pass
 

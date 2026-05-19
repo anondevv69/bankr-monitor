@@ -5,6 +5,7 @@
 import { getHotTokenStats, formatUsd } from "./token-stats.js";
 import { enrichLaunchWithBankrRoleCounts } from "./lookup-deployer.js";
 import { schedulePersonalHotTrendingDms } from "./telegram-personal-dm.js";
+import { scheduleBankrAppHotTrendingWebhooks } from "./bankr-app-notify.js";
 import { isBankrTokenAddress } from "./bankr-token.js";
 import { defaultBankrApiKey } from "./bankr-env-key.js";
 
@@ -187,6 +188,7 @@ export function scheduleHotLaunchTelegramCheck(
         indexerVol24h: iv24,
       };
       schedulePersonalHotTrendingDms(launchForEmbed, hotStats, { isHot, isTrending });
+      scheduleBankrAppHotTrendingWebhooks(launchForEmbed, hotStats, { isHot, isTrending });
       await sendTelegramHotTrendingPings({
         sendTelegramHotPing,
         launchForEmbed,

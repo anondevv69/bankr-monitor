@@ -159,6 +159,65 @@
       .error {
         color: var(--danger);
       }
+      .tabs {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .tab {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .tab.active {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+      .panel {
+        display: none;
+      }
+      .panel.active {
+        display: block;
+      }
+      .feed-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .feed-item {
+        border: 1px solid var(--line);
+        background: var(--panel2);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .feed-item h3 {
+        margin: 0 0 8px;
+        font-size: 16px;
+      }
+      .feed-meta {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .feed-meta a {
+        color: var(--accent);
+      }
+      .auto-trade-box {
+        border: 1px dashed var(--accent);
+        border-radius: 14px;
+        padding: 14px;
+        margin-top: 8px;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+        margin-top: 10px;
+      }
       @media (max-width: 760px) {
         main {
           padding: 18px;
@@ -191,7 +250,12 @@
         <div class="wallet" id="wallet">loading...</div>
       </header>
 
-      <section class="grid">
+      <nav class="tabs" aria-label="Sections">
+        <button type="button" class="tab active" data-tab="dashboard">Dashboard</button>
+        <button type="button" class="tab" data-tab="trending">Trending Feed</button>
+      </nav>
+
+      <section id="panel-dashboard" class="panel active grid">
         <div class="card wide">
           <h2>Destination</h2>
           <label for="discordWebhookUrl">Discord webhook URL</label>
@@ -217,6 +281,26 @@
           <textarea id="keywords" placeholder="ai&#10;agent&#10;terminal"></textarea>
           <label for="tokenAddresses">Token addresses, one per line</label>
           <textarea id="tokenAddresses" placeholder="0x..."></textarea>
+        </div>
+
+        <div class="card wide">
+          <h2>Auto-Buy &amp; Sell Settings</h2>
+          <div class="auto-trade-box">
+            <label class="toggle"
+              ><input id="autoBuyEnabled" type="checkbox" /> Auto-buy trending tokens</label
+            >
+            <label for="autoBuyAmount">Amount per buy (USDC)</label>
+            <input id="autoBuyAmount" type="number" min="0.01" step="0.01" value="1" />
+            <label for="autoTakeProfit">Take Profit (%)</label>
+            <input id="autoTakeProfit" type="number" min="1" step="1" value="50" />
+            <label for="autoStopLoss">Stop Loss (%)</label>
+            <input id="autoStopLoss" type="number" min="1" max="99" step="1" value="20" />
+            <p class="hint" id="autoTradeKeyHint">
+              When a trending token is detected, BankrMonitor queues a buy for your signed-in wallet. Open this app (or
+              keep it open) to see a Bankr confirmation — you must approve each trade. No API keys are stored.
+            </p>
+            <p class="hint" id="pendingTradeStatus"></p>
+          </div>
         </div>
 
         <div class="card">
@@ -253,6 +337,27 @@
           <div id="result"></div>
         </div>
       </section>
+
+      <section id="panel-trending" class="panel">
+        <div class="card wide">
+          <h2>Trending Feed</h2>
+          <p class="sub">
+            Same hot/trending signals as Discord/Telegram pings. Only fills after Railway records new pings (not
+            retroactive). If you get 🔥 hot but not 📈 trending alerts, switch filter to “All” below.
+          </p>
+          <label for="feedType">Show</label>
+          <select id="feedType" style="width: auto; min-width: 160px; margin-bottom: 12px">
+            <option value="all">All hot + trending</option>
+            <option value="trending">Trending only</option>
+            <option value="hot">Hot only</option>
+          </select>
+          <div class="actions">
+            <button class="secondary" id="refreshFeedBtn">Refresh feed</button>
+          </div>
+          <div class="status" id="feedStatus"></div>
+          <div id="trendingFeed" class="feed-list"></div>
+        </div>
+      </section>
     </main>
 
     <script>
@@ -268,7 +373,13 @@
         hot: $("hot"),
         telegramDms: $("telegramDms"),
         lookupQuery: $("lookupQuery"),
+        autoBuyEnabled: $("autoBuyEnabled"),
+        autoBuyAmount: $("autoBuyAmount"),
+        autoTakeProfit: $("autoTakeProfit"),
+        autoStopLoss: $("autoStopLoss"),
       };
+      let pendingTradePollTimer = null;
+      let pendingTradeInFlight = false;
       let lastLookup = null;
 
       function lines(value) {
@@ -398,6 +509,12 @@
 
       function formConfig() {
         return {
+          autoTrade: {
+            enabled: fields.autoBuyEnabled.checked,
+            amountUsdc: Number(fields.autoBuyAmount.value) || 1,
+            takeProfitPct: Number(fields.autoTakeProfit.value) || 50,
+            stopLossPct: Number(fields.autoStopLoss.value) || 20,
+          },
           destinations: {
             discordWebhookUrl: fields.discordWebhookUrl.value.trim(),
           },
@@ -429,6 +546,17 @@
         fields.trending.checked = s.trending !== false;
         fields.hot.checked = s.hot === true;
         fields.telegramDms.checked = s.telegramDms !== false;
+        const at = user?.autoTrade || {};
+        fields.autoBuyEnabled.checked = at.enabled === true;
+        fields.autoBuyAmount.value = at.amountUsdc ?? 1;
+        fields.autoTakeProfit.value = at.takeProfitPct ?? 50;
+        fields.autoStopLoss.value = at.stopLossPct ?? 20;
+        const pending = user?.pendingTrade;
+        $("pendingTradeStatus").textContent = pending
+          ? `Pending buy: ${pending.symbol || pending.name || shortAddr(pending.tokenAddress)} — open Bankr confirm when prompted.`
+          : at.enabled
+            ? "Auto-buy is on. Keep this app open after trending alerts to approve trades in Bankr."
+            : "";
         $("telegramStatus").textContent = d.telegramChatId
           ? `Connected${d.telegramUsername ? ` to @${d.telegramUsername}` : ""}. Telegram DMs are ${s.telegramDms === false ? "off" : "on"}.`
           : "Not connected. Click Connect Telegram, then send the generated /connect command to the Telegram bot.";
@@ -548,11 +676,125 @@
         }
       });
 
-      bankr.on("ready", () => {
-        load().catch((err) => {
-          show(err.message);
-          setStatus(err.message, true);
+      function setActiveTab(name) {
+        document.querySelectorAll(".tab").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.tab === name);
         });
+        document.querySelectorAll(".panel").forEach((panel) => {
+          panel.classList.toggle("active", panel.id === `panel-${name}`);
+        });
+        if (name === "trending") loadTrendingFeed().catch(() => {});
+      }
+
+      document.querySelectorAll(".tab").forEach((btn) => {
+        btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+      });
+
+      function renderTrendingFeed(entries) {
+        const root = $("trendingFeed");
+        if (!entries?.length) {
+          root.innerHTML = `<p class="hint">No trending pings recorded yet. They appear here when Railway detects the same thresholds used for Discord/Telegram.</p>`;
+          return;
+        }
+        root.innerHTML = entries
+          .map((e) => {
+            const title = [e.name, e.symbol ? `($${e.symbol})` : ""].filter(Boolean).join(" ") || "Bankr token";
+            const stats = [
+              e.buys30m != null ? `${e.buys30m} buys (~30m)` : null,
+              e.buys5m != null ? `${e.buys5m} (5m)` : null,
+              e.buys1h != null ? `${e.buys1h} (1h)` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            const vol =
+              e.indexerVol24h != null && Number(e.indexerVol24h) > 0
+                ? ` · 24h vol ${escapeHtml(String(e.indexerVol24h))}`
+                : "";
+            const typeLabel = (e.types || []).includes("trending")
+              ? (e.types || []).includes("hot")
+                ? "Hot + Trending"
+                : "Trending"
+              : "Hot";
+            return `<article class="feed-item">
+              <h3>${escapeHtml(title)} <span style="color:var(--muted);font-size:12px">· ${escapeHtml(typeLabel)}</span></h3>
+              <div class="feed-meta">
+                ${escapeHtml(stats)}${vol}<br />
+                ${e.marketCapFormatted ? `MC ${escapeHtml(e.marketCapFormatted)} · ` : ""}
+                ${escapeHtml(new Date(e.recordedAt).toLocaleString())}<br />
+                <a href="${escapeHtml(e.bankrUrl)}" target="_blank" rel="noreferrer">View on Bankr</a>
+                · <code>${escapeHtml(shortAddr(e.tokenAddress))}</code>
+              </div>
+            </article>`;
+          })
+          .join("");
+      }
+
+      async function loadTrendingFeed() {
+        $("feedStatus").textContent = "Loading feed...";
+        const feedType = $("feedType")?.value || "all";
+        const data = await runScript("loadTrendingFeed", { limit: 40, type: feedType });
+        renderTrendingFeed(data.entries || []);
+        const total = data.total != null ? data.total : data.entries?.length;
+        $("feedStatus").textContent = data.entries?.length
+          ? `Showing ${data.entries.length} of ${total} stored ping(s) (${feedType}).`
+          : data.ok === false
+            ? "Could not load feed — check Railway deploy and app secrets."
+            : "No pings stored yet on Railway for this filter. New alerts appear here after the bot posts hot/trending (not watchlist-only).";
+      }
+
+      $("feedType")?.addEventListener("change", () => loadTrendingFeed().catch(() => {}));
+
+      $("refreshFeedBtn").addEventListener("click", () => {
+        loadTrendingFeed().catch((err) => {
+          $("feedStatus").textContent = err.message;
+          $("feedStatus").className = "status error";
+        });
+      });
+
+      async function processPendingTrade() {
+        if (pendingTradeInFlight || !fields.autoBuyEnabled.checked) return;
+        if (!bankr.auth?.isAuthenticated) return;
+        pendingTradeInFlight = true;
+        try {
+          const check = await bankr.scripts.run("checkPendingTrade");
+          const pending = check?.pendingTrade;
+          if (!pending?.tokenAddress) return;
+          $("pendingTradeStatus").textContent = `Preparing buy for ${pending.symbol || shortAddr(pending.tokenAddress)}…`;
+          const exec = await bankr.scripts.run("executeAutoTrade", { tradeId: pending.id });
+          if (!exec?.txBlob) return;
+          await bankr.confirmTransaction(exec.txBlob);
+          await bankr.scripts.run("ackPendingTrade", { tradeId: pending.id, status: "confirmed" });
+          $("pendingTradeStatus").textContent = "Last trade confirmed.";
+        } catch (err) {
+          const msg = String(err?.message || err);
+          if (/reject|cancel|dismiss/i.test(msg)) {
+            try {
+              await bankr.scripts.run("ackPendingTrade", { status: "dismissed" });
+            } catch (_) {}
+            $("pendingTradeStatus").textContent = "Trade dismissed.";
+          } else {
+            $("pendingTradeStatus").textContent = msg.slice(0, 200);
+          }
+        } finally {
+          pendingTradeInFlight = false;
+        }
+      }
+
+      function startPendingTradePoll() {
+        if (pendingTradePollTimer) clearInterval(pendingTradePollTimer);
+        pendingTradePollTimer = setInterval(() => {
+          void processPendingTrade();
+        }, 20000);
+        void processPendingTrade();
+      }
+
+      bankr.on("ready", () => {
+        load()
+          .then(() => startPendingTradePoll())
+          .catch((err) => {
+            show(err.message);
+            setStatus(err.message, true);
+          });
       });
     </script>
   </body>

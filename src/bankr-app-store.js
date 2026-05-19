@@ -37,6 +37,13 @@ const DEFAULT_SETTINGS = {
   telegramDms: true,
 };
 
+const DEFAULT_AUTO_TRADE = {
+  enabled: false,
+  amountUsdc: 1,
+  takeProfitPct: 50,
+  stopLossPct: 20,
+};
+
 let _chain = Promise.resolve();
 
 function queue(fn) {
@@ -123,14 +130,122 @@ function normalizeSettings(settings) {
   };
 }
 
+function normalizeAutoTrade(autoTrade) {
+  const s = { ...DEFAULT_AUTO_TRADE, ...(autoTrade || {}) };
+  const amount = Number(s.amountUsdc);
+  const tp = Number(s.takeProfitPct);
+  const sl = Number(s.stopLossPct);
+  return {
+    enabled: s.enabled === true,
+    amountUsdc: Number.isFinite(amount) ? Math.min(10_000, Math.max(0.01, amount)) : DEFAULT_AUTO_TRADE.amountUsdc,
+    takeProfitPct: Number.isFinite(tp) ? Math.min(1000, Math.max(1, tp)) : DEFAULT_AUTO_TRADE.takeProfitPct,
+    stopLossPct: Number.isFinite(sl) ? Math.min(99, Math.max(1, sl)) : DEFAULT_AUTO_TRADE.stopLossPct,
+  };
+}
+
+function normalizePendingTradeField(value) {
+  if (value == null) return null;
+  if (typeof value === "object" && Object.keys(value).length === 0) return null;
+  const tokenAddress = normAddr(value.tokenAddress);
+  if (!tokenAddress) return null;
+  return {
+    id: String(value.id || `pt-${tokenAddress.slice(2, 10)}`),
+    status: String(value.status || "pending").slice(0, 32),
+    tokenAddress,
+    name: value.name != null ? String(value.name).slice(0, 120) : null,
+    symbol: value.symbol != null ? String(value.symbol).slice(0, 32) : null,
+    amountUsdc: value.amountUsdc != null ? Number(value.amountUsdc) : null,
+    takeProfitPct: value.takeProfitPct != null ? Number(value.takeProfitPct) : null,
+    stopLossPct: value.stopLossPct != null ? Number(value.stopLossPct) : null,
+    bankrUrl: value.bankrUrl || `https://bankr.bot/launches/${tokenAddress}`,
+    marketCapFormatted: value.marketCapFormatted ?? null,
+    buys30m: value.buys30m ?? null,
+    buys5m: value.buys5m ?? null,
+    buys1h: value.buys1h ?? null,
+    createdAt: value.createdAt || null,
+    createdAtMs: value.createdAtMs != null ? Number(value.createdAtMs) : null,
+    clearedAt: value.clearedAt || null,
+  };
+}
+
+function normalizeAutoTradePositions(value) {
+  const arr = Array.isArray(value) ? value : [];
+  return arr
+    .filter((p) => p && normAddr(p.tokenAddress))
+    .slice(0, 50)
+    .map((p) => ({
+      id: String(p.id || `pos-${p.tokenAddress?.slice(2, 10)}`),
+      tokenAddress: normAddr(p.tokenAddress),
+      name: p.name != null ? String(p.name).slice(0, 120) : null,
+      symbol: p.symbol != null ? String(p.symbol).slice(0, 32) : null,
+      status: String(p.status || "open").slice(0, 32),
+      boughtAt: p.boughtAt || null,
+      closedAt: p.closedAt || null,
+      entryMcap: p.entryMcap != null ? Number(p.entryMcap) : null,
+      takeProfitPct: p.takeProfitPct != null ? Number(p.takeProfitPct) : null,
+      stopLossPct: p.stopLossPct != null ? Number(p.stopLossPct) : null,
+      amountUsdc: p.amountUsdc != null ? Number(p.amountUsdc) : null,
+      buyJobId: p.buyJobId || null,
+      sellJobId: p.sellJobId || null,
+      sellReason: p.sellReason || null,
+      exitChangePct: p.exitChangePct != null ? Number(p.exitChangePct) : null,
+      lastError: p.lastError != null ? String(p.lastError).slice(0, 500) : null,
+    }));
+}
+
+function normAddr(addr) {
+  const s = String(addr ?? "").trim().toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(s) ? s : null;
+}
+
+/** Strip secrets before sending config to the Bankr App. */
+export function bankrAppUserForClient(user) {
+  if (!user) return user;
+  const auto = user.autoTrade;
+  const pending = user.pendingTrade;
+  return {
+    ...user,
+    autoTrade: auto
+      ? {
+          enabled: auto.enabled,
+          amountUsdc: auto.amountUsdc,
+          takeProfitPct: auto.takeProfitPct,
+          stopLossPct: auto.stopLossPct,
+        }
+      : {
+          enabled: false,
+          amountUsdc: DEFAULT_AUTO_TRADE.amountUsdc,
+          takeProfitPct: DEFAULT_AUTO_TRADE.takeProfitPct,
+          stopLossPct: DEFAULT_AUTO_TRADE.stopLossPct,
+        },
+    pendingTrade:
+      pending && pending.status === "pending" && pending.tokenAddress
+        ? {
+            id: pending.id,
+            tokenAddress: pending.tokenAddress,
+            name: pending.name,
+            symbol: pending.symbol,
+            amountUsdc: pending.amountUsdc,
+            bankrUrl: pending.bankrUrl,
+            createdAt: pending.createdAt,
+          }
+        : null,
+    autoTradePositions: user.autoTradePositions || [],
+  };
+}
+
 function sanitizeUser(userId, raw = {}) {
   const now = new Date().toISOString();
+  const existingAuto = raw.autoTrade || {};
   return {
     userId,
     walletAddress: raw.walletAddress || userId,
     destinations: normalizeDestinations(raw.destinations),
     watchlist: normalizeWatchlist(raw.watchlist),
     settings: normalizeSettings(raw.settings),
+    autoTrade: normalizeAutoTrade(existingAuto),
+    pendingTrade: normalizePendingTradeField(raw.pendingTrade),
+    autoTradePositions: normalizeAutoTradePositions(raw.autoTradePositions),
     createdAt: raw.createdAt || now,
     updatedAt: raw.updatedAt || now,
   };
@@ -213,6 +328,16 @@ export async function setBankrAppUserConfig(walletAddress, updates = {}) {
         updates.settings !== undefined
           ? { ...existing.settings, ...updates.settings }
           : existing.settings,
+      autoTrade:
+        updates.autoTrade !== undefined
+          ? normalizeAutoTrade({ ...existing.autoTrade, ...updates.autoTrade })
+          : existing.autoTrade,
+      pendingTrade:
+        updates.pendingTrade !== undefined
+          ? normalizePendingTradeField(updates.pendingTrade)
+          : existing.pendingTrade,
+      autoTradePositions:
+        updates.autoTradePositions !== undefined ? updates.autoTradePositions : existing.autoTradePositions,
       updatedAt: new Date().toISOString(),
     });
     users[userId] = next;
@@ -291,13 +416,19 @@ export async function listActiveBankrAppUsers() {
     const hasDestination = !!(u.destinations?.discordWebhookUrl || u.destinations?.telegramChatId);
     const hasWatch = Object.values(u.watchlist || {}).some((arr) => Array.isArray(arr) && arr.length > 0);
     const wantsBroadcast = u.settings?.hot === true || u.settings?.trending !== false;
-    return hasDestination && (hasWatch || wantsBroadcast);
+    const wantsAutoTrade = u.autoTrade?.enabled === true;
+    return (hasDestination && (hasWatch || wantsBroadcast)) || wantsAutoTrade;
   });
 }
 
 export async function hasActiveBankrAppUsers() {
   const users = await listActiveBankrAppUsers();
   return users.length > 0;
+}
+
+export async function listBankrAppAutoTradeUsers() {
+  const users = await loadAll();
+  return Object.values(users).filter((u) => u.autoTrade?.enabled === true);
 }
 
 export function bankrAppUserToWatchListSets(user) {

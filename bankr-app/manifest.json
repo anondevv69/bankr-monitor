@@ -1,10 +1,28 @@
 {
-  "slug": "bankr-monitor-app-v1",
+  "slug": "bankr-monitor",
   "title": "BankrMonitor",
-  "description": "Manage BankrMonitor watchlists, Discord webhook destinations, and wallet lookups.",
-  "tags": ["bankr", "alerts", "discord", "telegram", "watchlist"],
-  "permissions": ["read:wallet", "fetch:http", "read:secrets"],
-  "scripts": ["loadConfig", "saveConfig", "testDestination", "walletLookup", "createTelegramConnectCode"],
+  "description": "Manage BankrMonitor watchlists, Discord webhook destinations, trending feed, and native auto-buy confirmations.",
+  "tags": ["bankr", "alerts", "discord", "telegram", "watchlist", "trending"],
+  "permissions": [
+    "read:wallet",
+    "read:appdata",
+    "write:appdata",
+    "read:secrets",
+    "fetch:http",
+    "prepare:transaction",
+    "execute:swap"
+  ],
+  "scripts": [
+    "loadConfig",
+    "saveConfig",
+    "testDestination",
+    "walletLookup",
+    "createTelegramConnectCode",
+    "loadTrendingFeed",
+    "checkPendingTrade",
+    "executeAutoTrade",
+    "ackPendingTrade"
+  ],
   "secrets": [
     {
       "key": "BANKR_MONITOR_API_URL",
